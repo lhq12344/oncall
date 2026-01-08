@@ -32,6 +32,7 @@ func DoubaoEmbedding(ctx context.Context) (embedding.Embedder, error) {
 		// 按你的配置系统类型做转换，这里示例：
 		if dimV.Int() > 0 {
 			dim = int(dimV.Int())
+			fmt.Println("dim:", dim)
 		}
 	}
 	return NewDoubaoMultimodalEmbedder(model.String(), apiKey.String(), baseURL.String(), dim)
