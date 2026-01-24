@@ -28,3 +28,20 @@ doubao_embedding_model:
 file_dir: "/home/lihaoqian/myproject/go_agent/docs/"
 cls_mcp_url: "https://mcp-api.tencent-cloud.com/sse/77977c99c3e6593c"
 
+redis:
+  addr: "192.168.149.128:30379"
+  db: 0
+  dialTimeout: 2
+
+# MySQL数据库配置
+mysql:
+  dsn: "root:123456@tcp(192.168.149.128:30306)/orm_test?charset=utf8mb4&parseTime=True&loc=Local&timeout=3s&readTimeout=5s&writeTimeout=5s"
+  max_open_conns: 50
+  max_idle_conns: 10
+  conn_max_lifetime: "30m"
+  conn_max_idle_time: "5m"
+  ping_timeout: "3s"
+  prepare_stmt: true
+  log_level: "warn"
+  slow_threshold: "500ms"
+

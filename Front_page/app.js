@@ -1,7 +1,7 @@
 // go_agent 前端应用
 class SuperBizAgentApp {
     constructor() {
-        this.apiBaseUrl = 'http://localhost:6872/api';
+        this.apiBaseUrl = 'http://192.168.149.128:6872/api/v1';
         this.currentMode = 'quick'; // 'quick' 或 'stream'
         this.sessionId = this.generateSessionId();
         this.isStreaming = false;

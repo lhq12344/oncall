@@ -12,7 +12,7 @@ import (
 func NewMilvusClient(ctx context.Context) (cli.Client, error) {
 	// 1. 先连接default数据库
 	defaultClient, err := cli.NewClient(ctx, cli.Config{
-		Address: "localhost:19530",
+		Address: "192.168.149.128:19530",
 		DBName:  "default",
 	})
 	if err != nil {
@@ -39,7 +39,7 @@ func NewMilvusClient(ctx context.Context) (cli.Client, error) {
 
 	// 3. 创建连接到agent数据库的客户端
 	agentClient, err := cli.NewClient(ctx, cli.Config{
-		Address: "localhost:19530",
+		Address: "192.168.149.128:19530",
 		DBName:  common.MilvusDBName,
 	})
 	if err != nil {
@@ -62,9 +62,10 @@ func NewMilvusClient(ctx context.Context) (cli.Client, error) {
 	if !bizCollectionExists {
 		// 创建biz collection的schema
 		schema := &entity.Schema{
-			CollectionName: common.MilvusCollectionName,
-			Description:    "Business knowledge collection",
-			Fields:         fields,
+			CollectionName:     common.MilvusCollectionName,
+			Description:        "Business knowledge collection",
+			Fields:             fields,
+			EnableDynamicField: true, // 启用动态字段支持
 		}
 
 		err = agentClient.CreateCollection(ctx, schema, entity.DefaultShardNumber)
@@ -93,7 +94,7 @@ func NewMilvusClient(ctx context.Context) (cli.Client, error) {
 		}
 
 		// 为vector字段创建autoindex索引
-		vectorIndex, err := entity.NewIndexAUTOINDEX(entity.HAMMING)
+		vectorIndex, err := entity.NewIndexAUTOINDEX(entity.COSINE)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create vector index: %w", err)
 		}
@@ -120,9 +121,9 @@ var fields = []*entity.Field{
 	},
 	{
 		Name:     "vector", // 确保字段名匹配
-		DataType: entity.FieldTypeBinaryVector,
+		DataType: entity.FieldTypeFloatVector,
 		TypeParams: map[string]string{
-			"dim": "81920",
+			"dim": "2048",
 		},
 	},
 	{

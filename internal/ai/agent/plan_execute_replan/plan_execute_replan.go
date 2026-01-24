@@ -10,6 +10,7 @@ import (
 )
 
 func BuildPlanAgent(ctx context.Context, query string) (string, []string, error) {
+	//1.创建3个agent
 	planAgent, err := NewPlanner(ctx)
 	if err != nil {
 		return "", []string{}, err
@@ -22,6 +23,7 @@ func BuildPlanAgent(ctx context.Context, query string) (string, []string, error)
 	if err != nil {
 		return "", []string{}, err
 	}
+	//2.组装planExecuteAgent
 	planExecuteAgent, err := planexecute.New(ctx, &planexecute.Config{
 		Planner:       planAgent,
 		Executor:      executeAgent,
@@ -34,6 +36,7 @@ func BuildPlanAgent(ctx context.Context, query string) (string, []string, error)
 	r := adk.NewRunner(ctx, adk.RunnerConfig{
 		Agent: planExecuteAgent,
 	})
+	//3.执行
 	iter := r.Query(ctx, query)
 	var lastMessage adk.Message
 	var detail []string

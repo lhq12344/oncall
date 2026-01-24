@@ -73,7 +73,7 @@ chmod +x start.sh
 ### 使用 curl 上传示例
 
 ```bash
-curl -X POST http://localhost:6872/api/upload \
+curl -X POST http://192.168.149.128:6872/api/upload \
   -F "file=@/path/to/your/file.csv"
 ```
 

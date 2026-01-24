@@ -14,9 +14,12 @@ func BuildChatAgent(ctx context.Context) (r compose.Runnable[*UserMessage, *sche
 		ReactAgent      = "ReactAgent"
 		MilvusRetriever = "MilvusRetriever"
 		InputToChat     = "InputToChat"
+		MergeInputs     = "MergeInputs"
 	)
 	g := compose.NewGraph[*UserMessage, *schema.Message]()
 	_ = g.AddLambdaNode(InputToRag, compose.InvokableLambdaWithOption(newInputToRagLambda), compose.WithNodeName("UserMessageToRag"))
+	_ = g.AddLambdaNode(InputToChat, compose.InvokableLambdaWithOption(newInputToChatLambda), compose.WithNodeName("UserMessageToChat"))
+	_ = g.AddLambdaNode(MergeInputs, compose.InvokableLambdaWithOption(newMergeLambda), compose.WithNodeName("MergeInputs"))
 	chatTemplateKeyOfChatTemplate, err := newChatTemplate(ctx)
 	if err != nil {
 		return nil, err
@@ -31,16 +34,16 @@ func BuildChatAgent(ctx context.Context) (r compose.Runnable[*UserMessage, *sche
 	if err != nil {
 		return nil, err
 	}
-	// 注意下面的 output key 设置，把查询出来的设置为了documents，匹配 ChatTemplate 里面说prompt
 	_ = g.AddRetrieverNode(MilvusRetriever, milvusRetrieverKeyOfRetriever, compose.WithOutputKey("documents"))
-	_ = g.AddLambdaNode(InputToChat, compose.InvokableLambdaWithOption(newInputToChatLambda), compose.WithNodeName("UserMessageToChat"))
+	// 注意上面的 output key 设置，把查询出来的设置为了documents，匹配 ChatTemplate 里面说prompt
 	_ = g.AddEdge(compose.START, InputToRag)
 	_ = g.AddEdge(compose.START, InputToChat)
-	_ = g.AddEdge(ReactAgent, compose.END)
 	_ = g.AddEdge(InputToRag, MilvusRetriever)
-	_ = g.AddEdge(MilvusRetriever, ChatTemplate)
-	_ = g.AddEdge(InputToChat, ChatTemplate)
+	_ = g.AddEdge(MilvusRetriever, MergeInputs)
+	_ = g.AddEdge(InputToChat, MergeInputs)
+	_ = g.AddEdge(MergeInputs, ChatTemplate)
 	_ = g.AddEdge(ChatTemplate, ReactAgent)
+	_ = g.AddEdge(ReactAgent, compose.END)
 	r, err = g.Compile(ctx, compose.WithGraphName("ChatAgent"), compose.WithNodeTriggerMode(compose.AllPredecessor))
 	if err != nil {
 		return nil, err

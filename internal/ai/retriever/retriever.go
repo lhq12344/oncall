@@ -40,16 +40,15 @@ func NewMilvusRetriever(ctx context.Context) (rtr retriever.Retriever, err error
 		Client:      cli,
 		Collection:  common.MilvusCollectionName,
 		VectorField: "vector",
-		OutputFields: []string{
-			"id",
-			"content",
-			"metadata",
-		},
-
+		//OutputFields: []string{
+		//	"content",
+		//	"metadata",
+		//},
+		OutputFields:   []string{},
 		MetricType:     entity.COSINE,
-		TopK:           1,
-		ScoreThreshold: 0,  // 关键：必须为 0（否则可能走 range search）
-		Sp:             sp, // 关键：不要带 radius/range_filter
+		TopK:           3,
+		ScoreThreshold: 0.8, // 关键：必须为 0（否则可能走 range search）
+		Sp:             sp,  // 关键：不要带 radius/range_filter
 
 		Embedding: eb,
 
