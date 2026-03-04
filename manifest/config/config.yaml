@@ -45,3 +45,7 @@ mysql:
   log_level: "warn"
   slow_threshold: "500ms"
 
+#web
+web_search:
+  api_key: "your-bing-search-api-key"
+  endpoint: "https://api.bing.microsoft.com/v7.0/search"  # 可选，默认使用Bing搜索API的标准端点
