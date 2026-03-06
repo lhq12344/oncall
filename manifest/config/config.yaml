@@ -29,13 +29,13 @@ file_dir: "/home/lihaoqian/myproject/go_agent/docs/"
 cls_mcp_url: "https://mcp-api.tencent-cloud.com/sse/77977c99c3e6593c"
 
 redis:
-  addr: "192.168.149.128:30379"
+  addr: "localhost:30379"
   db: 0
   dialTimeout: 2
 
 # MySQL数据库配置
 mysql:
-  dsn: "root:123456@tcp(192.168.149.128:30306)/orm_test?charset=utf8mb4&parseTime=True&loc=Local&timeout=3s&readTimeout=5s&writeTimeout=5s"
+  dsn: "root:123456@tcp(localhost:30306)/orm_test?charset=utf8mb4&parseTime=True&loc=Local&timeout=3s&readTimeout=5s&writeTimeout=5s"
   max_open_conns: 50
   max_idle_conns: 10
   conn_max_lifetime: "30m"
@@ -49,3 +49,15 @@ mysql:
 web_search:
   api_key: "your-bing-search-api-key"
   endpoint: "https://api.bing.microsoft.com/v7.0/search"  # 可选，默认使用Bing搜索API的标准端点
+
+# Prometheus 监控配置
+prometheus:
+  url: "http://prometheus.infra.svc:9090"  # K8s 集群内访问
+  # url: "http://192.168.149.128:30090"    # 集群外访问
+
+# Milvus 向量数据库配置
+milvus:
+  address: "milvus.infra.svc:19530"        # K8s 集群内访问
+  # address: "192.168.149.128:31953"       # 集群外访问
+  database: "default"
+  collection: "oncall_knowledge"

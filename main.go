@@ -57,11 +57,16 @@ func main() {
 	defer func() { _ = mysql.CloseMySQL() }()
 
 	// 初始化新的 Agent 架构
+	prometheusURL, _ := g.Cfg().Get(ctx, "prometheus.url")
+	kubeConfig, _ := g.Cfg().Get(ctx, "kubeconfig")
+
 	app, err := bootstrap.NewApplication(&bootstrap.Config{
 		RedisAddr:     redisAddr.String(),
 		RedisPassword: "",
 		RedisDB:       redisDB.Int(),
 		LogLevel:      "info",
+		PrometheusURL: prometheusURL.String(),
+		KubeConfig:    kubeConfig.String(),
 	})
 	if err != nil {
 		log.Fatalf("failed to init application: %v", err)
@@ -70,6 +75,7 @@ func main() {
 
 	log.Println("Agent architecture initialized successfully")
 	log.Printf("Supervisor Agent ready")
+	log.Printf("Prometheus URL: %s", prometheusURL.String())
 
 	// 启动 HTTP 服务
 	s := g.Server()

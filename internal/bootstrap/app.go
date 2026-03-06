@@ -35,6 +35,8 @@ type Config struct {
 	RedisPassword string
 	RedisDB       int
 	LogLevel      string
+	PrometheusURL string // Prometheus 地址
+	KubeConfig    string // K8s kubeconfig 路径
 }
 
 // NewApplication 创建应用实例
@@ -112,14 +114,15 @@ func NewApplication(cfg *Config) (*Application, error) {
 	// 6.3 Ops Agent（集成 K8s 和 Prometheus）
 	opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
 		ChatModel:     chatModel,
-		KubeConfig:    "", // 空字符串表示尝试 in-cluster 配置或默认 kubeconfig
-		PrometheusURL: "http://localhost:9090",
+		KubeConfig:    cfg.KubeConfig, // 从配置读取
+		PrometheusURL: cfg.PrometheusURL,
 		Logger:        logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ops agent: %w", err)
 	}
-	logger.Info("ops agent initialized with K8s and Prometheus integration")
+	logger.Info("ops agent initialized with K8s and Prometheus integration",
+		zap.String("prometheus_url", cfg.PrometheusURL))
 
 	// 6.4 Execution Agent（执行计划生成和安全执行）
 	executionAgent, err := execution.NewExecutionAgent(ctx, &execution.Config{
