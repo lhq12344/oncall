@@ -57,3 +57,18 @@ func OpenAIForDeepSeekV3Quick(ctx context.Context) (cm model.ToolCallingChatMode
 	}
 	return cm, nil
 }
+
+// ChatModel 封装 LLM 客户端
+type ChatModel struct {
+	Client model.ToolCallingChatModel
+}
+
+// GetChatModel 获取默认的 ChatModel
+func GetChatModel() (*ChatModel, error) {
+	ctx := context.Background()
+	client, err := OpenAIForDeepSeekV3Quick(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &ChatModel{Client: client}, nil
+}

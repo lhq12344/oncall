@@ -6,11 +6,17 @@ import (
 	"time"
 
 	"go_agent/internal/agent/dialogue"
+	"go_agent/internal/agent/execution"
 	"go_agent/internal/agent/knowledge"
 	"go_agent/internal/agent/ops"
+	"go_agent/internal/agent/rca"
+	"go_agent/internal/agent/strategy"
 	"go_agent/internal/agent/supervisor"
+	"go_agent/internal/ai/embedder"
+	"go_agent/internal/ai/models"
 	appcontext "go_agent/internal/context"
 
+	"github.com/cloudwego/eino/adk"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
@@ -18,10 +24,7 @@ import (
 // Application 应用实例
 type Application struct {
 	ContextManager  *appcontext.ContextManager
-	SupervisorAgent *supervisor.SupervisorAgent
-	KnowledgeAgent  *knowledge.KnowledgeAgent
-	DialogueAgent   *dialogue.DialogueAgent
-	OpsAgent        *ops.OpsAgent
+	SupervisorAgent adk.ResumableAgent
 	Logger          *zap.Logger
 	RedisClient     *redis.Client
 }
@@ -36,6 +39,8 @@ type Config struct {
 
 // NewApplication 创建应用实例
 func NewApplication(cfg *Config) (*Application, error) {
+	ctx := context.Background()
+
 	// 1. 初始化日志
 	logger, err := initLogger(cfg.LogLevel)
 	if err != nil {
@@ -50,10 +55,10 @@ func NewApplication(cfg *Config) (*Application, error) {
 	})
 
 	// 测试 Redis 连接
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	testCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	if err := redisClient.Ping(ctx).Err(); err != nil {
+	if err := redisClient.Ping(testCtx).Err(); err != nil {
 		return nil, fmt.Errorf("failed to connect to redis: %w", err)
 	}
 
@@ -65,57 +70,110 @@ func NewApplication(cfg *Config) (*Application, error) {
 	// 4. 初始化上下文管理器
 	contextManager := appcontext.NewContextManager(storage)
 
-	// 5. 初始化各个 Agent
+	// 5. 初始化 LLM 模型
+	chatModel, err := models.GetChatModel()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get chat model: %w", err)
+	}
 
-	// 5.1 Knowledge Agent
-	knowledgeAgent := knowledge.NewKnowledgeAgent(&knowledge.Config{
-		ContextManager: contextManager,
-		Retriever:      nil, // TODO: 集成 Milvus Retriever
-		Indexer:        nil, // TODO: 集成 Milvus Indexer
-		Logger:         logger,
+	// 5.1 初始化 Embedder（用于语义相似度计算）
+	embeddingModel, err := embedder.DoubaoEmbedding(ctx)
+	if err != nil {
+		logger.Warn("failed to initialize embedder, dialogue agent will work without semantic similarity",
+			zap.Error(err))
+		embeddingModel = nil // 允许降级
+	} else {
+		logger.Info("embedder initialized (Doubao)")
+	}
+
+	// 6. 初始化各个 Agent
+
+	// 6.1 Knowledge Agent（集成 Milvus）
+	knowledgeAgent, err := knowledge.NewKnowledgeAgent(ctx, &knowledge.Config{
+		ChatModel: chatModel,
+		Logger:    logger,
 	})
-	logger.Info("knowledge agent initialized")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create knowledge agent: %w", err)
+	}
+	logger.Info("knowledge agent initialized with Milvus integration")
 
-	// 5.2 Dialogue Agent
-	dialogueAgent := dialogue.NewDialogueAgent(&dialogue.Config{
-		ContextManager: contextManager,
-		Embedder:       nil, // TODO: 集成 Embedder
-		Logger:         logger,
+	// 6.2 Dialogue Agent（集成 Embedder）
+	dialogueAgent, err := dialogue.NewDialogueAgent(ctx, &dialogue.Config{
+		ChatModel: chatModel,
+		Embedder:  embeddingModel, // 可能为 nil（降级）
+		Logger:    logger,
 	})
-	logger.Info("dialogue agent initialized")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create dialogue agent: %w", err)
+	}
+	logger.Info("dialogue agent initialized with enhanced intent analysis")
 
-	// 5.3 Ops Agent
-	opsAgent := ops.NewOpsAgent(&ops.Config{
-		ContextManager: contextManager,
-		K8sConfig:      nil, // TODO: 配置 K8s
-		PrometheusURL:  "http://localhost:9090",
-		Logger:         logger,
+	// 6.3 Ops Agent（集成 K8s 和 Prometheus）
+	opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
+		ChatModel:     chatModel,
+		KubeConfig:    "", // 空字符串表示尝试 in-cluster 配置或默认 kubeconfig
+		PrometheusURL: "http://localhost:9090",
+		Logger:        logger,
 	})
-	logger.Info("ops agent initialized")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ops agent: %w", err)
+	}
+	logger.Info("ops agent initialized with K8s and Prometheus integration")
 
-	// 5.4 Supervisor Agent（集成所有子 Agent）
-	supervisorAgent := supervisor.NewSupervisorAgent(&supervisor.Config{
-		ContextManager: contextManager,
-		KnowledgeAgent: knowledgeAgent,
-		DialogueAgent:  dialogueAgent,
-		OpsAgent:       opsAgent,
-		Logger:         logger,
+	// 6.4 Execution Agent（执行计划生成和安全执行）
+	executionAgent, err := execution.NewExecutionAgent(ctx, &execution.Config{
+		ChatModel: chatModel,
+		Logger:    logger,
 	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create execution agent: %w", err)
+	}
+	logger.Info("execution agent initialized with sandbox execution")
 
-	// 6. 注册所有工具
-	registerTools(supervisorAgent, knowledgeAgent, dialogueAgent, opsAgent)
+	// 6.5 RCA Agent（根因分析）
+	rcaAgent, err := rca.NewRCAAgent(ctx, &rca.Config{
+		ChatModel: chatModel,
+		Logger:    logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create rca agent: %w", err)
+	}
+	logger.Info("rca agent initialized with root cause analysis")
 
-	logger.Info("supervisor agent initialized with all tools")
+	// 6.6 Strategy Agent（策略评估和优化）
+	strategyAgent, err := strategy.NewStrategyAgent(ctx, &strategy.Config{
+		ChatModel: chatModel,
+		Logger:    logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create strategy agent: %w", err)
+	}
+	logger.Info("strategy agent initialized with strategy optimization")
 
-	// 6. 启动后台任务（数据迁移）
+	// 6.7 Supervisor Agent（使用 Eino ADK prebuilt supervisor）
+	supervisorAgent, err := supervisor.NewSupervisorAgent(ctx, &supervisor.Config{
+		ChatModel:       chatModel,
+		KnowledgeAgent:  knowledgeAgent,
+		DialogueAgent:   dialogueAgent,
+		OpsAgent:        opsAgent,
+		ExecutionAgent:  executionAgent,
+		RCAAgent:        rcaAgent,
+		StrategyAgent:   strategyAgent,
+		Logger:          logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create supervisor agent: %w", err)
+	}
+
+	logger.Info("supervisor agent initialized with Eino ADK")
+
+	// 7. 启动后台任务（数据迁移）
 	go startBackgroundTasks(contextManager, logger)
 
 	return &Application{
 		ContextManager:  contextManager,
 		SupervisorAgent: supervisorAgent,
-		KnowledgeAgent:  knowledgeAgent,
-		DialogueAgent:   dialogueAgent,
-		OpsAgent:        opsAgent,
 		Logger:          logger,
 		RedisClient:     redisClient,
 	}, nil
@@ -178,31 +236,4 @@ func (app *Application) Close() error {
 	}
 
 	return nil
-}
-
-// registerTools 注册所有工具到 Supervisor
-func registerTools(
-	supervisor *supervisor.SupervisorAgent,
-	knowledgeAgent *knowledge.KnowledgeAgent,
-	dialogueAgent *dialogue.DialogueAgent,
-	opsAgent *ops.OpsAgent,
-) {
-	// Knowledge Agent 工具
-	supervisor.RegisterTool(knowledge.NewKnowledgeSearchTool(knowledgeAgent))
-	supervisor.RegisterTool(knowledge.NewKnowledgeIndexTool(knowledgeAgent))
-	supervisor.RegisterTool(knowledge.NewKnowledgeFeedbackTool(knowledgeAgent))
-
-	// Dialogue Agent 工具
-	supervisor.RegisterTool(dialogue.NewIntentAnalysisTool(dialogueAgent))
-	supervisor.RegisterTool(dialogue.NewQuestionPredictionTool(dialogueAgent))
-	supervisor.RegisterTool(dialogue.NewClarificationTool(dialogueAgent))
-	supervisor.RegisterTool(dialogue.NewEntityExtractionTool(dialogueAgent))
-	supervisor.RegisterTool(dialogue.NewConversationSummaryTool(dialogueAgent))
-
-	// Ops Agent 工具
-	supervisor.RegisterTool(ops.NewK8sMonitorTool(opsAgent))
-	supervisor.RegisterTool(ops.NewMetricsCollectorTool(opsAgent))
-	supervisor.RegisterTool(ops.NewLogAnalyzerTool(opsAgent))
-	supervisor.RegisterTool(ops.NewHealthCheckTool(opsAgent))
-	supervisor.RegisterTool(ops.NewSystemDiagnosisTool(opsAgent))
 }

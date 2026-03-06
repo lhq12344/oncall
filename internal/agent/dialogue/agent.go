@@ -4,39 +4,62 @@ import (
 	"context"
 	"fmt"
 
+	"go_agent/internal/agent/dialogue/tools"
 	"go_agent/internal/ai/models"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/embedding"
 	"github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/schema"
+	"github.com/cloudwego/eino/compose"
 	"go.uber.org/zap"
 )
 
 // Config Dialogue Agent 配置
 type Config struct {
 	ChatModel *models.ChatModel
+	Embedder  embedding.Embedder // 用于语义相似度计算
 	Logger    *zap.Logger
+}
+
+// DialogueState 对话状态跟踪
+type DialogueState struct {
+	CurrentIntent   string                 // 当前意图
+	IntentHistory   []string               // 意图历史
+	Confidence      float64                // 置信度
+	Entropy         float64                // 语义熵
+	Converged       bool                   // 是否收敛
+	ContextSummary  string                 // 上下文摘要
+	MissingInfo     []string               // 缺失信息
+	Metadata        map[string]interface{} // 额外元数据
 }
 
 // NewDialogueAgent 创建 Dialogue Agent（意图分析 + 问题预测）
 func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is required")
+	}
+
 	if cfg.ChatModel == nil {
 		return nil, fmt.Errorf("chat model is required")
 	}
 
 	// 创建工具集
-	tools := []tool.BaseTool{
-		NewIntentAnalysisTool(),
-		NewQuestionPredictionTool(),
+	toolsList := []tool.BaseTool{
+		tools.NewIntentAnalysisTool(cfg.ChatModel, cfg.Embedder, cfg.Logger),
+		tools.NewQuestionPredictionTool(cfg.ChatModel, cfg.Logger),
 	}
 
 	// 创建 ChatModelAgent
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
-		Model: cfg.ChatModel.Client,
-		Tools: &adk.ToolsConfig{
-			Tools: tools,
+		Name:        "dialogue_agent",
+		Description: "分析用户意图、预测问题并引导对话的对话代理",
+		Model:       cfg.ChatModel.Client,
+		ToolsConfig: adk.ToolsConfig{
+			ToolsNodeConfig: compose.ToolsNodeConfig{
+				Tools: toolsList,
+			},
 		},
-		SystemPrompt: `你是一个对话助手，负责理解用户意图并引导对话。
+		Instruction: `你是一个对话助手，负责理解用户意图并引导对话。
 
 你的职责：
 1. 分析用户输入的意图（监控查询/故障诊断/知识检索/执行操作）
@@ -64,59 +87,5 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	return agent, nil
 }
 
-// IntentAnalysisTool 意图分析工具
-type IntentAnalysisTool struct{}
 
-func NewIntentAnalysisTool() tool.BaseTool {
-	return &IntentAnalysisTool{}
-}
 
-func (t *IntentAnalysisTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
-	return &schema.ToolInfo{
-		Name: "intent_analysis",
-		Desc: "分析用户输入的意图类型和明确程度。返回意图类型、置信度、语义熵等信息。",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"user_input": {
-				Type:     schema.String,
-				Desc:     "用户输入文本",
-				Required: true,
-			},
-		}),
-	}, nil
-}
-
-func (t *IntentAnalysisTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
-	// TODO: 实现意图分析逻辑
-	return `{"intent_type": "general", "confidence": 0.5, "entropy": 1.0, "converged": false}`, nil
-}
-
-// QuestionPredictionTool 问题预测工具
-type QuestionPredictionTool struct{}
-
-func NewQuestionPredictionTool() tool.BaseTool {
-	return &QuestionPredictionTool{}
-}
-
-func (t *QuestionPredictionTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
-	return &schema.ToolInfo{
-		Name: "question_prediction",
-		Desc: "预测用户下一步可能提出的问题。基于当前对话上下文，生成 3-5 个候选问题。",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"context": {
-				Type:     schema.String,
-				Desc:     "当前对话上下文",
-				Required: true,
-			},
-			"count": {
-				Type:     schema.Integer,
-				Desc:     "生成问题数量（默认 3）",
-				Required: false,
-			},
-		}),
-	}, nil
-}
-
-func (t *QuestionPredictionTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
-	// TODO: 实现问题预测逻辑
-	return `["故障是从什么时候开始的？", "有看到具体的错误信息吗？", "影响范围有多大？"]`, nil
-}
