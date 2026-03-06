@@ -17,6 +17,12 @@ type SupervisorAgent struct {
 	router         *AgentRouter
 	aggregator     *ResultAggregator
 	tools          []compose.Tool
+
+	// 子 Agent（可选）
+	knowledgeAgent interface{} // 知识库代理
+	dialogueAgent  interface{} // 对话代理
+	opsAgent       interface{} // 运维代理
+
 	logger         *zap.Logger
 	mu             sync.RWMutex
 }
@@ -24,6 +30,9 @@ type SupervisorAgent struct {
 // Config Supervisor 配置
 type Config struct {
 	ContextManager *context.ContextManager
+	KnowledgeAgent interface{} // 可选
+	DialogueAgent  interface{} // 可选
+	OpsAgent       interface{} // 可选
 	Logger         *zap.Logger
 }
 
@@ -34,6 +43,9 @@ func NewSupervisorAgent(cfg *Config) *SupervisorAgent {
 		router:         NewAgentRouter(),
 		aggregator:     NewResultAggregator(),
 		tools:          make([]compose.Tool, 0),
+		knowledgeAgent: cfg.KnowledgeAgent,
+		dialogueAgent:  cfg.DialogueAgent,
+		opsAgent:       cfg.OpsAgent,
 		logger:         cfg.Logger,
 	}
 }

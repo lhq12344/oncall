@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"go_agent/internal/agent/dialogue"
+	"go_agent/internal/agent/knowledge"
+	"go_agent/internal/agent/ops"
 	"go_agent/internal/agent/supervisor"
 	appcontext "go_agent/internal/context"
 
@@ -16,6 +19,9 @@ import (
 type Application struct {
 	ContextManager  *appcontext.ContextManager
 	SupervisorAgent *supervisor.SupervisorAgent
+	KnowledgeAgent  *knowledge.KnowledgeAgent
+	DialogueAgent   *dialogue.DialogueAgent
+	OpsAgent        *ops.OpsAgent
 	Logger          *zap.Logger
 	RedisClient     *redis.Client
 }
@@ -59,13 +65,47 @@ func NewApplication(cfg *Config) (*Application, error) {
 	// 4. 初始化上下文管理器
 	contextManager := appcontext.NewContextManager(storage)
 
-	// 5. 初始化 Supervisor Agent
+	// 5. 初始化各个 Agent
+
+	// 5.1 Knowledge Agent
+	knowledgeAgent := knowledge.NewKnowledgeAgent(&knowledge.Config{
+		ContextManager: contextManager,
+		Retriever:      nil, // TODO: 集成 Milvus Retriever
+		Indexer:        nil, // TODO: 集成 Milvus Indexer
+		Logger:         logger,
+	})
+	logger.Info("knowledge agent initialized")
+
+	// 5.2 Dialogue Agent
+	dialogueAgent := dialogue.NewDialogueAgent(&dialogue.Config{
+		ContextManager: contextManager,
+		Embedder:       nil, // TODO: 集成 Embedder
+		Logger:         logger,
+	})
+	logger.Info("dialogue agent initialized")
+
+	// 5.3 Ops Agent
+	opsAgent := ops.NewOpsAgent(&ops.Config{
+		ContextManager: contextManager,
+		K8sConfig:      nil, // TODO: 配置 K8s
+		PrometheusURL:  "http://localhost:9090",
+		Logger:         logger,
+	})
+	logger.Info("ops agent initialized")
+
+	// 5.4 Supervisor Agent（集成所有子 Agent）
 	supervisorAgent := supervisor.NewSupervisorAgent(&supervisor.Config{
 		ContextManager: contextManager,
+		KnowledgeAgent: knowledgeAgent,
+		DialogueAgent:  dialogueAgent,
+		OpsAgent:       opsAgent,
 		Logger:         logger,
 	})
 
-	logger.Info("supervisor agent initialized")
+	// 6. 注册所有工具
+	registerTools(supervisorAgent, knowledgeAgent, dialogueAgent, opsAgent)
+
+	logger.Info("supervisor agent initialized with all tools")
 
 	// 6. 启动后台任务（数据迁移）
 	go startBackgroundTasks(contextManager, logger)
@@ -73,6 +113,9 @@ func NewApplication(cfg *Config) (*Application, error) {
 	return &Application{
 		ContextManager:  contextManager,
 		SupervisorAgent: supervisorAgent,
+		KnowledgeAgent:  knowledgeAgent,
+		DialogueAgent:   dialogueAgent,
+		OpsAgent:        opsAgent,
 		Logger:          logger,
 		RedisClient:     redisClient,
 	}, nil
@@ -135,4 +178,31 @@ func (app *Application) Close() error {
 	}
 
 	return nil
+}
+
+// registerTools 注册所有工具到 Supervisor
+func registerTools(
+	supervisor *supervisor.SupervisorAgent,
+	knowledgeAgent *knowledge.KnowledgeAgent,
+	dialogueAgent *dialogue.DialogueAgent,
+	opsAgent *ops.OpsAgent,
+) {
+	// Knowledge Agent 工具
+	supervisor.RegisterTool(knowledge.NewKnowledgeSearchTool(knowledgeAgent))
+	supervisor.RegisterTool(knowledge.NewKnowledgeIndexTool(knowledgeAgent))
+	supervisor.RegisterTool(knowledge.NewKnowledgeFeedbackTool(knowledgeAgent))
+
+	// Dialogue Agent 工具
+	supervisor.RegisterTool(dialogue.NewIntentAnalysisTool(dialogueAgent))
+	supervisor.RegisterTool(dialogue.NewQuestionPredictionTool(dialogueAgent))
+	supervisor.RegisterTool(dialogue.NewClarificationTool(dialogueAgent))
+	supervisor.RegisterTool(dialogue.NewEntityExtractionTool(dialogueAgent))
+	supervisor.RegisterTool(dialogue.NewConversationSummaryTool(dialogueAgent))
+
+	// Ops Agent 工具
+	supervisor.RegisterTool(ops.NewK8sMonitorTool(opsAgent))
+	supervisor.RegisterTool(ops.NewMetricsCollectorTool(opsAgent))
+	supervisor.RegisterTool(ops.NewLogAnalyzerTool(opsAgent))
+	supervisor.RegisterTool(ops.NewHealthCheckTool(opsAgent))
+	supervisor.RegisterTool(ops.NewSystemDiagnosisTool(opsAgent))
 }
