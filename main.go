@@ -1,6 +1,7 @@
 package main
 
 import (
+	"go_agent/internal/bootstrap"
 	"go_agent/internal/controller/chat"
 	"go_agent/utility/common"
 	"go_agent/utility/mem"
@@ -54,6 +55,22 @@ func main() {
 		log.Fatalf("init mysql failed: %v", err)
 	}
 	defer func() { _ = mysql.CloseMySQL() }()
+
+	// 初始化新的 Agent 架构
+	app, err := bootstrap.NewApplication(&bootstrap.Config{
+		RedisAddr:     redisAddr.String(),
+		RedisPassword: "",
+		RedisDB:       redisDB.Int(),
+		LogLevel:      "info",
+	})
+	if err != nil {
+		log.Fatalf("failed to init application: %v", err)
+	}
+	defer app.Close()
+
+	log.Println("Agent architecture initialized successfully")
+	log.Printf("Supervisor Agent ready")
+
 	// 启动 HTTP 服务
 	s := g.Server()
 	s.Group("/api", func(group *ghttp.RouterGroup) {
