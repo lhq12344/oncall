@@ -249,7 +249,9 @@ agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 
 ---
 
-## 三、待实现的 Agent
+## 三、已完成的其他 Agent
+
+所有 Agent 已全部实现完成！以下是详细信息：
 
 ### 3.1 ExecutionAgent (执行代理) ✅
 
@@ -594,9 +596,10 @@ milvus:
 
 ---
 
-### 4.2 Kubernetes 集成（优先级 🟡 中）
+### 4.2 Kubernetes 集成（优先级 🟡 中） ✅
 
 **目标**: 实现 K8s 资源监控
+**状态**: 已完成（2026-03-06）
 
 #### 配置示例
 
@@ -610,36 +613,22 @@ k8s:
     - production
 ```
 
-#### 实现步骤
+#### 已完成功能
 
-1. **创建 K8s 客户端**
-   ```go
-   // internal/k8s/client.go
-   import "k8s.io/client-go/kubernetes"
-   
-   client, err := kubernetes.NewForConfig(config)
-   ```
+1. **创建 K8s 客户端** ✅
+   - 支持 kubeconfig 文件配置
+   - 支持 in-cluster 配置
+   - 优雅降级处理
 
-2. **实现监控逻辑**
-   ```go
-   // internal/agent/ops/k8s_monitor.go
-   func (t *K8sMonitorTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
-       // 解析参数
-       var params struct {
-           Namespace    string `json:"namespace"`
-           ResourceType string `json:"resource_type"`
-           ResourceName string `json:"resource_name"`
-       }
-       json.Unmarshal([]byte(argumentsInJSON), &params)
-       
-       // 查询 K8s 资源
-       switch params.ResourceType {
-       case "pod":
-           pods, err := t.k8sClient.CoreV1().Pods(params.Namespace).List(ctx, metav1.ListOptions{})
-           // 处理结果...
-       case "node":
-           // ...
-       }
+2. **实现监控逻辑** ✅
+   - Pod 监控（状态、容器信息、重启次数）
+   - Node 监控（资源容量、节点条件）
+   - Deployment 监控（副本数、就绪状态）
+   - Service 监控（类型、端口、选择器）
+
+3. **工具实现** ✅
+   - `internal/agent/ops/tools/k8s_monitor.go` (300+ 行)
+   - 完整的资源查询和格式化逻辑
    }
    ```
 
@@ -653,91 +642,88 @@ k8s:
 
 ```yaml
 # manifest/config/config.yaml
+### 4.3 Prometheus 集成（优先级 🟡 中） ✅
+
+**目标**: 实现指标采集和异常检测
+**状态**: 已完成（2026-03-06）
+
+#### 配置示例
+
+```yaml
+# manifest/config/config.yaml
 prometheus:
   url: "http://localhost:9090"
   timeout: "30s"
 ```
 
-#### 实现步骤
+#### 已完成功能
 
-1. **创建 Prometheus 客户端**
-   ```go
-   // internal/prometheus/client.go
-   import "github.com/prometheus/client_golang/api"
-   
-   client, err := api.NewClient(api.Config{
-       Address: cfg.Prometheus.URL,
-   })
-   ```
+1. **创建 Prometheus 客户端** ✅
+   - 支持自定义 URL 配置
+   - 连接失败优雅降级
 
-2. **实现查询逻辑**
-   ```go
-   // internal/agent/ops/metrics_collector.go
-   func (t *MetricsCollectorTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
-       // 解析参数
-       var params struct {
-           Query     string `json:"query"`
-           TimeRange string `json:"time_range"`
-       }
-       json.Unmarshal([]byte(argumentsInJSON), &params)
-       
-       // 执行 PromQL 查询
-       result, warnings, err := t.promClient.Query(ctx, params.Query, time.Now())
-       // 处理结果...
-   }
-   ```
+2. **实现查询逻辑** ✅
+   - PromQL 查询执行
+   - 即时查询和范围查询
+   - 统计信息计算（min/max/avg）
+   - 时间序列数据格式化
+
+3. **工具实现** ✅
+   - `internal/agent/ops/tools/metrics_collector.go` (250+ 行)
+   - 完整的查询和数据处理逻辑
 
 ---
 
 ## 五、开发路线图
 
-### 阶段 1：核心功能实现（2-3 周）
+### 阶段 1：核心功能实现 ✅ 已完成
 
 **目标**: 完成 RAG 检索和基础 Agent
 
 | 任务 | 负责人 | 预计时间 | 状态 |
 |------|--------|---------|------|
 | 集成 Milvus | - | 1 周 | ✅ 已完成 |
-| 实现 ExecutionAgent | - | 1 周 | ⏳ 待开始 |
-| 实现 RCAAgent | - | 1 周 | ⏳ 待开始 |
+| 实现 ExecutionAgent | - | 1 周 | ✅ 已完成 |
+| 实现 RCAAgent | - | 1 周 | ✅ 已完成 |
 
 **里程碑**:
 - ✅ 完成基础架构重构（2026-03-06）
 - ✅ 完成 Milvus 集成（2026-03-06）
-- ⏳ 完成 Execution 和 RCA Agent（预计 2026-03-27）
+- ✅ 完成 ExecutionAgent 和 RCAAgent（2026-03-06）
 
 ---
 
-### 阶段 2：监控集成（1-2 周）
+### 阶段 2：监控集成 ✅ 已完成
 
 **目标**: 完成 K8s 和 Prometheus 集成
 
 | 任务 | 负责人 | 预计时间 | 状态 |
 |------|--------|---------|------|
-| 集成 Kubernetes | - | 3-4 天 | ⏳ 待开始 |
-| 集成 Prometheus | - | 3-4 天 | ⏳ 待开始 |
-| 集成日志系统 | - | 3-4 天 | ⏳ 待开始 |
+| 集成 Kubernetes | - | 3-4 天 | ✅ 已完成 |
+| 集成 Prometheus | - | 3-4 天 | ✅ 已完成 |
+| 集成日志系统 | - | 3-4 天 | ⚠️ 部分完成 |
 
-**里程碑**: 
-- ⏳ 完成所有监控集成（预计 2026-04-10）
+**里程碑**:
+- ✅ 完成 K8s 和 Prometheus 集成（2026-03-06）
+- ⚠️ 日志系统为模拟实现，待集成实际系统
 
 ---
 
-### 阶段 3：对话增强（1 周）
+### 阶段 3：对话增强 ✅ 已完成
 
 **目标**: 完成对话意图分析和策略优化
 
 | 任务 | 负责人 | 预计时间 | 状态 |
 |------|--------|---------|------|
-| 实现 DialogueAgent 工具 | - | 3-4 天 | ⏳ 待开始 |
-| 实现 StrategyAgent | - | 3-4 天 | ⏳ 待开始 |
+| 实现 DialogueAgent 工具 | - | 3-4 天 | ✅ 已完成 |
+| 实现 StrategyAgent | - | 3-4 天 | ✅ 已完成 |
 
-**里程碑**: 
-- ⏳ 完成对话增强（预计 2026-04-17）
+**里程碑**:
+- ✅ 完成对话增强和策略优化（2026-03-06）
 
 ---
 
-### 阶段 4：优化与完善（1-2 周）
+### 阶段 4：优化与完善 ⏳ 进行中
 
 **目标**: 性能优化、错误处理、测试覆盖
 
@@ -746,9 +732,10 @@ prometheus:
 | 性能优化 | - | 3-4 天 | ⏳ 待开始 |
 | 错误处理完善 | - | 2-3 天 | ⏳ 待开始 |
 | 测试覆盖 | - | 3-4 天 | ⏳ 待开始 |
+| 集成实际日志系统 | - | 2-3 天 | ⏳ 待开始 |
 
-**里程碑**: 
-- ⏳ 完成系统优化（预计 2026-04-24）
+**里程碑**:
+- ⏳ 完成系统优化（待定）
 
 ---
 
@@ -965,10 +952,29 @@ go test ./test/integration/... -v -short
 
 ### 8.2 下一步行动
 
-1. **立即开始**: 实现 ExecutionAgent（执行计划生成、沙盒执行、回滚机制）
-2. **本周完成**: 实现 RCAAgent（依赖图构建、信号关联、根因推理）
-3. **下周完成**: 集成 K8s 和 Prometheus（资源监控、指标采集）
-4. **月底完成**: 完成所有 Agent 和外部服务集成
+**所有核心 Agent 已完成！** 🎉
+
+接下来的优化方向：
+
+1. **完善外部集成** (优先级 🔴 高)
+   - 集成实际日志系统（Loki/ElasticSearch/CLS）
+   - 完善 K8s 和 Prometheus 配置
+   - 添加更多监控数据源
+
+2. **添加测试覆盖** (优先级 🔴 高)
+   - 单元测试
+   - 集成测试
+   - 端到端测试
+
+3. **性能优化** (优先级 🟡 中)
+   - 并发处理优化
+   - 缓存机制
+   - 响应时间优化
+
+4. **功能增强** (优先级 🟡 中)
+   - 自愈循环实现
+   - 更多执行模板
+   - 更智能的根因推理算法
 
 ---
 

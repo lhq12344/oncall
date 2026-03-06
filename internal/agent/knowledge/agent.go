@@ -2,7 +2,6 @@ package knowledge
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"go_agent/internal/ai/indexer"
@@ -12,9 +11,6 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
-	einoRetriever "github.com/cloudwego/eino/components/retriever"
-	"github.com/cloudwego/eino/schema"
-	milvusIndexer "github.com/cloudwego/eino-ext/components/indexer/milvus"
 	"go.uber.org/zap"
 	"go_agent/internal/agent/knowledge/tools"
 )
