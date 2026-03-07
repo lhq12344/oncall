@@ -52,12 +52,15 @@ web_search:
 
 # Prometheus 监控配置
 prometheus:
-  url: "http://prometheus.infra.svc:9090"  # K8s 集群内访问
-  # url: "http://192.168.149.128:30090"    # 集群外访问
+  url: "http://127.0.0.1:30090"    # 集群外访问
+  # url: "http://prometheus.infra.svc:9090"  # K8s 集群内访问
+
+# K8s 配置
+kubeconfig: "/home/lihaoqian/.kube/config"  # K8s kubeconfig 路径
 
 # Milvus 向量数据库配置
 milvus:
   address: "milvus.infra.svc:19530"        # K8s 集群内访问
-  # address: "192.168.149.128:31953"       # 集群外访问
+  # address: "127.0.0.1:31953"       # 集群外访问
   database: "default"
   collection: "oncall_knowledge"

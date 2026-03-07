@@ -83,6 +83,9 @@ EOF
     log_info "部署 Milvus..."
     kubectl apply -f ${MILVUS_DIR}/configmap.yaml
     kubectl apply -f ${MILVUS_DIR}/milvus.yaml
+
+    log_info "部署 Milvus Attu (WebUI)..."
+    kubectl apply -f ${MILVUS_DIR}/attu.yaml
     log_info "Milvus 部署完成"
 }
 
@@ -106,6 +109,7 @@ start_all() {
     log_info "  Milvus gRPC: <node-ip>:31953"
     log_info "  Milvus Metrics: http://<node-ip>:30091/metrics"
     log_info "  MinIO Console: http://<node-ip>:30901 (minioadmin/minioadmin)"
+    log_info "  Milvus Attu WebUI: http://<node-ip>:30900"
 }
 
 # 停止所有服务
@@ -123,6 +127,8 @@ stop_all() {
     kubectl delete -f ${MILVUS_DIR}/etcd.yaml --ignore-not-found=true
 
     log_info "删除 MinIO Service..."
+    log_info "删除 Milvus Attu..."
+    kubectl delete -f ${MILVUS_DIR}/attu.yaml --ignore-not-found=true
     kubectl delete svc minio -n ${NAMESPACE} --ignore-not-found=true
 
     log_info "所有服务已停止"

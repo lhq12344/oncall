@@ -14,7 +14,7 @@
 - ✅ **Milvus Retriever**: 基于语义相似度的向量检索
 - ✅ **Milvus Indexer**: 文档向量化和索引
 - ✅ **Doubao Embedding**: 使用火山引擎豆包模型进行文本向量化（2048 维）
-- ✅ **KnowledgeAgent 工具**: 
+- ✅ **KnowledgeAgent 工具**:
   - `vector_search`: 检索历史故障案例
   - `knowledge_index`: 索引新的故障案例
 
@@ -39,6 +39,7 @@ KnowledgeAgent
 ### 2.2 数据流程
 
 #### 索引流程
+
 ```
 用户输入文本
   ↓
@@ -50,6 +51,7 @@ MilvusIndexer (存储到 Milvus)
 ```
 
 #### 检索流程
+
 ```
 用户查询文本
   ↓
@@ -78,18 +80,18 @@ const (
 **文件**: `utility/client/client.go`
 
 ```go
-Address: "192.168.149.128:19530"  // Milvus 地址
+Address: "localhost:19530"  // Milvus 地址
 DBName:  "agent"                   // 数据库名称
 ```
 
 ### 3.2 Collection Schema
 
-| 字段名 | 类型 | 说明 |
-|--------|------|------|
-| `id` | VarChar(256) | 主键，文档唯一标识 |
-| `vector` | FloatVector(2048) | 文档向量（Doubao embedding） |
-| `content` | VarChar(8192) | 文档内容 |
-| `metadata` | JSON | 元数据（标签、时间、成功率等） |
+| 字段名     | 类型              | 说明                           |
+| ---------- | ----------------- | ------------------------------ |
+| `id`       | VarChar(256)      | 主键，文档唯一标识             |
+| `vector`   | FloatVector(2048) | 文档向量（Doubao embedding）   |
+| `content`  | VarChar(8192)     | 文档内容                       |
+| `metadata` | JSON              | 元数据（标签、时间、成功率等） |
 
 ### 3.3 索引配置
 
@@ -122,8 +124,9 @@ docker-compose up -d standalone etcd minio
 ```
 
 验证 Milvus 是否启动：
+
 ```bash
-curl http://192.168.149.128:9091/healthz
+curl http://localhost:9091/healthz
 ```
 
 ### 4.2 访问 Attu（Milvus 管理界面）
@@ -185,14 +188,16 @@ iter := supervisorAgent.Run(ctx, input)
 **工具名称**: `vector_search`
 
 **参数**:
+
 ```json
 {
-  "query": "Pod 启动失败怎么办",  // 必填
-  "top_k": 3                      // 可选，默认 3
+  "query": "Pod 启动失败怎么办", // 必填
+  "top_k": 3 // 可选，默认 3
 }
 ```
 
 **返回**:
+
 ```json
 {
   "query": "Pod 启动失败怎么办",
@@ -217,6 +222,7 @@ iter := supervisorAgent.Run(ctx, input)
 **工具名称**: `knowledge_index`
 
 **参数**:
+
 ```json
 {
   "content": "Pod 启动失败，错误信息：ImagePullBackOff。解决方案：检查镜像名称和仓库权限。",
@@ -229,6 +235,7 @@ iter := supervisorAgent.Run(ctx, input)
 ```
 
 **返回**:
+
 ```json
 {
   "indexed": true,
@@ -244,17 +251,21 @@ iter := supervisorAgent.Run(ctx, input)
 ### 6.1 Milvus 连接失败
 
 **错误信息**:
+
 ```
-failed to connect to milvus: dial tcp 192.168.149.128:19530: connect: connection refused
+failed to connect to milvus: dial tcp localhost:19530: connect: connection refused
 ```
 
 **解决方案**:
+
 1. 检查 Milvus 是否启动：
+
    ```bash
    docker ps | grep milvus
    ```
 
 2. 检查端口是否开放：
+
    ```bash
    netstat -an | grep 19530
    ```
@@ -268,12 +279,15 @@ failed to connect to milvus: dial tcp 192.168.149.128:19530: connect: connection
 ### 6.2 Embedding 失败
 
 **错误信息**:
+
 ```
 failed to create milvus retriever: empty embedding returned
 ```
 
 **解决方案**:
+
 1. 检查 Doubao API 配置：
+
    ```bash
    # 查看配置文件
    cat manifest/config/config.yaml | grep doubao
@@ -286,6 +300,7 @@ failed to create milvus retriever: empty embedding returned
 ### 6.3 Collection 不存在
 
 **错误信息**:
+
 ```
 collection not found: biz
 ```
@@ -294,6 +309,7 @@ collection not found: biz
 Collection 会自动创建，如果出现此错误：
 
 1. 手动创建 Collection：
+
    ```bash
    # 使用 Attu 管理界面创建
    # 或重启应用，会自动创建
@@ -310,15 +326,16 @@ Collection 会自动创建，如果出现此错误：
 
 ### 7.1 当前性能
 
-| 操作 | 延迟 | 说明 |
-|------|------|------|
+| 操作      | 延迟   | 说明           |
+| --------- | ------ | -------------- |
 | Embedding | ~200ms | 单个文本向量化 |
-| 索引 | ~300ms | 单个文档索引 |
-| 检索 | ~150ms | Top-3 检索 |
+| 索引      | ~300ms | 单个文档索引   |
+| 检索      | ~150ms | Top-3 检索     |
 
 ### 7.2 优化建议
 
 1. **批量索引**
+
    ```go
    // 一次索引多个文档
    docs := []*schema.Document{doc1, doc2, doc3}
@@ -326,9 +343,10 @@ Collection 会自动创建，如果出现此错误：
    ```
 
 2. **调整 TopK**
+
    ```go
    // 减少返回结果数量
-   docs, err := retriever.Retrieve(ctx, query, 
+   docs, err := retriever.Retrieve(ctx, query,
        einoRetriever.WithTopK(1))
    ```
 

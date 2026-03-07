@@ -61,10 +61,12 @@ func (t *VectorSearchTool) InvokableRun(ctx context.Context, argumentsInJSON str
 		params.TopK = 3 // 默认值
 	}
 
-	t.logger.Info("vector search invoked (placeholder)",
-		zap.String("query", params.Query),
-		zap.Int("top_k", params.TopK))
+	if t.logger != nil {
+		t.logger.Info("vector search invoked (placeholder)",
+			zap.String("query", params.Query),
+			zap.Int("top_k", params.TopK))
+	}
 
 	// TODO: Implement Milvus retrieval
-	return `{"error": "向量检索功能尚未完全实现（需要 Milvus 集成）", "results": []}`, nil
+	return `{"status":"degraded","implemented":false,"backend":"milvus","error_code":"milvus_not_integrated","message":"向量检索功能尚未完全实现（需要 Milvus 集成）","results":[]}`, nil
 }

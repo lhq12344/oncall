@@ -58,9 +58,11 @@ func (t *KnowledgeIndexTool) InvokableRun(ctx context.Context, argumentsInJSON s
 		return "", fmt.Errorf("content is required")
 	}
 
-	t.logger.Info("knowledge index invoked (placeholder)",
-		zap.Int("content_length", len(params.Content)))
+	if t.logger != nil {
+		t.logger.Info("knowledge index invoked (placeholder)",
+			zap.Int("content_length", len(params.Content)))
+	}
 
 	// TODO: Implement Milvus indexing
-	return `{"error": "知识索引功能尚未完全实现（需要 Milvus 集成）", "indexed": false}`, nil
+	return `{"status":"degraded","implemented":false,"backend":"milvus","error_code":"milvus_not_integrated","message":"知识索引功能尚未完全实现（需要 Milvus 集成）","indexed":false}`, nil
 }

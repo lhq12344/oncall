@@ -5,10 +5,12 @@
 SuperBizAgent 前端提供了以下功能：
 
 ### 1. 智能对话
+
 - **普通对话模式**：传统的请求-响应模式
 - **流式对话模式**：实时流式响应，类似 ChatGPT
 
 ### 2. 文件上传到知识库 ✨ 新功能
+
 - 支持点击上传和拖拽上传两种方式
 - 支持的文件格式：PDF, TXT, MD, CSV, DOC, DOCX
 - 文件大小限制：50MB
@@ -31,16 +33,19 @@ chmod +x start.sh
 有两种方式上传文件：
 
 #### 方式1: 点击上传
+
 1. 点击"上传文件到知识库"区域
 2. 在弹出的文件选择器中选择文件
 3. 等待上传完成
 
 #### 方式2: 拖拽上传
+
 1. 直接将文件拖拽到"上传文件到知识库"区域
 2. 松开鼠标完成上传
 3. 等待上传完成
 
 ### 上传成功后
+
 - 会显示绿色的成功提示
 - 显示上传的文件名和文件大小
 - 文件会保存到 `/Users/wuxufei/GolandProjects/SuperBizAgent/docs/` 目录
@@ -56,9 +61,11 @@ chmod +x start.sh
 **Content-Type**: `multipart/form-data`
 
 **参数**:
+
 - `file`: 要上传的文件（必需）
 
 **响应示例**:
+
 ```json
 {
   "message": "OK",
@@ -73,7 +80,7 @@ chmod +x start.sh
 ### 使用 curl 上传示例
 
 ```bash
-curl -X POST http://192.168.149.128:6872/api/upload \
+curl -X POST http://localhost:6872/api/upload \
   -F "file=@/path/to/your/file.csv"
 ```
 

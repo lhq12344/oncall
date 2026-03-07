@@ -9,6 +9,8 @@ import (
 	"time"
 	"unicode"
 
+	"go_agent/utility/tokenizer"
+
 	"github.com/cloudwego/eino/schema"
 	"github.com/redis/go-redis/v9"
 )
@@ -116,7 +118,7 @@ func (m *SimpleMemory) SetMessages(
 
 	// 1) user tokens：先估算
 	u := sanitizeForContext(userMsg, cfg.KeepReasoningInContext)
-	userEst := estimateMessageTokens(u, cfg.KeepReasoningInContext)
+	userEst := estimateMessageTokensWithFallback(ctx, u, cfg.KeepReasoningInContext)
 	userTok := userEst
 
 	// 2) 如果有 PromptTokens，用它校准本轮 userTok（可选但建议）
@@ -125,7 +127,7 @@ func (m *SimpleMemory) SetMessages(
 		promptEst := 0
 		for _, mm := range promptMsgs {
 			mm2 := sanitizeForContext(mm, cfg.KeepReasoningInContext)
-			promptEst += estimateMessageTokens(mm2, cfg.KeepReasoningInContext)
+			promptEst += estimateMessageTokensWithFallback(ctx, mm2, cfg.KeepReasoningInContext)
 		}
 		if promptEst > 0 {
 			scale := float64(promptTokens) / float64(promptEst)
@@ -146,7 +148,7 @@ func (m *SimpleMemory) SetMessages(
 	a := sanitizeForContext(assistantMsg, cfg.KeepReasoningInContext)
 	assistantTok := completionTokens
 	if assistantTok <= 0 {
-		assistantTok = estimateMessageTokens(a, cfg.KeepReasoningInContext) // 兜底
+		assistantTok = estimateMessageTokensWithFallback(ctx, a, cfg.KeepReasoningInContext) // 兜底
 	}
 
 	// 4) 写入（user 新建 turn，assistant 追加到该 turn）
@@ -184,11 +186,13 @@ func (m *SimpleMemory) GetMessagesForRequest(ctx context.Context, userMsg *schem
 
 	// 2) 本轮 user tokens 无法在 Get 阶段从 usage 得到（usage 是 Invoke 之后才有）
 	//    因此使用固定预留 ReserveUserTokens（商业常用）
-	userTokensReserve := 0
+	userTokensReserve := cfg.ReserveUserTokens
 	var appendedUser *schema.Message
 	if userMsg != nil {
 		appendedUser = sanitizeForContext(userMsg, cfg.KeepReasoningInContext)
-		userTokensReserve = cfg.ReserveUserTokens
+		if precise := estimateMessageTokensWithFallback(ctx, appendedUser, cfg.KeepReasoningInContext); precise > 0 {
+			userTokensReserve = precise
+		}
 	}
 
 	// 3) tools/RAG 预估（同样是预留）
@@ -540,6 +544,19 @@ func estimateMessageTokens(m *schema.Message, includeReasoning bool) int {
 	const overhead = 8
 
 	return overhead + estimateTextTokens(string(b))
+}
+
+// estimateMessageTokensWithFallback 优先使用 DeepSeek Tokenization 精确计算，失败时回退到本地估算。
+func estimateMessageTokensWithFallback(ctx context.Context, m *schema.Message, includeReasoning bool) int {
+	if m == nil {
+		return 0
+	}
+
+	if tokens, err := tokenizer.CountMessageTokens(ctx, m, includeReasoning); err == nil && tokens > 0 {
+		return tokens
+	}
+
+	return estimateMessageTokens(m, includeReasoning)
 }
 
 // estimateTextTokens：对一段文本（通常是 JSON）做 token 粗估算。

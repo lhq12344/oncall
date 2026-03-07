@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: milvus-attu
+  namespace: infra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: milvus-attu
+  template:
+    metadata:
+      labels:
+        app: milvus-attu
+    spec:
+      containers:
+        - name: attu
+          image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/zilliz/attu:v2.6
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: MILVUS_URL
+              value: "milvus:19530"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: milvus-attu
+  namespace: infra
+spec:
+  type: NodePort
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30900
+      name: http
+  selector:
+    app: milvus-attu

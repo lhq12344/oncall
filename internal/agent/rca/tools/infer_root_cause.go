@@ -128,10 +128,15 @@ func (t *InferRootCauseTool) InvokableRun(ctx context.Context, argumentsInJSON s
 	}
 
 	if t.logger != nil {
+		topCauseService := ""
+		if topCause != nil {
+			topCauseService = topCause.Service
+		}
+
 		t.logger.Info("root cause inference completed",
 			zap.String("fault_node", in.FaultNode),
 			zap.Int("hypotheses", len(hypotheses)),
-			zap.String("top_cause", topCause.Service))
+			zap.String("top_cause", topCauseService))
 	}
 
 	return string(output), nil

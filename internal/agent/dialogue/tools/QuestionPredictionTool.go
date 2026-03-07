@@ -69,6 +69,7 @@ func (t *QuestionPredictionTool) InvokableRun(ctx context.Context, argumentsInJS
 	}
 
 	// 1. 尝试使用 LLM 生成上下文相关的问题
+	method := "llm"
 	questions, err := t.llmBasedPrediction(ctx, in.Context, in.Count)
 	if err != nil {
 		if t.logger != nil {
@@ -77,12 +78,17 @@ func (t *QuestionPredictionTool) InvokableRun(ctx context.Context, argumentsInJS
 		}
 		// 降级到模板问题
 		questions = t.templateBasedPrediction(in.Context, in.Count)
+		method = "template"
+	} else if len(questions) == 0 {
+		// LLM 返回空结果时也降级，保证始终有可用问题建议
+		questions = t.templateBasedPrediction(in.Context, in.Count)
+		method = "template"
 	}
 
 	result := map[string]interface{}{
 		"questions": questions,
 		"count":     len(questions),
-		"method":    "llm", // 或 "template"
+		"method":    method,
 	}
 
 	out, err := json.Marshal(result)
