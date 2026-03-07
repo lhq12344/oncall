@@ -4,6 +4,7 @@ import (
 	"go_agent/internal/bootstrap"
 	"go_agent/internal/controller/chat"
 	"go_agent/utility/common"
+	es "go_agent/utility/elasticsearch"
 	"go_agent/utility/mem"
 	"go_agent/utility/middleware"
 	"go_agent/utility/mysql"
@@ -55,6 +56,20 @@ func main() {
 		log.Fatalf("init mysql failed: %v", err)
 	}
 	defer func() { _ = mysql.CloseMySQL() }()
+
+	// 启动 Elasticsearch（可选，如果配置了则初始化）
+	esCfg := es.LoadElasticsearchConfigFromFile()
+	if len(esCfg.Addresses) > 0 || esCfg.CloudID != "" {
+		_, err = es.InitElasticsearch(ctx, esCfg)
+		if err != nil {
+			log.Printf("Warning: failed to init elasticsearch: %v (will use fallback mode)", err)
+		} else {
+			log.Println("Elasticsearch initialized successfully")
+		}
+		defer func() { _ = es.CloseElasticsearch() }()
+	} else {
+		log.Println("Elasticsearch not configured, log query tool will use fallback mode")
+	}
 
 	// 初始化新的 Agent 架构
 	prometheusURL, _ := g.Cfg().Get(ctx, "prometheus.url")

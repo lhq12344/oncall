@@ -58,6 +58,16 @@ prometheus:
 # K8s 配置
 kubeconfig: "/home/lihaoqian/.kube/config"  # K8s kubeconfig 路径
 
+# Elasticsearch 日志系统配置
+elasticsearch:
+  addresses:
+    - "http://localhost:30920"  # ES 集群地址（集群外访问）
+    # - "http://elasticsearch.infra.svc:9200"  # K8s 集群内访问
+  username: ""  # 用户名（可选）
+  password: ""  # 密码（可选）
+  timeout: "10s"  # 请求超时
+  tls_skip: true  # 跳过 TLS 验证（开发环境）
+
 # Milvus 向量数据库配置
 milvus:
   address: "milvus.infra.svc:19530"        # K8s 集群内访问
