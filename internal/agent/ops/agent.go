@@ -8,8 +8,10 @@ import (
 	"go_agent/internal/ai/models"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/prebuilt/planexecute"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
+	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
 )
 
@@ -72,43 +74,102 @@ func NewOpsAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 		return nil, fmt.Errorf("no tools available for ops agent")
 	}
 
-	// 创建 ChatModelAgent
-	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
-		Name:        "ops_agent",
-		Description: "监控系统状态和检测异常的运维代理",
-		Model:       cfg.ChatModel.Client,
+	// 创建 Planner - 负责制定诊断计划
+	// 注意：必须明确告知 Planner 可用的工具列表
+	planner, err := planexecute.NewPlanner(ctx, &planexecute.PlannerConfig{
+		ToolCallingChatModel: cfg.ChatModel.Client,
+		GenInputFn: func(ctx context.Context, userInput []adk.Message) ([]adk.Message, error) {
+			// 构建包含工具列表的系统提示
+			systemPrompt := `你是一个运维诊断规划专家。根据用户的运维需求，制定详细的诊断计划。
+
+可用工具（只能使用以下工具）：
+1. k8s_monitor - 查看 Kubernetes 资源状态（Pod、Node、Deployment）
+2. metrics_collector - 采集 Prometheus 指标数据（CPU、内存、网络等）
+3. es_log_query - 查询 Elasticsearch 日志（支持关键词、时间范围、日志级别过滤）
+4. log_analyzer - 分析日志模式（备用）
+
+重要：不要使用任何其他工具（如 execute_command、shell_exec 等），只使用上述 4 个工具。
+
+规划原则：
+1. 先收集基础状态（K8s 资源、关键指标）
+2. 根据初步结果，针对性查询日志或详细指标
+3. 每个步骤要明确目标和预期输出
+4. 步骤之间要有逻辑关联`
+
+			messages := []adk.Message{
+				{
+					Role:    schema.System,
+					Content: systemPrompt,
+				},
+			}
+
+			// 添加用户输入
+			messages = append(messages, userInput...)
+
+			return messages, nil
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create planner: %w", err)
+	}
+
+	// 创建 Executor - 负责执行计划中的工具调用
+	executor, err := planexecute.NewExecutor(ctx, &planexecute.ExecutorConfig{
+		Model: cfg.ChatModel.Client,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
 				Tools: toolsList,
 			},
 		},
-		Instruction: `你是一个运维助手，负责监控系统状态和检测异常。
+		MaxIterations: 20,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create executor: %w", err)
+	}
 
-你的职责：
-1. 使用 k8s_monitor 工具查看 Kubernetes 资源状态（Pod、Node、Deployment）
-2. 使用 metrics_collector 工具采集 Prometheus 指标数据
-3. 使用 es_log_query 工具查询 Elasticsearch 日志（支持关键词搜索、时间范围、日志级别过滤）
-4. 使用 log_analyzer 工具分析日志模式（备用工具）
-5. 识别异常指标和潜在问题
-6. 提供初步的诊断建议
+	// 创建 Replanner - 负责根据执行结果决定是否重新规划
+	replanner, err := planexecute.NewReplanner(ctx, &planexecute.ReplannerConfig{
+		ChatModel: cfg.ChatModel.Client,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create replanner: %w", err)
+	}
 
-监控维度：
-- 资源使用：CPU、内存、磁盘、网络
-- 服务健康：Pod 状态、容器重启、健康检查
-- 性能指标：延迟、吞吐量、错误率
-- 日志异常：错误日志、警告信息、异常堆栈
-
-注意：
-- 优先使用 es_log_query 查询实际日志数据
-- 关注指标的突变和趋势
-- 对比历史基线识别异常
-- 提供具体的数值和时间范围
-- 优先报告影响业务的关键问题`,
+	// 组装 Plan-Execute-Replan Agent
+	agent, err := planexecute.New(ctx, &planexecute.Config{
+		Planner:       planner,
+		Executor:      executor,
+		Replanner:     replanner,
+		MaxIterations: 10, // 最多执行 10 轮 plan-execute-replan 循环
 	})
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to create ops agent: %w", err)
+		return nil, fmt.Errorf("failed to create plan-execute-replan ops agent: %w", err)
 	}
 
-	return agent, nil
+	// 包装成带名称的 Agent（用于 supervisor 识别）
+	namedAgent := &NamedAgent{
+		Agent: agent,
+		name:  "ops_agent",
+		desc:  "监控系���状态、采集指标、分析日志的运维代理",
+	}
+
+	return namedAgent, nil
+}
+
+// NamedAgent 包装 Agent 并添加名称和描述
+type NamedAgent struct {
+	adk.Agent
+	name string
+	desc string
+}
+
+// Name 返回 Agent 名称（实现 adk.Agent 接口）
+func (a *NamedAgent) Name(ctx context.Context) string {
+	return a.name
+}
+
+// Description 返回 Agent 描述（实现 adk.Agent 接口）
+func (a *NamedAgent) Description(ctx context.Context) string {
+	return a.desc
 }

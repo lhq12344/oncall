@@ -40,11 +40,11 @@ func NewMilvusRetriever(ctx context.Context) (rtr retriever.Retriever, err error
 		Client:      cli,
 		Collection:  common.MilvusCollectionName,
 		VectorField: "vector",
-		//OutputFields: []string{
-		//	"content",
-		//	"metadata",
-		//},
-		OutputFields:   []string{},
+		// 必须显式返回 content / metadata，否则默认文档会出现空内容。
+		OutputFields: []string{
+			"content",
+			"metadata",
+		},
 		MetricType:     entity.COSINE,
 		TopK:           3,
 		ScoreThreshold: 0.8, // 关键：必须为 0（否则可能走 range search）

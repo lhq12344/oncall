@@ -8,7 +8,6 @@ import (
 	"go_agent/internal/concurrent"
 
 	"github.com/cloudwego/eino/adk"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -103,15 +102,17 @@ func (d *Diagnoser) Diagnose(ctx context.Context, incident *Incident) (*Diagnosi
 
 // Decider 决策组件
 type Decider struct {
-	strategyAgent adk.Agent
-	logger        *zap.Logger
+	strategyAgent  adk.Agent
+	strategyMatcher *StrategyMatcher
+	logger         *zap.Logger
 }
 
 // NewDecider 创建决策组件
 func NewDecider(strategyAgent adk.Agent, logger *zap.Logger) *Decider {
 	return &Decider{
-		strategyAgent: strategyAgent,
-		logger:        logger,
+		strategyAgent:  strategyAgent,
+		strategyMatcher: NewStrategyMatcher(),
+		logger:         logger,
 	}
 }
 
@@ -121,35 +122,25 @@ func (d *Decider) Decide(ctx context.Context, incident *Incident, diagnosis *Dia
 		return nil, fmt.Errorf("incident and diagnosis are required")
 	}
 
-	// TODO: 使用 Strategy Agent 选择最佳策略
-	// 这里返回模拟结果
-	strategy := &HealingStrategy{
-		ID:   uuid.New().String(),
-		Name: "Restart Pod",
-		Type: StrategyTypeRestart,
-		Actions: []Action{
-			{
-				Type: "restart",
-				Target: Resource{
-					Type:      "pod",
-					Namespace: "default",
-					Name:      "api-service-xxx",
-				},
-				Parameters: map[string]string{
-					"graceful": "true",
-					"timeout":  "30s",
-				},
-				Description: "Restart the affected pod",
-			},
-		},
-		Priority:    1,
-		Description: "Restart the pod to recover from crash loop",
+	// 使用策略匹配器选择最佳策略
+	template := d.strategyMatcher.Match(incident)
+	if template == nil {
+		d.logger.Warn("no matching strategy found", zap.String("incident_type", string(incident.Type)))
+		// 使用默认策略
+		template = getPodRestartStrategy()
 	}
+
+	strategy := template.ConvertToHealingStrategy(incident)
+
+	d.logger.Info("strategy selected",
+		zap.String("strategy", strategy.Name),
+		zap.String("type", string(strategy.Type)),
+		zap.String("risk_level", string(template.RiskLevel)))
 
 	result := &DecisionResult{
 		IncidentID:    incident.ID,
 		Strategy:      strategy,
-		RiskLevel:     RiskLevelLow,
+		RiskLevel:     template.RiskLevel,
 		EstimatedTime: 2 * time.Minute,
 		RollbackPlan: &RollbackPlan{
 			Actions: []Action{
@@ -160,13 +151,13 @@ func (d *Decider) Decide(ctx context.Context, incident *Incident, diagnosis *Dia
 						Namespace: "default",
 						Name:      "api-service",
 					},
-					Description: "Rollback to previous version if restart fails",
+					Description: "Rollback to previous version if strategy fails",
 				},
 			},
 			Timeout: 5 * time.Minute,
 		},
-		RequiresApproval: false,
-		Reasoning:        "Pod restart is a low-risk operation with high success rate",
+		RequiresApproval: template.RiskLevel == RiskLevelHigh,
+		Reasoning:        fmt.Sprintf("Selected '%s' strategy based on incident type '%s' and severity '%s'", strategy.Name, incident.Type, incident.Severity),
 	}
 
 	return result, nil

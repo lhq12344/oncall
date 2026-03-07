@@ -13,6 +13,7 @@ import (
 	"go_agent/internal/agent/strategy"
 	"go_agent/internal/agent/supervisor"
 	"go_agent/internal/ai/embedder"
+	"go_agent/internal/ai/indexer"
 	"go_agent/internal/ai/models"
 	"go_agent/internal/concurrent"
 	appcontext "go_agent/internal/context"
@@ -29,6 +30,8 @@ type Application struct {
 	ContextManager  *appcontext.ContextManager
 	SupervisorAgent adk.ResumableAgent
 	OpsIntegration  *ops.IntegratedOpsExecutor
+	OpsAgent        adk.Agent // Plan-Execute-Replan Ops Agent
+	MilvusIndexer   interface{} // Milvus Indexer for direct document indexing
 	HealingManager  *healing.HealingLoopManager
 	Logger          *zap.Logger
 	RedisClient     *redis.Client
@@ -100,6 +103,15 @@ func NewApplication(cfg *Config) (*Application, error) {
 	}
 
 	// 6. 初始化各个 Agent
+
+	// 6.0 初始化 Milvus Indexer（用于直接文档索引）
+	milvusIndexer, err := indexer.NewMilvusIndexer(ctx)
+	if err != nil {
+		logger.Warn("failed to create milvus indexer", zap.Error(err))
+		milvusIndexer = nil
+	} else {
+		logger.Info("milvus indexer initialized for direct document indexing")
+	}
 
 	// 6.1 Knowledge Agent（集成 Milvus）
 	knowledgeAgent, err := knowledge.NewKnowledgeAgent(ctx, &knowledge.Config{
@@ -237,6 +249,8 @@ func NewApplication(cfg *Config) (*Application, error) {
 		ContextManager:  contextManager,
 		SupervisorAgent: supervisorAgent,
 		OpsIntegration:  opsIntegration,
+		OpsAgent:        opsAgent,
+		MilvusIndexer:   milvusIndexer,
 		HealingManager:  healingManager,
 		Logger:          logger,
 		RedisClient:     redisClient,

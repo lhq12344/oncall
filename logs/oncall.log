@@ -1,0 +1,67 @@
+2026/03/07 22:20:34 Elasticsearch initialized successfully
+{"level":"info","ts":1772893234.4181337,"caller":"bootstrap/app.go:76","msg":"redis connected","addr":"localhost:30379"}
+dim: 2048
+{"level":"info","ts":1772893234.4183433,"caller":"bootstrap/app.go:102","msg":"embedder initialized (Doubao)"}
+dim: 2048
+{"level":"info","ts":1772893234.4297223,"caller":"bootstrap/app.go:113","msg":"milvus indexer initialized for direct document indexing"}
+dim: 2048
+dim: 2048
+{"level":"info","ts":1772893234.6540272,"caller":"knowledge/agent.go:95","msg":"knowledge agent created","retriever_available":true,"indexer_available":true}
+{"level":"info","ts":1772893234.654287,"caller":"bootstrap/app.go:124","msg":"knowledge agent initialized with Milvus integration"}
+{"level":"info","ts":1772893234.6543067,"caller":"bootstrap/app.go:135","msg":"dialogue agent initialized with enhanced intent analysis"}
+{"level":"info","ts":1772893234.6550817,"caller":"tools/k8s_monitor.go:77","msg":"k8s client initialized successfully"}
+{"level":"info","ts":1772893234.655124,"caller":"tools/metrics_collector.go:47","msg":"prometheus client initialized","url":"http://127.0.0.1:30090"}
+{"level":"info","ts":1772893234.6551507,"caller":"bootstrap/app.go:147","msg":"ops agent initialized with K8s and Prometheus integration","prometheus_url":"http://127.0.0.1:30090"}
+{"level":"info","ts":1772893234.655442,"caller":"tools/k8s_monitor.go:77","msg":"k8s client initialized successfully"}
+{"level":"info","ts":1772893234.6554723,"caller":"tools/metrics_collector.go:47","msg":"prometheus client initialized","url":"http://127.0.0.1:30090"}
+{"level":"info","ts":1772893234.6557708,"caller":"execution/agent.go:94","msg":"execution agent initialized with 4 tools"}
+{"level":"info","ts":1772893234.6557996,"caller":"bootstrap/app.go:170","msg":"execution agent initialized with sandbox execution"}
+{"level":"info","ts":1772893234.6558108,"caller":"rca/agent.go:95","msg":"rca agent initialized with 4 tools"}
+{"level":"info","ts":1772893234.6558154,"caller":"bootstrap/app.go:180","msg":"rca agent initialized with root cause analysis"}
+{"level":"info","ts":1772893234.655824,"caller":"strategy/agent.go:99","msg":"strategy agent initialized with 4 tools"}
+{"level":"info","ts":1772893234.6558278,"caller":"bootstrap/app.go:190","msg":"strategy agent initialized with strategy optimization"}
+{"level":"info","ts":1772893234.655838,"caller":"supervisor/agent.go:119","msg":"supervisor agent created with sub-agents","sub_agent_count":6}
+{"level":"info","ts":1772893234.655842,"caller":"bootstrap/app.go:207","msg":"supervisor agent initialized with Eino ADK"}
+{"level":"info","ts":1772893234.6558733,"caller":"bootstrap/app.go:243","msg":"healing loop manager initialized and started"}
+2026/03/07 22:20:34 Agent architecture initialized successfully
+2026/03/07 22:20:34 Supervisor Agent ready
+2026/03/07 22:20:34 Prometheus URL: http://127.0.0.1:30090
+{"level":"info","ts":1772893234.6558967,"caller":"healing/manager.go:124","msg":"healing loop manager started","auto_trigger":true,"monitor_interval":30}
+{"level":"info","ts":1772893234.6564355,"caller":"chat/chat_v1.go:76","msg":"chat controller cache initialized"}
+2026-03-07 22:20:34.714 [INFO] {6aabb1d800959a188556dd101da59f16} swagger ui is serving at address: http://127.0.0.1:6872/swagger/
+2026-03-07 22:20:34.714 [INFO] pid[1472231]: http server started listening on [:6872]
+2026-03-07 22:20:34.714 [INFO] {6aabb1d800959a188556dd101da59f16} openapi specification is serving at address: http://127.0.0.1:6872/api.json
+
+  ADDRESS | METHOD |          ROUTE          |                             HANDLER                              |          MIDDLEWARE            
+----------|--------|-------------------------|------------------------------------------------------------------|--------------------------------
+  :6872   | ALL    | /api.json               | github.com/gogf/gf/v2/net/ghttp.(*Server).openapiSpec            |                                
+----------|--------|-------------------------|------------------------------------------------------------------|--------------------------------
+  :6872   | POST   | /api/v1/ai_ops          | go_agent/internal/controller/chat.(*ControllerV1).AIOps          | middleware.CORSMiddleware      
+          |        |                         |                                                                  | middleware.ResponseMiddleware  
+----------|--------|-------------------------|------------------------------------------------------------------|--------------------------------
+  :6872   | POST   | /api/v1/chat            | go_agent/internal/controller/chat.(*ControllerV1).Chat           | middleware.CORSMiddleware      
+          |        |                         |                                                                  | middleware.ResponseMiddleware  
+----------|--------|-------------------------|------------------------------------------------------------------|--------------------------------
+  :6872   | POST   | /api/v1/chat_stream     | go_agent/internal/controller/chat.(*ControllerV1).ChatStream     | middleware.CORSMiddleware      
+          |        |                         |                                                                  | middleware.ResponseMiddleware  
+----------|--------|-------------------------|------------------------------------------------------------------|--------------------------------
+  :6872   | GET    | /api/v1/healing/status  | go_agent/internal/controller/chat.(*ControllerV1).HealingStatus  | middleware.CORSMiddleware      
+          |        |                         |                                                                  | middleware.ResponseMiddleware  
+----------|--------|-------------------------|------------------------------------------------------------------|--------------------------------
+  :6872   | POST   | /api/v1/healing/trigger | go_agent/internal/controller/chat.(*ControllerV1).HealingTrigger | middleware.CORSMiddleware      
+          |        |                         |                                                                  | middleware.ResponseMiddleware  
+----------|--------|-------------------------|------------------------------------------------------------------|--------------------------------
+  :6872   | GET    | /api/v1/monitoring      | go_agent/internal/controller/chat.(*ControllerV1).Monitoring     | middleware.CORSMiddleware      
+          |        |                         |                                                                  | middleware.ResponseMiddleware  
+----------|--------|-------------------------|------------------------------------------------------------------|--------------------------------
+  :6872   | POST   | /api/v1/upload          | go_agent/internal/controller/chat.(*ControllerV1).FileUpload     | middleware.CORSMiddleware      
+          |        |                         |                                                                  | middleware.ResponseMiddleware  
+----------|--------|-------------------------|------------------------------------------------------------------|--------------------------------
+  :6872   | ALL    | /swagger/*              | github.com/gogf/gf/v2/net/ghttp.(*Server).swaggerUI              | HOOK_BEFORE_SERVE              
+----------|--------|-------------------------|------------------------------------------------------------------|--------------------------------
+
+{"level":"info","ts":1772893383.178588,"caller":"chat/chat_v1.go:93","msg":"chat request received","session_id":"session_ulcjeboqq_1772893363033","question":"服务下线的原因和解决方法"}
+{"level":"info","ts":1772893392.829321,"caller":"tools/VectorSearchTool.go:130","msg":"vector search completed","query":"服务下线的原因和解决方法","results":3}
+{"level":"info","ts":1772893415.0392685,"caller":"chat/chat_v1.go:225","msg":"chat response generated","session_id":"session_ulcjeboqq_1772893363033","answer_length":3637,"cache_hit_rate":0}
+{"level":"info","ts":1772893465.8499625,"caller":"chat/chat_v1.go:93","msg":"chat request received","session_id":"session_c7fcva57b_1772893463568","question":"服务下线的原因和解决方法"}
+{"level":"info","ts":1772893473.208578,"caller":"tools/VectorSearchTool.go:130","msg":"vector search completed","query":"服务下线的原因和解决方法","results":3}

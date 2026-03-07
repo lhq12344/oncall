@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OnCall AI - 智能运维助手</title>
+    <link rel="stylesheet" href="styles-new.css">
+    <!-- Markdown 渲染 -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+    <!-- 代码高亮 -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/atom-one-dark.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/es/highlight.min.js"></script>
+    <!-- ECharts for visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- 顶部导航栏 -->
+        <header class="top-nav">
+            <div class="nav-left">
+                <div class="logo">
+                    <svg class="logo-icon" viewBox="0 0 24 24" fill="none">
+                        <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2"/>
+                        <path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="2"/>
+                        <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2"/>
+                    </svg>
+                    <span class="logo-text">OnCall AI</span>
+                </div>
+            </div>
+            <div class="nav-center">
+                <div class="agent-selector" id="agentSelector">
+                    <button class="agent-btn active" data-agent="supervisor">
+                        <span class="agent-icon">🎯</span>
+                        <span>智能助手</span>
+                    </button>
+                    <button class="agent-btn" data-agent="knowledge">
+                        <span class="agent-icon">📚</span>
+                        <span>知识库</span>
+                    </button>
+                    <button class="agent-btn" data-agent="ops">
+                        <span class="agent-icon">⚙️</span>
+                        <span>运维监控</span>
+                    </button>
+                    <button class="agent-btn" data-agent="rca">
+                        <span class="agent-icon">🔍</span>
+                        <span>根因分析</span>
+                    </button>
+                    <button class="agent-btn" data-agent="strategy">
+                        <span class="agent-icon">💡</span>
+                        <span>策略优化</span>
+                    </button>
+                    <button class="agent-btn" data-agent="execution">
+                        <span class="agent-icon">⚡</span>
+                        <span>执行引擎</span>
+                    </button>
+                    <button class="agent-btn" data-agent="healing">
+                        <span class="agent-icon">🔄</span>
+                        <span>自愈循环</span>
+                    </button>
+                </div>
+            </div>
+            <div class="nav-right">
+                <button class="icon-btn" id="historyBtn" title="历史记录">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <path d="M12 8V12L15 15" stroke="currentColor" stroke-width="2"/>
+                        <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/>
+                    </svg>
+                </button>
+                <button class="icon-btn" id="settingsBtn" title="设置">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/>
+                        <path d="M12 1v6m0 6v6M23 12h-6m-6 0H1" stroke="currentColor" stroke-width="2"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- 主内容区 -->
+        <main class="main-area">
+            <!-- 欢迎屏幕 -->
+            <div class="welcome-screen" id="welcomeScreen">
+                <div class="welcome-content">
+                    <h1 class="welcome-title">你好，我是 OnCall AI</h1>
+                    <p class="welcome-subtitle">智能运维助手，随时为您服务</p>
+
+                    <div class="quick-actions">
+                        <div class="quick-action-card" data-prompt="查看当前系统状态">
+                            <div class="card-icon">📊</div>
+                            <div class="card-title">系统状态</div>
+                            <div class="card-desc">查看当前系统运行状态</div>
+                        </div>
+                        <div class="quick-action-card" data-prompt="分析最近的告警">
+                            <div class="card-icon">🚨</div>
+                            <div class="card-title">告警分析</div>
+                            <div class="card-desc">分析最近的系统告警</div>
+                        </div>
+                        <div class="quick-action-card" data-prompt="执行健康检查">
+                            <div class="card-icon">💊</div>
+                            <div class="card-title">健康检查</div>
+                            <div class="card-desc">执行系统健康检查</div>
+                        </div>
+                        <div class="quick-action-card" data-prompt="查询知识库">
+                            <div class="card-icon">📖</div>
+                            <div class="card-title">知识查询</div>
+                            <div class="card-desc">搜索运维知识库</div>
+                        </div>
+                    </div>
+
+                    <div class="agent-features">
+                        <h3>AI Agent 能力</h3>
+                        <div class="features-grid">
+                            <div class="feature-item">
+                                <span class="feature-icon">🎯</span>
+                                <span>智能对话</span>
+                            </div>
+                            <div class="feature-item">
+                                <span class="feature-icon">📚</span>
+                                <span>知识检索</span>
+                            </div>
+                            <div class="feature-item">
+                                <span class="feature-icon">⚙️</span>
+                                <span>运维监控</span>
+                            </div>
+                            <div class="feature-item">
+                                <span class="feature-icon">🔍</span>
+                                <span>根因分析</span>
+                            </div>
+                            <div class="feature-item">
+                                <span class="feature-icon">💡</span>
+                                <span>策略建议</span>
+                            </div>
+                            <div class="feature-item">
+                                <span class="feature-icon">⚡</span>
+                                <span>自动执行</span>
+                            </div>
+                            <div class="feature-item">
+                                <span class="feature-icon">🔄</span>
+                                <span>自愈修复</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 对话区域 -->
+            <div class="chat-area" id="chatArea" style="display: none;">
+                <div class="messages-container" id="messagesContainer">
+                    <!-- 消息将动态添加到这里 -->
+                </div>
+            </div>
+        </main>
+
+        <!-- 底部输入区 -->
+        <footer class="input-area">
+            <div class="input-container">
+                <div class="input-wrapper">
+                    <button class="attach-btn" id="attachBtn" title="附件">
+                        <svg viewBox="0 0 24 24" fill="none">
+                            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" stroke="currentColor" stroke-width="2"/>
+                        </svg>
+                    </button>
+                    <textarea
+                        id="messageInput"
+                        class="message-input"
+                        placeholder="向 OnCall AI 提问..."
+                        rows="1"
+                        maxlength="2000"
+                    ></textarea>
+                    <button class="send-btn" id="sendBtn" title="发送">
+                        <svg viewBox="0 0 24 24" fill="none">
+                            <path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13" stroke="currentColor" stroke-width="2"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="input-footer">
+                    <div class="footer-left">
+                        <span class="current-agent-badge" id="currentAgentBadge">
+                            <span class="badge-icon">🎯</span>
+                            <span class="badge-text">智能助手</span>
+                        </span>
+                    </div>
+                    <div class="footer-right">
+                        <span class="char-count" id="charCount">0 / 2000</span>
+                    </div>
+                </div>
+            </div>
+        </footer>
+
+        <!-- 侧边栏 - 历史记录 -->
+        <aside class="sidebar" id="historySidebar">
+            <div class="sidebar-header">
+                <h3>对话历史</h3>
+                <button class="close-btn" id="closeSidebarBtn">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="sidebar-content">
+                <button class="new-chat-btn" id="newChatBtn">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2"/>
+                    </svg>
+                    <span>新建对话</span>
+                </button>
+                <div class="history-list" id="historyList">
+                    <!-- 历史记录将动态添加 -->
+                </div>
+            </div>
+        </aside>
+
+        <!-- 加载指示器 -->
+        <div class="loading-indicator" id="loadingIndicator">
+            <div class="loading-spinner"></div>
+            <span class="loading-text">AI 正在思考...</span>
+        </div>
+
+        <!-- Toast 通知 -->
+        <div class="toast" id="toast"></div>
+    </div>
+
+    <input type="file" id="fileInput" accept=".txt,.md,.json,.log" style="display: none;">
+    <script src="app-new.js"></script>
+</body>
+</html>

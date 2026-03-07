@@ -22,8 +22,8 @@ ds_quick_chat_model:
 doubao_embedding_model:
   api_key: "c3b9d277-0f82-4ef0-970a-1f3b5607c861"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "doubao-embedding-text-240515"  # Doubao Embedding text-240515
-  dimensions: 1024  # text-240515 使用 1024 维度
+  model: "doubao-embedding-vision-250615"  # Doubao Embedding vision-250615
+  dimensions: 2048  # vision-250615 使用 2048 维度
 
 file_dir: "/home/lihaoqian/myproject/go_agent/docs/"
 cls_mcp_url: "https://mcp-api.tencent-cloud.com/sse/77977c99c3e6593c"

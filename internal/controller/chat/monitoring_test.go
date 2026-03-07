@@ -21,7 +21,7 @@ func TestMonitoringEndpoint(t *testing.T) {
 	})
 
 	// 创建 controller（不需要真实的 supervisor agent）
-	ctrl := NewV1(nil, logger, redisClient, nil, nil)
+	ctrl := NewV1(nil, logger, redisClient, nil, nil, nil, nil)
 
 	// 测试监控端点
 	req := &v1.MonitoringReq{}
@@ -38,7 +38,7 @@ func TestMonitoringEndpoint(t *testing.T) {
 func TestMonitoringWithCircuitBreakers(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 
-	ctrl := NewV1(nil, logger, nil, nil, nil)
+	ctrl := NewV1(nil, logger, nil, nil, nil, nil, nil)
 
 	// 创建一些熔断器
 	cb1 := ctrl.cbManager.GetOrCreate("test-cb-1", &concurrent.CircuitBreakerConfig{

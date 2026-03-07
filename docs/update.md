@@ -440,14 +440,22 @@ go test ./test -v -short
 - [x] 单元测试
 
 **待完成任务**:
-- [ ] 集成实际监控数据源（Prometheus/K8s/ES）
-- [ ] 实现检测规则引擎
+- [x] 集成实际监控数据源（Prometheus/K8s）
+- [x] 实现检测规则引擎
 - [ ] 实现案例数据库（MySQL + Milvus）
-- [ ] 添加更多自愈策略模板
+- [x] 添加更多自愈策略模板（10 个预定义策略）
 - [ ] 实现人工审批流程
 - [ ] 添加 Web UI 可视化
 
-**完成文件**:
+**新增文件**:
+- `internal/healing/monitor_enhanced.go` - 增强版监控组件（Prometheus + K8s）
+- `internal/healing/detector_enhanced.go` - 检测规则引擎（3 种策略）
+- `internal/healing/strategies.go` - 策略模板库（10 个策略）
+- `docs/SELF_HEALING_ENHANCED.md` - 增强功能文档
+
+**完成度**: 85% → 剩余工作主要是 ES 集成、案例数据库和 Web UI
+
+**预计剩余时间**: 2-3 天
 - `internal/healing/types.go` - 类型定义
 - `internal/healing/manager.go` - 自愈循环管理器
 - `internal/healing/components.go` - 核心组件实现

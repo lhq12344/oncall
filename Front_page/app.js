@@ -632,7 +632,15 @@ class SuperBizAgentApp {
     // 发送流式消息
     async sendStreamMessage(message) {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/chat_stream`, {
+            // 创建助手消息元素
+            const assistantMessageElement = this.addMessage('assistant', '', true);
+            let fullResponse = '';
+
+            // 使用 EventSource 接收 SSE
+            const url = `${this.apiBaseUrl}/chat_stream`;
+
+            // 由于 EventSource 不支持 POST，我们需要使用 fetch + ReadableStream
+            const response = await fetch(url, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -646,146 +654,93 @@ class SuperBizAgentApp {
             if (!response.ok) {
                 throw new Error(`HTTP错误: ${response.status}`);
             }
-            
-            // 创建助手消息元素
-            const assistantMessageElement = this.addMessage('assistant', '', true);
-            let fullResponse = '';
 
-            // 处理流式响应
+            // 处理 SSE 流
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
-            let currentEvent = '';
 
             try {
                 while (true) {
                     const { done, value } = await reader.read();
-                    
+
                     if (done) {
-                        // 流结束，将内容转换为Markdown渲染
-                        if (assistantMessageElement) {
-                            assistantMessageElement.classList.remove('streaming');
-                            const messageContent = assistantMessageElement.querySelector('.message-content');
-                            if (messageContent) {
-                                messageContent.innerHTML = this.renderMarkdown(fullResponse);
-                                // 高亮代码块
-                                this.highlightCodeBlocks(messageContent);
-                            }
-                        }
-                        // 保存流式消息到历史记录
-                        if (fullResponse) {
-                            this.currentChatHistory.push({
-                                type: 'assistant',
-                                content: fullResponse,
-                                timestamp: new Date().toISOString()
-                            });
-                            // 如果当前对话是从历史记录加载的，更新历史记录
-                            if (this.isCurrentChatFromHistory) {
-                                this.updateCurrentChatHistory();
-                                this.renderChatHistory();
-                            }
-                        }
                         break;
                     }
 
                     // 解码数据并添加到缓冲区
                     buffer += decoder.decode(value, { stream: true });
-                    
-                    // 按行分割处理
+
+                    // 按行分割处理 SSE 数据
                     const lines = buffer.split('\n');
-                    // 保留最后一行（可能不完整）
-                    buffer = lines.pop() || '';
-                    
+                    buffer = lines.pop() || ''; // 保留最后一行（可能不完整）
+
                     for (const line of lines) {
-                        if (line.trim() === '') continue;
-                        
-                        // 解析SSE格式
-                        if (line.startsWith('id: ')) {
-                            continue;
-                        } else if (line.startsWith('event: ')) {
-                            currentEvent = line.substring(7);
-                            if (currentEvent === 'connected') {
-                                console.log('流式连接确认');
-                            } else if (currentEvent === 'done') {
-                                // 流结束，将内容转换为Markdown渲染
-                                if (assistantMessageElement) {
-                                    assistantMessageElement.classList.remove('streaming');
-                                    const messageContent = assistantMessageElement.querySelector('.message-content');
-                                    if (messageContent) {
-                                        messageContent.innerHTML = this.renderMarkdown(fullResponse);
-                                        // 高亮代码块
-                                        this.highlightCodeBlocks(messageContent);
-                                    }
+                        if (!line.trim() || !line.startsWith('data: ')) continue;
+
+                        const data = line.substring(6); // 移除 "data: " 前缀
+
+                        // 检查是否是结束标记
+                        if (data === '[DONE]') {
+                            // 流结束，渲染完整的 Markdown
+                            if (assistantMessageElement) {
+                                assistantMessageElement.classList.remove('streaming');
+                                const messageContent = assistantMessageElement.querySelector('.message-content');
+                                if (messageContent) {
+                                    messageContent.innerHTML = this.renderMarkdown(fullResponse);
+                                    this.highlightCodeBlocks(messageContent);
                                 }
-                                // 保存流式消息到历史记录
-                                if (fullResponse) {
-                                    this.currentChatHistory.push({
-                                        type: 'assistant',
-                                        content: fullResponse,
-                                        timestamp: new Date().toISOString()
-                                    });
-                                    // 如果当前对话是从历史记录加载的，更新历史记录
-                                    if (this.isCurrentChatFromHistory) {
-                                        this.updateCurrentChatHistory();
-                                        this.renderChatHistory();
-                                    }
+                            }
+
+                            // 保存到历史记录
+                            if (fullResponse) {
+                                this.currentChatHistory.push({
+                                    type: 'assistant',
+                                    content: fullResponse,
+                                    timestamp: new Date().toISOString()
+                                });
+                                if (this.isCurrentChatFromHistory) {
+                                    this.updateCurrentChatHistory();
+                                    this.renderChatHistory();
                                 }
-                                return;
                             }
                             continue;
-                        } else if (line.startsWith('data: ')) {
-                            const data = line.substring(6);
-                            if (data === '[DONE]') {
-                                // 流结束标记，将内容转换为Markdown渲染
-                                if (assistantMessageElement) {
-                                    assistantMessageElement.classList.remove('streaming');
-                                    const messageContent = assistantMessageElement.querySelector('.message-content');
-                                    if (messageContent) {
-                                        messageContent.innerHTML = this.renderMarkdown(fullResponse);
-                                        // 高亮代码块
-                                        this.highlightCodeBlocks(messageContent);
-                                    }
-                                }
-                                // 保存流式消息到历史记录
-                                if (fullResponse) {
-                                    this.currentChatHistory.push({
-                                        type: 'assistant',
-                                        content: fullResponse,
-                                        timestamp: new Date().toISOString()
-                                    });
-                                    // 如果当前对话是从历史记录加载的，更新历史记录
-                                    if (this.isCurrentChatFromHistory) {
-                                        this.updateCurrentChatHistory();
-                                        this.renderChatHistory();
-                                    }
-                                }
-                                return;
-                            }
-                            
-                            // 只处理message事件的数据
-                            if (currentEvent === 'message') {
-                                // 如果 data 为空字符串，认为是换行
-                                if (data === '') {
-                                    fullResponse += '\n';
-                                } else {
-                                    fullResponse += data;
-                                }
-                                
-                                if (assistantMessageElement) {
-                                    const messageContent = assistantMessageElement.querySelector('.message-content');
-                                    // 流式消息暂时使用纯文本显示
-                                    messageContent.textContent = fullResponse;
-                                    this.scrollToBottom();
-                                }
+                        }
+
+                        // 检查是否是错误消息
+                        if (data.startsWith('[ERROR]')) {
+                            const errorMsg = data.substring(8);
+                            throw new Error(errorMsg);
+                        }
+
+                        // 累积响应内容
+                        fullResponse += data;
+
+                        // 实时更新显示（纯文本，避免频繁渲染 Markdown）
+                        if (assistantMessageElement) {
+                            const messageContent = assistantMessageElement.querySelector('.message-content');
+                            if (messageContent) {
+                                messageContent.textContent = fullResponse;
                             }
                         }
+
+                        // 自动滚动到底部
+                        this.scrollToBottom();
                     }
                 }
             } finally {
                 reader.releaseLock();
             }
+
         } catch (error) {
-            throw error;
+            console.error('流式消息发送失败:', error);
+            this.showNotification(`发送失败: ${error.message}`, 'error');
+
+            // 显示错误消息
+            this.addMessage('assistant', `抱歉，发生了错误：${error.message}`);
+        } finally {
+            this.isStreaming = false;
+            this.updateUI();
         }
     }
 
@@ -1061,7 +1016,7 @@ class SuperBizAgentApp {
         return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
     }
 
-    // 发送智能运维请求
+    // 发送智能运维请求（流式）
     async sendAIOpsRequest(loadingMessageElement) {
         try {
             const response = await fetch(`${this.apiBaseUrl}/ai_ops`, {
@@ -1075,24 +1030,65 @@ class SuperBizAgentApp {
                 throw new Error(`HTTP错误: ${response.status}`);
             }
 
-            const data = await response.json();
-            
-            if (data.message === 'OK' && data.data) {
-                // 解析Result中的response字段
-                let responseText = '';
-                try {
-                    const resultObj = JSON.parse(data.data.result);
-                    responseText = resultObj.response || data.data.result;
-                } catch (e) {
-                    // 如果解析失败，直接使用result
-                    responseText = data.data.result;
+            // 处理 SSE 流
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let fullContent = '';
+            let steps = [];
+
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+
+                    if (done) {
+                        break;
+                    }
+
+                    // 解码数据并添加到缓冲区
+                    buffer += decoder.decode(value, { stream: true });
+
+                    // 按行分割处理 SSE 数据
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (!line.trim() || !line.startsWith('data: ')) continue;
+
+                        const data = line.substring(6);
+
+                        try {
+                            const event = JSON.parse(data);
+
+                            if (event.type === 'step') {
+                                // 步骤信息
+                                steps.push(event.content);
+                                this.updateAIOpsMessage(loadingMessageElement, fullContent, steps);
+                            } else if (event.type === 'content') {
+                                // 内容信息
+                                fullContent += event.content;
+                                this.updateAIOpsMessage(loadingMessageElement, fullContent, steps);
+                            } else if (event.type === 'error') {
+                                // 错误信息
+                                throw new Error(event.content);
+                            } else if (event.type === 'done') {
+                                // 完成标记
+                                if (loadingMessageElement) {
+                                    loadingMessageElement.classList.remove('streaming');
+                                }
+                            }
+                        } catch (parseError) {
+                            console.warn('解析 SSE 数据失败:', parseError, data);
+                        }
+
+                        // 自动滚动到底部
+                        this.scrollToBottom();
+                    }
                 }
-                
-                // 更新消息内容
-                this.updateAIOpsMessage(loadingMessageElement, responseText, data.data.detail || []);
-            } else {
-                throw new Error(data.message || '未知错误');
+            } finally {
+                reader.releaseLock();
             }
+
         } catch (error) {
             throw error;
         }
