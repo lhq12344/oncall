@@ -2,6 +2,10 @@
 
 本文档说明如何将已实现的并发、缓存、熔断等优化功能集成到实际的 Agent 使用中。
 
+## ✅ 完成状态
+
+**所有集成任务已完成！** 详见 `INTEGRATION_STATUS.md`
+
 ## 概述
 
 我们已经实现了以下优化功能：
@@ -14,7 +18,25 @@
 7. ✅ 监控数据缓存（`internal/cache/monitoring_cache.go`）
 8. ✅ 缓存失效策略（`internal/cache/eviction.go`）
 
-现在需要将这些功能集成到实际的 Agent 调用中。
+**集成状态**：
+- ✅ Controller 层集成（缓存 + 熔断器）
+- ✅ Bootstrap 层初始化
+- ✅ 监控端点实现
+- ✅ 后台监控任务
+- ✅ 配置文件更新
+- ✅ Ops 集成示例
+
+## 快速开始
+
+查看使用指南：`OPTIMIZATION_USAGE.md`
+
+## 监控端点
+
+```bash
+curl http://localhost:6872/api/v1/monitoring
+```
+
+返回缓存命中率和熔断器状态。
 
 ## 集成方案
 

@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -23,12 +24,12 @@ func NewVectorCache(manager *Manager) *VectorCache {
 
 // VectorCacheKey 向量缓存键参数
 type VectorCacheKey struct {
-	AgentID      string  // Agent ID（确保隔离）
-	SessionID    string  // 会话 ID（确保隔离）
-	Query        string  // 查询文本
-	TopK         int     // 返回结果数量
+	AgentID        string  // Agent ID（确保隔离）
+	SessionID      string  // 会话 ID（确保隔离）
+	Query          string  // 查询文本
+	TopK           int     // 返回结果数量
 	ScoreThreshold float64 // 相似度阈值（可选）
-	Collection   string  // 集合名称
+	Collection     string  // 集合名称
 }
 
 // VectorCacheValue 向量缓存值
@@ -40,9 +41,9 @@ type VectorCacheValue struct {
 
 // VectorResult 向量检索结果
 type VectorResult struct {
-	ID      string                 // 文档 ID
-	Score   float64                // 相似度分数
-	Content string                 // 文档内容
+	ID       string                 // 文档 ID
+	Score    float64                // 相似度分数
+	Content  string                 // 文档内容
 	Metadata map[string]interface{} // 元数据
 }
 
@@ -84,7 +85,7 @@ func (c *VectorCache) Set(ctx context.Context, key *VectorCacheKey, results []Ve
 
 	value := &VectorCacheValue{
 		Results:   results,
-		Timestamp: ctx.Value("timestamp").(int64),
+		Timestamp: vectorCacheTimestampFromContext(ctx),
 		Query:     key.Query,
 	}
 
@@ -101,6 +102,15 @@ func (c *VectorCache) Set(ctx context.Context, key *VectorCacheKey, results []Ve
 	}
 
 	return nil
+}
+
+func vectorCacheTimestampFromContext(ctx context.Context) int64 {
+	if ctx != nil {
+		if ts, ok := ctx.Value(CacheTimestampContextKey).(int64); ok {
+			return ts
+		}
+	}
+	return time.Now().Unix()
 }
 
 // generateKey 生成缓存键

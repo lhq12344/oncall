@@ -421,20 +421,47 @@ go test ./test -v -short
 
 **预计时间**: 2-3 天
 
-### 3.4 功能增强 ⏳ 0%
+### 3.4 功能增强 ⏳ 30%
 
 #### 3.4.1 自愈循环（优先级 🔴 高）
 
-**当前状态**: 未实现
+**当前状态**: ✅ 基础框架完成（已集成到 Bootstrap 和 API）
+
+**已完成任务**:
+- [x] 设计自愈循环架构
+  - [x] 监控 → 检测 → 诊断 → 决策 → 执行 → 验证 → 学习
+- [x] 实现自动触发机制
+- [x] 实现验证失败重试（带指数退避）
+- [x] 实现学习反馈循环
+- [x] 集成到 Bootstrap
+- [x] 添加 API 端点（/healing/trigger, /healing/status）
+- [x] 实现会话管理
+- [x] 实现回滚机制
+- [x] 单元测试
 
 **待完成任务**:
-- [ ] 设计自愈循环架构
-  - [ ] 监控 → 检测 → 诊断 → 执行 → 验证 → 学习
-- [ ] 实现自动触发机制
-- [ ] 实现验证失败重试
-- [ ] 实现学习反馈循环
+- [ ] 集成实际监控数据源（Prometheus/K8s/ES）
+- [ ] 实现检测规则引擎
+- [ ] 实现案例数据库（MySQL + Milvus）
+- [ ] 添加更多自愈策略模板
+- [ ] 实现人工审批流程
+- [ ] 添加 Web UI 可视化
 
-**预计时间**: 1 周
+**完成文件**:
+- `internal/healing/types.go` - 类型定义
+- `internal/healing/manager.go` - 自愈循环管理器
+- `internal/healing/components.go` - 核心组件实现
+- `internal/healing/manager_test.go` - 单元测试
+- `docs/SELF_HEALING_DESIGN.md` - 架构设计文档
+- `docs/SELF_HEALING_USAGE.md` - 使用指南
+- `docs/SELF_HEALING_COMPLETION.md` - 完成报告
+- `test_healing_api.sh` - API 测试脚本
+
+**API 端点**:
+- `POST /api/v1/healing/trigger` - 触发自愈
+- `GET /api/v1/healing/status` - 查询自愈状态
+
+**预计剩余时间**: 2-3 天（完成数据源集成和策略模板）
 
 #### 3.4.2 更多执行模板（优先级 🟡 中）
 
