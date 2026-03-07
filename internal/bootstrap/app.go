@@ -15,6 +15,7 @@ import (
 	"go_agent/internal/ai/embedder"
 	"go_agent/internal/ai/models"
 	appcontext "go_agent/internal/context"
+	"go_agent/utility/mem"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/redis/go-redis/v9"
@@ -65,6 +66,11 @@ func NewApplication(cfg *Config) (*Application, error) {
 	}
 
 	logger.Info("redis connected", zap.String("addr", cfg.RedisAddr))
+
+	// 2.1 初始化 mem 工具（用于会话历史管理）
+	if err := mem.InitRedis(redisClient, nil); err != nil {
+		return nil, fmt.Errorf("failed to init mem utility: %w", err)
+	}
 
 	// 3. 初始化存储层
 	storage := appcontext.NewRedisStorage(redisClient, "oncall")

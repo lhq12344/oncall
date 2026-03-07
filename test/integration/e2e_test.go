@@ -19,9 +19,11 @@ func TestEndToEnd_SupervisorAgent(t *testing.T) {
 
 	// 创建应用
 	app, err := bootstrap.NewApplication(&bootstrap.Config{
-		RedisAddr: "localhost:6379",
-		RedisDB:   1,
-		LogLevel:  "info",
+		RedisAddr:     "localhost:30379", // K8s NodePort
+		RedisDB:       1,
+		LogLevel:      "info",
+		PrometheusURL: "http://localhost:30090", // K8s NodePort
+		KubeConfig:    "/home/lihaoqian/.kube/config",
 	})
 	if err != nil {
 		t.Fatalf("failed to create application: %v", err)
@@ -42,21 +44,30 @@ func TestEndToEnd_SupervisorAgent(t *testing.T) {
 
 	// 调用 Supervisor Agent
 	iter := app.SupervisorAgent.Run(ctx, input)
-	
+
 	// 读取结果
 	var lastMessage *schema.Message
+	eventCount := 0
 	for {
 		event, ok := iter.Next()
 		if !ok {
 			break
 		}
+		eventCount++
+		t.Logf("Event %d: %+v", eventCount, event)
+
 		if event != nil && event.Output != nil && event.Output.MessageOutput != nil {
 			msg, err := event.Output.MessageOutput.GetMessage()
-			if err == nil && msg != nil {
+			if err != nil {
+				t.Logf("Error getting message: %v", err)
+			} else if msg != nil {
 				lastMessage = msg
+				t.Logf("Got message: %s", msg.Content)
 			}
 		}
 	}
+
+	t.Logf("Total events: %d", eventCount)
 
 	// 验证输出
 	if lastMessage == nil {
@@ -76,9 +87,11 @@ func TestEndToEnd_MultiRound(t *testing.T) {
 	}
 
 	app, err := bootstrap.NewApplication(&bootstrap.Config{
-		RedisAddr: "localhost:6379",
-		RedisDB:   1,
-		LogLevel:  "info",
+		RedisAddr:     "localhost:30379", // K8s NodePort
+		RedisDB:       1,
+		LogLevel:      "info",
+		PrometheusURL: "http://localhost:30090", // K8s NodePort
+		KubeConfig:    "/home/lihaoqian/.kube/config",
 	})
 	if err != nil {
 		t.Fatalf("failed to create application: %v", err)
@@ -139,9 +152,11 @@ func TestEndToEnd_KnowledgeSearch(t *testing.T) {
 	}
 
 	app, err := bootstrap.NewApplication(&bootstrap.Config{
-		RedisAddr: "localhost:6379",
-		RedisDB:   1,
-		LogLevel:  "info",
+		RedisAddr:     "localhost:30379", // K8s NodePort
+		RedisDB:       1,
+		LogLevel:      "info",
+		PrometheusURL: "http://localhost:30090", // K8s NodePort
+		KubeConfig:    "/home/lihaoqian/.kube/config",
 	})
 	if err != nil {
 		t.Fatalf("failed to create application: %v", err)
