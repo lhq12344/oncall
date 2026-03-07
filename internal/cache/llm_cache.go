@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
@@ -14,6 +15,9 @@ type LLMCache struct {
 	logger  *zap.Logger
 }
 
+// CacheTimestampContextKey 上下文中的缓存时间戳键
+const CacheTimestampContextKey = "timestamp"
+
 // NewLLMCache 创建 LLM 缓存
 func NewLLMCache(manager *Manager) *LLMCache {
 	return &LLMCache{
@@ -24,11 +28,11 @@ func NewLLMCache(manager *Manager) *LLMCache {
 
 // LLMCacheKey LLM 缓存键参数
 type LLMCacheKey struct {
-	AgentID   string              // Agent ID（确保隔离）
-	SessionID string              // 会话 ID（确保隔离）
-	Messages  []*schema.Message   // 输入消息
-	Model     string              // 模型名称
-	Tools     []string            // 工具列表（可选）
+	AgentID   string                 // Agent ID（确保隔离）
+	SessionID string                 // 会话 ID（确保隔离）
+	Messages  []*schema.Message      // 输入消息
+	Model     string                 // 模型名称
+	Tools     []string               // 工具列表（可选）
 	Extra     map[string]interface{} // 额外参数（可选）
 }
 
@@ -76,7 +80,7 @@ func (c *LLMCache) Set(ctx context.Context, key *LLMCacheKey, response *schema.M
 
 	value := &LLMCacheValue{
 		Response:  response,
-		Timestamp: ctx.Value("timestamp").(int64),
+		Timestamp: cacheTimestampFromContext(ctx),
 		Model:     key.Model,
 	}
 
@@ -92,6 +96,15 @@ func (c *LLMCache) Set(ctx context.Context, key *LLMCacheKey, response *schema.M
 	}
 
 	return nil
+}
+
+func cacheTimestampFromContext(ctx context.Context) int64 {
+	if ctx != nil {
+		if ts, ok := ctx.Value(CacheTimestampContextKey).(int64); ok {
+			return ts
+		}
+	}
+	return time.Now().Unix()
 }
 
 // generateKey 生成缓存键（基于输入消息和参数）

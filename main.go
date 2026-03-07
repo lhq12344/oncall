@@ -98,8 +98,8 @@ func main() {
 		group.Middleware(middleware.CORSMiddleware)
 		group.Middleware(middleware.ResponseMiddleware)
 		group.Group("/v1", func(v1Group *ghttp.RouterGroup) {
-			// 创建 controller 并传入 supervisor agent
-			chatController := chat.NewV1(app.SupervisorAgent, app.Logger)
+			// 创建 controller 并传入 supervisor agent 和 healing manager
+			chatController := chat.NewV1(app.SupervisorAgent, app.Logger, app.RedisClient, app.OpsIntegration, app.HealingManager)
 			v1Group.Bind(chatController)
 		})
 	})
