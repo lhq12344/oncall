@@ -4,7 +4,7 @@
 
 **文档版本**: v4.0
 **更新时间**: 2026-03-07
-**当前完成度**: 75%
+**当前完成度**: 85%
 
 ---
 
@@ -41,9 +41,9 @@
 | **LLM**        | DeepSeek V3 (Volcengine Ark API) | ✅ 已集成   |
 | **向量数据库** | Milvus                           | ✅ 已集成   |
 | **会话存储**   | Redis                            | ✅ 已集成   |
-| **冷数据存储** | PostgreSQL                       | ⏳ 待集成   |
+| **冷数据存储** | MySQL (GORM)                       | ✅ 已集成   |
 | **监控**       | Prometheus + K8s API             | ✅ 已集成并验证   |
-| **日志**       | Loki / ElasticSearch / CLS       | ⏳ 待集成   |
+| **日志**       | Elasticsearch       | ⏳ 待集成   |
 | **前端**       | Vanilla JS                       | ✅ 保持现有 |
 
 ### 1.3 当前架构图
@@ -133,7 +133,7 @@
    - 知识库更新（指数移动平均）
    - 知识剪枝（删除低质量案例）
 
-### 2.2 外部服务集成 ✅ 70%
+### 2.2 外部服务集成 ✅ 100%
 
 | 服务 | 状态 | 完成度 | 说明 |
 |------|------|--------|------|
@@ -141,8 +141,8 @@
 | **Redis** | ✅ 完成 | 100% | 会话存储 |
 | **Kubernetes** | ✅ 完成 | 100% | 资源监控 |
 | **Prometheus** | ✅ 完成 | 100% | 指标采集 |
-| **日志系统** | ⚠️ 部分完成 | 50% | 模拟实现，待集成实际系统 |
-| **MySQL** | ⏳ 待集成 | 0% | 冷数据存储 |
+| **日志系统** | ✅ 完成 | 100% | Elasticsearch 集成 |
+| **MySQL** | ✅ 已集成 | 100% | 冷数据存储 |
 
 ### 2.3 技术亮点
 
@@ -156,38 +156,17 @@
 
 ## 三、未完成工作清单
 
-### 3.1 外部服务集成 ⏳ 30%
+### 3.1 外部服务集成 ✅ 100%
 
-#### 3.1.1 日志系统集成（优先级 🔴 高）
+**所有外部服务已完成集成！** 🎉
 
-**当前状态**: 模拟实现，返回示例数据
-
-**待完成任务**:
-- [ ] 集成 Loki 日志系统
-  - [ ] 创建 Loki 客户端
-  - [ ] 实现 LogQL 查询
-  - [ ] 实现日志流式读取
-- [ ] 或集成 ElasticSearch
-  - [ ] 创建 ES 客户端
-  - [ ] 实现 DSL 查询
-  - [ ] 实现日志聚合分析
-
-**预计时间**: 2-3 天
-
-#### 3.1.2 PostgreSQL 集成（优先级 🟡 中）
-
-**当前状态**: 未开始
-
-**待完成任务**:
-- [ ] 设计冷数据存储表结构
-  - [ ] 执行历史表
-  - [ ] 故障案例表
-  - [ ] 策略评估表
-- [ ] 创建 PostgreSQL 客户端
-- [ ] 实现数据归档逻辑
-- [ ] 实现数据查询接口
-
-**预计时间**: 2-3 天
+已完成的服务：
+- ✅ Milvus 向量数据库
+- ✅ Redis 会话存储
+- ✅ MySQL (GORM) 冷数据存储
+- ✅ Kubernetes API 资源监控
+- ✅ Prometheus 指标采集
+- ✅ Elasticsearch 日志查询
 
 ### 3.2 测试覆盖 ⏳ 0%
 
@@ -1044,10 +1023,9 @@ prometheus:
 
 | 任务                 | 优先级 | 预计时间 | 状态      |
 | -------------------- | ------ | -------- | --------- |
-| 集成实际日志系统     | 🔴 高  | 2-3 天   | ⏳ 待开始 |
-| 集成 PostgreSQL      | 🟡 中  | 2-3 天   | ⏳ 待开始 |
-| 完善 K8s 配置        | 🟡 中  | 1-2 天   | ⏳ 待开始 |
-| 完善 Prometheus 配置 | 🟡 中  | 1-2 天   | ⏳ 待开始 |
+| 集成实际日志系统     | 🔴 高  | 2-3 天   | ✅ 已完成 |
+| 完善 K8s 配置        | 🟡 中  | 1-2 天   | ✅ 已完成 |
+| 完善 Prometheus 配置 | 🟡 中  | 1-2 天   | ✅ 已完成 |
 
 **里程碑**: 完成所有外部服务集成
 
@@ -1365,6 +1343,160 @@ curl -X POST http://localhost:6872/api/v1/chat \
 | 组件 | 技术选型 | 状态 |
 |------|---------|------|
 | **监控** | Prometheus + K8s API | ✅ 已集成并验证 |
+
+---
+
+### 8.0.1 MySQL 冷数据存储集成确认 ✅
+
+**完成时间**: 2026-03-07 15:00
+
+**集成状态**:
+MySQL 已完全集成并投入使用，无需额外的 PostgreSQL。
+
+**已实现功能**:
+- ✅ GORM ORM 框架集成（`utility/mysql/mysql.go`）
+- ✅ 连接池配置（最大连接数、空闲连接、生命周期）
+- ✅ 慢查询日志（阈值 500ms）
+- ✅ 配置文件加载（支持环境变量覆盖）
+- ✅ 健康检查（Ping with timeout）
+- ✅ MySQL CRUD 工具（`internal/ai/tools/mysql_crud.go`）
+
+**MySQL CRUD 工具特性**:
+- 支持 SELECT 查询（带超时和行数限制）
+- 支持 INSERT/UPDATE/DELETE（可配置只读模式）
+- SQL 注入防护（基本校验）
+- 审批机制（危险操作需要确认）
+- 结果 JSON 序列化
+
+**配置示例**:
+```yaml
+mysql:
+  dsn: "root:123456@tcp(localhost:30306)/orm_test?charset=utf8mb4&parseTime=True&loc=Local"
+  max_open_conns: 50
+  max_idle_conns: 10
+  conn_max_lifetime: "30m"
+  conn_max_idle_time: "5m"
+  ping_timeout: "3s"
+  prepare_stmt: true
+  log_level: "warn"
+  slow_threshold: "500ms"
+```
+
+**使用场景**:
+- 存储告警历史记录
+- 存储运维操作日志
+- 存储策略评估结果
+- 存储知识库元数据
+
+**技术栈状态更新**:
+| 组件 | 技术选型 | 状态 |
+|------|---------|------|
+| **冷数据存储** | MySQL (GORM) | ✅ 已集成 |
+
+---
+
+### 8.0.2 Elasticsearch 日志系统集成 ✅
+
+**完成时间**: 2026-03-07 16:00
+
+**集成状态**:
+Elasticsearch 已完全集成并通过测试，替代了之前的模拟日志分析工具和腾讯云 CLS。
+
+**已实现功能**:
+- ✅ Elasticsearch v8 Go 客户端集成（`utility/elasticsearch/elasticsearch.go`）
+- ✅ 连接池和 TLS 配置
+- ✅ 支持多节点集群和 Elastic Cloud
+- ✅ 支持用户名/密码和 API Key 认证
+- ✅ ES 日志查询工具（`internal/agent/ops/tools/es_log_query.go`）
+- ✅ 降级模式（ES 不可用时返回友好提示）
+- ✅ 时间格式转换（Go duration -> ES format）
+
+**部署测试结果** ✅:
+- **镜像**: `swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/elasticsearch:8.9.2`
+- **部署状态**: Pod Running，端口 30920 可访问
+- **ES 版本**: 8.9.2
+- **集群状态**: Green
+
+**功能测试结果** ✅:
+```bash
+# 单元测试
+go test ./internal/agent/ops/tools -run TestESLogQueryTool_RealQuery -v
+PASS: TestESLogQueryTool_RealQuery (0.08s)
+
+# 查询结果示例
+{
+  "index": "logs-2024.03",
+  "level": "error",
+  "total_hits": 2,
+  "logs": [
+    {
+      "@timestamp": "2026-03-07T07:46:41.000Z",
+      "level": "error",
+      "message": "NullPointerException at com.example.Service.process",
+      "service": "user-service",
+      "pod": "user-service-xyz789",
+      "namespace": "default"
+    },
+    {
+      "@timestamp": "2026-03-07T07:46:21.000Z",
+      "level": "error",
+      "message": "Failed to connect to database: connection timeout",
+      "service": "api-server",
+      "pod": "api-server-abc123",
+      "namespace": "default"
+    }
+  ]
+}
+```
+
+**测试数据**:
+- ✅ 创建索引 `logs-2024.03`
+- ✅ 插入 3 条测试日志（2 条 error，1 条 warn）
+- ✅ 查询返回正确结果
+- ✅ 时间范围过滤正常
+- ✅ 日志级别过滤正常
+- ✅ ES 日志查询工具（`internal/agent/ops/tools/es_log_query.go`）
+- ✅ 降级模式（ES 不可用时返回友好提示）
+
+**ES 日志查询工具特性**:
+- 支持索引模式匹配（如 `logs-*`, `app-logs-2024.03.*`）
+- 支持 Lucene 查询语法（关键词搜索）
+- 支持时间范围过滤（5m, 1h, 24h 等）
+- 支持日志级别过滤（error/warn/info/debug）
+- 支持结果数量限制（默认 100，最大 1000）
+- 按时间戳降序排序
+
+**配置示例**:
+```yaml
+elasticsearch:
+  addresses:
+    - "http://localhost:30920"  # ES 集群地址
+  username: ""  # 用户名（可选）
+  password: ""  # 密码（可选）
+  timeout: "10s"  # 请求超时
+  tls_skip: true  # 跳过 TLS 验证（开发环境）
+```
+
+**查询示例**:
+```json
+{
+  "index": "logs-*",
+  "query": "error AND database",
+  "time_range": "1h",
+  "level": "error",
+  "size": 100
+}
+```
+
+**集成到 OpsAgent**:
+- 新增 `es_log_query` 工具用于实际日志查询
+- 保留 `log_analyzer` 工具作为备用（模式分析）
+- Agent 指令已更新，优先使用 ES 查询实际日志
+
+**技术栈状态更新**:
+| 组件 | 技术选型 | 状态 |
+|------|---------|------|
+| **日志系统** | Elasticsearch | ✅ 已集成 |
 
 ---
 
@@ -1822,7 +1954,7 @@ opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
    - 影响范围评估
 
 3. **集成实际日志系统**（优先级 🟡 中，预计 2-3 天）
-   - Loki / ElasticSearch / CLS
+   - Elasticsearch
    - 实时日志查询
    - 日志聚合分析
 
@@ -2239,7 +2371,7 @@ opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
 
 ### 完成情况
 
-**当前完成度**: 75%
+**当前完成度**: 85%
 
 **已完成的 7 个 Agent**:
 
@@ -2275,7 +2407,7 @@ opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
 **阶段 2：外部服务集成**（当前阶段，预计 2 周）
 
 1. 集成实际日志系统（Loki/ElasticSearch/CLS）
-2. 集成 PostgreSQL 冷数据存储
+2. 集成 MySQL (GORM) 冷数据存储
 3. 完善 K8s 和 Prometheus 配置
 
 **阶段 3：测试与优化**（预计 2 周）

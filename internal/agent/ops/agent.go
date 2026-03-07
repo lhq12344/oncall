@@ -54,7 +54,17 @@ func NewOpsAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 		toolsList = append(toolsList, metricsTool)
 	}
 
-	// 日志分析工具
+	// Elasticsearch 日志查询工具
+	esLogTool, err := tools.NewESLogQueryTool(cfg.Logger)
+	if err != nil {
+		if cfg.Logger != nil {
+			cfg.Logger.Warn("failed to create es log query tool", zap.Error(err))
+		}
+	} else {
+		toolsList = append(toolsList, esLogTool)
+	}
+
+	// 日志分析工具（保留作为备用）
 	logTool := tools.NewLogAnalyzerTool(cfg.Logger)
 	toolsList = append(toolsList, logTool)
 
@@ -77,9 +87,10 @@ func NewOpsAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 你的职责：
 1. 使用 k8s_monitor 工具查看 Kubernetes 资源状态（Pod、Node、Deployment）
 2. 使用 metrics_collector 工具采集 Prometheus 指标数据
-3. 使用 log_analyzer 工具分析日志中的异常模式
-4. 识别异常指标和潜在问题
-5. 提供初步的诊断建议
+3. 使用 es_log_query 工具查询 Elasticsearch 日志（支持关键词搜索、时间范围、日志级别过滤）
+4. 使用 log_analyzer 工具分析日志模式（备用工具）
+5. 识别异常指标和潜在问题
+6. 提供初步的诊断建议
 
 监控维度：
 - 资源使用：CPU、内存、磁盘、网络
@@ -88,6 +99,7 @@ func NewOpsAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 - 日志异常：错误日志、警告信息、异常堆栈
 
 注意：
+- 优先使用 es_log_query 查询实际日志数据
 - 关注指标的突变和趋势
 - 对比历史基线识别异常
 - 提供具体的数值和时间范围
