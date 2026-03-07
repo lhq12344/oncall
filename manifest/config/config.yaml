@@ -10,20 +10,20 @@ logger:
   stdout: true
 
 ds_think_chat_model:
-  api_key: "64b48697-0df7-44d0-b8fe-5ab19e789865"
-  base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "deepseek-v3-1-terminus"
+  api_key: "sk-ImoWDGMu3iS7V3cpr9C3eOZEOWZsqJ6aTkAMiSAEvgfvOmqM"
+  base_url: "http://newapi.200m.997555.xyz/v1"
+  model: "claude-opus-4-6"  # Claude Opus 4.6
 
 ds_quick_chat_model:
-  api_key: "64b48697-0df7-44d0-b8fe-5ab19e789865"
-  base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "deepseek-v3-1-terminus"
+  api_key: "sk-ImoWDGMu3iS7V3cpr9C3eOZEOWZsqJ6aTkAMiSAEvgfvOmqM"
+  base_url: "http://newapi.200m.997555.xyz/v1"
+  model: "claude-sonnet-4-6"  # Claude Sonnet 4.6 (更快)
 
 doubao_embedding_model:
-  api_key: "64b48697-0df7-44d0-b8fe-5ab19e789865"
+  api_key: "c3b9d277-0f82-4ef0-970a-1f3b5607c861"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "doubao-embedding-vision-250615"
-  dimensions: 2048
+  model: "doubao-embedding-text-240515"  # Doubao Embedding text-240515
+  dimensions: 1024  # text-240515 使用 1024 维度
 
 file_dir: "/home/lihaoqian/myproject/go_agent/docs/"
 cls_mcp_url: "https://mcp-api.tencent-cloud.com/sse/77977c99c3e6593c"
