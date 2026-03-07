@@ -23,6 +23,10 @@ type Config struct {
 
 // NewKnowledgeAgent 创建 Knowledge Agent（基于 ChatModelAgent + RAG）
 func NewKnowledgeAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is required")
+	}
+
 	if cfg.ChatModel == nil {
 		return nil, fmt.Errorf("chat model is required")
 	}
@@ -30,14 +34,18 @@ func NewKnowledgeAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	// 初始化 Milvus Retriever
 	milvusRetriever, err := retriever.NewMilvusRetriever(ctx)
 	if err != nil {
-		cfg.Logger.Warn("failed to create milvus retriever, using placeholder", zap.Error(err))
+		if cfg.Logger != nil {
+			cfg.Logger.Warn("failed to create milvus retriever, using placeholder", zap.Error(err))
+		}
 		milvusRetriever = nil
 	}
 
 	// 初始化 Milvus Indexer
 	milvusIndexer, err := indexer.NewMilvusIndexer(ctx)
 	if err != nil {
-		cfg.Logger.Warn("failed to create milvus indexer, using placeholder", zap.Error(err))
+		if cfg.Logger != nil {
+			cfg.Logger.Warn("failed to create milvus indexer, using placeholder", zap.Error(err))
+		}
 		milvusIndexer = nil
 	}
 
@@ -75,9 +83,11 @@ func NewKnowledgeAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 		return nil, fmt.Errorf("failed to create knowledge agent: %w", err)
 	}
 
-	cfg.Logger.Info("knowledge agent created",
-		zap.Bool("retriever_available", milvusRetriever != nil),
-		zap.Bool("indexer_available", milvusIndexer != nil))
+	if cfg.Logger != nil {
+		cfg.Logger.Info("knowledge agent created",
+			zap.Bool("retriever_available", milvusRetriever != nil),
+			zap.Bool("indexer_available", milvusIndexer != nil))
+	}
 
 	return agent, nil
 }

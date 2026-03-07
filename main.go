@@ -83,7 +83,9 @@ func main() {
 		group.Middleware(middleware.CORSMiddleware)
 		group.Middleware(middleware.ResponseMiddleware)
 		group.Group("/v1", func(v1Group *ghttp.RouterGroup) {
-			v1Group.Bind(chat.NewV1())
+			// 创建 controller 并传入 supervisor agent
+			chatController := chat.NewV1(app.SupervisorAgent, app.Logger)
+			v1Group.Bind(chatController)
 		})
 	})
 	s.SetPort(6872)

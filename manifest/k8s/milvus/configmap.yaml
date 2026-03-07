@@ -11,7 +11,7 @@ data:
     minio:
       address: minio:9000
       accessKeyID: minioadmin
-      secretAccessKey: minioadmin
+      secretAccessKey: minioadmin12345678
       useSSL: false
       bucketName: milvus-bucket
     common:

@@ -4,19 +4,31 @@ import (
 	"context"
 	"fmt"
 	"go_agent/utility/common"
+	"os"
 
 	cli "github.com/milvus-io/milvus-sdk-go/v2/client"
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
 )
 
+// getMilvusAddress 获取 Milvus 地址，优先使用环境变量
+func getMilvusAddress() string {
+	if addr := os.Getenv("MILVUS_ADDRESS"); addr != "" {
+		return addr
+	}
+	// 默认使用 localhost
+	return "localhost:31953"
+}
+
 func NewMilvusClient(ctx context.Context) (cli.Client, error) {
+	address := getMilvusAddress()
+
 	// 1. 先连接default数据库
 	defaultClient, err := cli.NewClient(ctx, cli.Config{
-		Address: "192.168.149.128:19530",
+		Address: address,
 		DBName:  "default",
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to default database: %w", err)
+		return nil, fmt.Errorf("failed to connect to default database at %s: %w", address, err)
 	}
 	// 2. 检查agent数据库是否存在，不存在则创建
 	databases, err := defaultClient.ListDatabases(ctx)
@@ -39,7 +51,7 @@ func NewMilvusClient(ctx context.Context) (cli.Client, error) {
 
 	// 3. 创建连接到agent数据库的客户端
 	agentClient, err := cli.NewClient(ctx, cli.Config{
-		Address: "192.168.149.128:19530",
+		Address: address,
 		DBName:  common.MilvusDBName,
 	})
 	if err != nil {

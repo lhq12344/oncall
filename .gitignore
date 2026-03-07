@@ -35,3 +35,7 @@ Thumbs.db
 
 # Docker volumes and build data
 manifest/docker/volumes/
+
+#AI file
+.claude/
+CLAUDE.*

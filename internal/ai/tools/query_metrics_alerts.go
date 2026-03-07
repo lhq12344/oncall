@@ -51,7 +51,7 @@ type PrometheusAlertsOutput struct {
 
 // queryPrometheusAlerts 查询Prometheus告警
 func queryPrometheusAlerts() (PrometheusAlertsResult, error) {
-	baseURL := "http://192.168.149.128:9090"
+	baseURL := "http://127.0.0.1:9090"
 	apiURL := fmt.Sprintf("%s/api/v1/alerts", baseURL)
 
 	log.Printf("Querying Prometheus alerts: %s", apiURL)

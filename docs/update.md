@@ -1,8 +1,9 @@
 # Oncall 系统升级文档（基于当前架构）
+
 ## 基于 Eino ADK Supervisor 模式的多 Agent 自主运维系统
 
-**文档版本**: v3.0
-**更新时间**: 2026-03-06
+**文档版本**: v4.0
+**更新时间**: 2026-03-07
 **当前完成度**: 75%
 
 ---
@@ -10,12 +11,13 @@
 ## 📋 目录
 
 1. [系统架构概览](#一系统架构概览)
-2. [已实现的 Agent](#二已实现的-agent)
-3. [待实现的 Agent](#三待实现的-agent)
-4. [外部服务集成](#四外部服务集成)
+2. [已完成工作总结](#二已完成工作总结)
+3. [未完成工作清单](#三未完成工作清单)
+4. [新增工作计划](#四新增工作计划)
 5. [开发路线图](#五开发路线图)
 6. [技术实现细节](#六技术实现细节)
 7. [部署与运维](#七部署与运维)
+8. [附录：详细完成报告](#八附录详细完成报告)
 
 ---
 
@@ -33,20 +35,20 @@
 
 ### 1.2 技术栈
 
-| 组件 | 技术选型 | 状态 |
-|------|---------|------|
-| **框架** | GoFrame + Eino ADK | ✅ 已集成 |
-| **LLM** | DeepSeek V3 (Volcengine Ark API) | ✅ 已集成 |
-| **向量数据库** | Milvus | ✅ 已集成 |
-| **会话存储** | Redis | ✅ 已集成 |
-| **冷数据存储** | PostgreSQL | ⏳ 待集成 |
-| **监控** | Prometheus + K8s API | ⏳ 待集成 |
-| **日志** | Loki / ElasticSearch / CLS | ⏳ 待集成 |
-| **前端** | Vanilla JS | ✅ 保持现有 |
+| 组件           | 技术选型                         | 状态        |
+| -------------- | -------------------------------- | ----------- |
+| **框架**       | GoFrame + Eino ADK               | ✅ 已集成   |
+| **LLM**        | DeepSeek V3 (Volcengine Ark API) | ✅ 已集成   |
+| **向量数据库** | Milvus                           | ✅ 已集成   |
+| **会话存储**   | Redis                            | ✅ 已集成   |
+| **冷数据存储** | PostgreSQL                       | ⏳ 待集成   |
+| **监控**       | Prometheus + K8s API             | ✅ 已集成并验证   |
+| **日志**       | Loki / ElasticSearch / CLS       | ⏳ 待集成   |
+| **前端**       | Vanilla JS                       | ✅ 保持现有 |
 
 ### 1.3 当前架构图
 
-```
+````
 ┌─────────────────────────────────────────────────────────────┐
 │                      HTTP Server (GoFrame)                   │
 │                         Port: 6872                           │
@@ -72,12 +74,349 @@
 
 ---
 
-## 二、已实现的 Agent
+## 二、已完成工作总结
 
-### 2.1 SupervisorAgent (总控代理) ✅
+### 2.1 核心架构 ✅ 100%
 
-**文件**: `internal/agent/supervisor/agent.go`  
-**代码量**: 99 行  
+**完成时间**: 2026-03-06
+
+#### 已完成的 7 个 Agent
+
+| Agent | 代码量 | 核心功能 | 状态 |
+|-------|--------|---------|------|
+| **SupervisorAgent** | 99 行 | 总控代理，协调所有子 Agent | ✅ 完成 |
+| **KnowledgeAgent** | 276 行 | RAG 检索、知识索引、案例排序 | ✅ 完成 |
+| **DialogueAgent** | 450+ 行 | 意图分析、问题预测、对话状态跟踪 | ✅ 完成 |
+| **OpsAgent** | 920+ 行 | K8s/Prometheus/日志监控 | ✅ 完成 |
+| **ExecutionAgent** | 950+ 行 | 安全执行、回滚、验证 | ✅ 完成 |
+| **RCAAgent** | 1050+ 行 | 根因分析、依赖图、信号关联 | ✅ 完成 |
+| **StrategyAgent** | 750+ 行 | 策略评估、优化、知识管理 | ✅ 完成 |
+
+**总代码量**: 5000+ 行
+
+#### 核心能力
+
+1. **智能对话** ✅
+   - 意图分析（5 种类型：monitor/diagnose/knowledge/execute/general）
+   - 语义熵计算（评估意图明确程度）
+   - 问题预测（LLM + 模板降级）
+   - 对话状态跟踪
+
+2. **知识检索** ✅
+   - Milvus 向量检索（Doubao Embedding 2048 维）
+   - 多维度排序（50% 相似度 + 30% 时效性 + 20% 成功率）
+   - 知识索引（自动创建 Collection）
+   - 优雅降级
+
+3. **系统监控** ✅
+   - K8s 资源监控（Pod/Node/Deployment/Service）
+   - Prometheus 指标采集（PromQL 查询）
+   - 日志分析（模式检测、异常识别）
+   - 多维度监控
+
+4. **安全执行** ✅
+   - 命令白名单验证
+   - 参数安全检查（防注入）
+   - 沙盒执行环境
+   - 自动回滚机制
+   - 演练模式（dry_run）
+
+5. **根因分析** ✅
+   - 依赖图构建（拓扑排序）
+   - 信号关联（时间窗口对齐）
+   - 根因推理（BFS 反向搜索）
+   - 影响分析（前向传播）
+
+6. **策略优化** ✅
+   - 质量评估（成功率、时长、回滚次数）
+   - LLM 增强优化
+   - 知识库更新（指数移动平均）
+   - 知识剪枝（删除低质量案例）
+
+### 2.2 外部服务集成 ✅ 70%
+
+| 服务 | 状态 | 完成度 | 说明 |
+|------|------|--------|------|
+| **Milvus** | ✅ 完成 | 100% | 向量检索和索引 |
+| **Redis** | ✅ 完成 | 100% | 会话存储 |
+| **Kubernetes** | ✅ 完成 | 100% | 资源监控 |
+| **Prometheus** | ✅ 完成 | 100% | 指标采集 |
+| **日志系统** | ⚠️ 部分完成 | 50% | 模拟实现，待集成实际系统 |
+| **MySQL** | ⏳ 待集成 | 0% | 冷数据存储 |
+
+### 2.3 技术亮点
+
+1. **多 Agent 协作** - 基于 Eino ADK Supervisor 模式
+2. **优雅降级** - 所有外部依赖失败时不会崩溃
+3. **LLM 增强** - 关键决策使用 DeepSeek V3
+4. **完整的安全机制** - 三层防护（白名单+参数检查+黑名单）
+5. **智能算法** - 语义熵、指数移动平均、BFS 搜索
+
+---
+
+## 三、未完成工作清单
+
+### 3.1 外部服务集成 ⏳ 30%
+
+#### 3.1.1 日志系统集成（优先级 🔴 高）
+
+**当前状态**: 模拟实现，返回示例数据
+
+**待完成任务**:
+- [ ] 集成 Loki 日志系统
+  - [ ] 创建 Loki 客户端
+  - [ ] 实现 LogQL 查询
+  - [ ] 实现日志流式读取
+- [ ] 或集成 ElasticSearch
+  - [ ] 创建 ES 客户端
+  - [ ] 实现 DSL 查询
+  - [ ] 实现日志聚合分析
+
+**预计时间**: 2-3 天
+
+#### 3.1.2 PostgreSQL 集成（优先级 🟡 中）
+
+**当前状态**: 未开始
+
+**待完成任务**:
+- [ ] 设计冷数据存储表结构
+  - [ ] 执行历史表
+  - [ ] 故障案例表
+  - [ ] 策略评估表
+- [ ] 创建 PostgreSQL 客户端
+- [ ] 实现数据归档逻辑
+- [ ] 实现数据查询接口
+
+**预计时间**: 2-3 天
+
+### 3.2 测试覆盖 ⏳ 0%
+
+#### 3.2.1 单元测试（优先级 🔴 高）
+
+**待完成任务**:
+- [ ] KnowledgeAgent 单元测试
+  - [ ] VectorSearchTool 测试
+  - [ ] KnowledgeIndexTool 测试
+  - [ ] CaseRanker 测试
+- [ ] DialogueAgent 单元测试
+  - [ ] IntentAnalysisTool 测试
+  - [ ] QuestionPredictionTool 测试
+- [ ] OpsAgent 单元测试
+  - [ ] K8sMonitorTool 测试
+  - [ ] MetricsCollectorTool 测试
+  - [ ] LogAnalyzerTool 测试
+- [ ] ExecutionAgent 单元测试
+  - [ ] GeneratePlanTool 测试
+  - [ ] ExecuteStepTool 测试
+  - [ ] ValidateResultTool 测试
+  - [ ] RollbackTool 测试
+- [ ] RCAAgent 单元测试
+  - [ ] BuildDependencyGraphTool 测试
+  - [ ] CorrelateSignalsTool 测试
+  - [ ] InferRootCauseTool 测试
+  - [ ] AnalyzeImpactTool 测试
+- [ ] StrategyAgent 单元测试
+  - [ ] EvaluateStrategyTool 测试
+  - [ ] OptimizeStrategyTool 测试
+  - [ ] UpdateKnowledgeTool 测试
+  - [ ] PruneKnowledgeTool 测试
+
+**预计时间**: 3-4 天
+
+#### 3.2.2 集成测试（优先级 🟡 中）
+
+**待完成任务**:
+- [ ] Milvus 集成测试
+- [ ] K8s 集成测试（需要本地集群）
+- [ ] Prometheus 集成测试
+- [ ] Redis 集成测试
+- [ ] 端到端测试（完整对话流程）
+
+**预计时间**: 2-3 天
+
+### 3.3 性能优化 ⏳ 0%
+
+#### 3.3.1 并发处理（优先级 🟡 中）
+
+**待完成任务**:
+- [ ] 实现 Agent 并行调用
+- [ ] 实现工具并行执行
+- [ ] 添加超时控制
+- [ ] 添加熔断机制
+
+**预计时间**: 2-3 天
+
+#### 3.3.2 缓存机制（优先级 🟡 中）
+
+**待完成任务**:
+- [ ] 实现 LLM 响应缓存
+- [ ] 实现向量检索缓存
+- [ ] 实现监控数据缓存
+- [ ] 实现缓存失效策略
+
+**预计时间**: 2-3 天
+
+#### 3.3.3 响应时间优化（优先级 🟢 低）
+
+**待完成任务**:
+- [ ] 优化 Milvus 查询性能
+- [ ] 优化 LLM 调用延迟
+- [ ] 优化日志查询性能
+- [ ] 添加性能监控
+
+**预计时间**: 2-3 天
+
+### 3.4 功能增强 ⏳ 0%
+
+#### 3.4.1 自愈循环（优先级 🔴 高）
+
+**当前状态**: 未实现
+
+**待完成任务**:
+- [ ] 设计自愈循环架构
+  - [ ] 监控 → 检测 → 诊断 → 执行 → 验证 → 学习
+- [ ] 实现自动触发机制
+- [ ] 实现验证失败重试
+- [ ] 实现学习反馈循环
+
+**预计时间**: 1 周
+
+#### 3.4.2 更多执行模板（优先级 🟡 中）
+
+**当前状态**: 只有基础模板（重启、扩容、缩容）
+
+**待完成任务**:
+- [ ] 添加数据库故障处理模板
+- [ ] 添加网络故障处理模板
+- [ ] 添加存储故障处理模板
+- [ ] 添加应用故障处理模板
+
+**预计时间**: 2-3 天
+
+#### 3.4.3 更智能的根因推理（优先级 🟡 中）
+
+**当前状态**: 基础 BFS 搜索 + LLM 增强
+
+**待完成任务**:
+- [ ] 实现概率图模型
+- [ ] 实现贝叶斯网络推理
+- [ ] 实现因果推断算法
+- [ ] 集成历史故障模式
+
+**预计时间**: 1 周
+
+### 3.5 文档完善 ⏳ 50%
+
+**待完成任务**:
+- [ ] 添加 API 文档
+- [ ] 添加部署文档
+- [ ] 添加运维手册
+- [ ] 添加故障排查指南
+- [ ] 添加最佳实践文档
+
+**预计时间**: 2-3 天
+
+---
+
+## 四、新增工作计划
+
+### 4.1 监控告警集成（优先级 🔴 高）
+
+**目标**: 实现主动监控和告警处理
+
+**新增任务**:
+- [ ] 集成 Prometheus Alertmanager
+  - [ ] 接收告警 webhook
+  - [ ] 解析告警规则
+  - [ ] 自动触发诊断流程
+- [ ] 实现告警聚合
+  - [ ] 相同告警去重
+  - [ ] 相关告警关联
+  - [ ] 告警优先级排序
+- [ ] 实现告警通知
+  - [ ] 企业微信通知
+  - [ ] 钉钉通知
+  - [ ] 邮件通知
+
+**预计时间**: 1 周
+
+### 4.2 可视化界面增强（优先级 🟡 中）
+
+**目标**: 提升用户体验
+
+**新增任务**:
+- [ ] 实现依赖图可视化
+  - [ ] 使用 D3.js 或 ECharts
+  - [ ] 实时更新节点状态
+  - [ ] 支持交互式探索
+- [ ] 实现执行计划可视化
+  - [ ] 步骤流程图
+  - [ ] 实时执行状态
+  - [ ] 回滚路径展示
+- [ ] 实现根因分析可视化
+  - [ ] 时间线展示
+  - [ ] 信号关联图
+  - [ ] 假设置信度展示
+
+**预计时间**: 1 周
+
+### 4.3 多租户支持（优先级 🟢 低）
+
+**目标**: 支持多团队使用
+
+**新增任务**:
+- [ ] 设计租户隔离架构
+- [ ] 实现租户管理
+- [ ] 实现权限控制
+- [ ] 实现资源配额
+
+**预计时间**: 1 周
+
+### 4.4 审计日志（优先级 🟡 中）
+
+**目标**: 记录所有操作历史
+
+**新增任务**:
+- [ ] 设计审计日志表结构
+- [ ] 实现操作记录
+- [ ] 实现日志查询
+- [ ] 实现日志导出
+
+**预计时间**: 2-3 天
+
+### 4.5 配置管理（优先级 🟡 中）
+
+**目标**: 动态配置管理
+
+**新增任务**:
+- [ ] 实现配置热更新
+- [ ] 实现配置版本管理
+- [ ] 实现配置回滚
+- [ ] 实现配置审计
+
+**预计时间**: 2-3 天
+
+### 4.6 指标统计（优先级 🟡 中）
+
+**目标**: 系统运行指标统计
+
+**新增任务**:
+- [ ] 实现 Agent 调用统计
+- [ ] 实现工具使用统计
+- [ ] 实现故障处理统计
+- [ ] 实现性能指标统计
+- [ ] 实现报表生成
+
+**预计时间**: 2-3 天
+
+---
+
+## 五、开发路线图
+
+### 8.1 SupervisorAgent (总控代理) ✅
+
+**文件**: `internal/agent/supervisor/agent.go`
+**代码量**: 99 行
 **实现状态**: 基础架构完成
 
 #### 核心实现
@@ -92,7 +431,7 @@ supervisorAgent, err := supervisor.New(ctx, &supervisor.Config{
         opsAgent,
     },
 })
-```
+````
 
 #### 系统提示词（Instruction）
 
@@ -119,7 +458,7 @@ supervisorAgent, err := supervisor.New(ctx, &supervisor.Config{
 
 ---
 
-### 2.2 KnowledgeAgent (知识库代理) ✅
+### 8.2 KnowledgeAgent (知识库代理) ✅
 
 **文件**: `internal/agent/knowledge/agent.go`
 **代码量**: 276 行
@@ -147,10 +486,10 @@ agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 
 #### 工具列表
 
-| 工具名称 | 功能 | 参数 | 实现状态 |
-|---------|------|------|---------|
-| `vector_search` | 基于语义相似度检索历史故障案例 | query (必填), top_k (可选) | ✅ 已完成 |
-| `knowledge_index` | 将新案例索引到知识库 | content (必填), metadata (可选) | ✅ 已完成 |
+| 工具名称          | 功能                           | 参数                            | 实现状态  |
+| ----------------- | ------------------------------ | ------------------------------- | --------- |
+| `vector_search`   | 基于语义相似度检索历史故障案例 | query (必填), top_k (可选)      | ✅ 已完成 |
+| `knowledge_index` | 将新案例索引到知识库           | content (必填), metadata (可选) | ✅ 已完成 |
 
 #### 已完成功能
 
@@ -165,7 +504,7 @@ agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 
 ---
 
-### 2.3 DialogueAgent (对话代理) ✅
+### 8.3 DialogueAgent (对话代理) ✅
 
 **文件**: `internal/agent/dialogue/agent.go`
 **代码量**: 450+ 行
@@ -173,9 +512,9 @@ agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 
 #### 工具列表
 
-| 工具名称 | 功能 | 参数 | 实现状态 |
-|---------|------|------|---------|
-| `intent_analysis` | 分析用户意图类型和明确程度 | user_input (必填) | ✅ 已完成 |
+| 工具名称              | 功能                         | 参数                         | 实现状态  |
+| --------------------- | ---------------------------- | ---------------------------- | --------- |
+| `intent_analysis`     | 分析用户意图类型和明确程度   | user_input (必填)            | ✅ 已完成 |
 | `question_prediction` | 预测用户下一步可能提出的问题 | context (必填), count (可选) | ✅ 已完成 |
 
 #### 意图分类
@@ -204,7 +543,7 @@ agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 
 ---
 
-### 2.4 OpsAgent (运维代理) ✅
+### 8.4 OpsAgent (运维代理) ✅
 
 **文件**: `internal/agent/ops/agent.go` + `tools/*.go`
 **代码量**: 600+ 行
@@ -212,11 +551,11 @@ agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 
 #### 工具列表
 
-| 工具名称 | 功能 | 参数 | 实现状态 |
-|---------|------|------|---------|
-| `k8s_monitor` | 监控 K8s 资源状态 | namespace, resource_type, resource_name | ✅ 已完成 |
-| `metrics_collector` | 采集 Prometheus 指标��据 | query, time_range | ✅ 已完成 |
-| `log_analyzer` | 分析日志中的异常模式 | source, time_range, level | ✅ 已完成 |
+| 工具名称            | 功能                     | 参数                                    | 实现状态  |
+| ------------------- | ------------------------ | --------------------------------------- | --------- |
+| `k8s_monitor`       | 监控 K8s 资源状态        | namespace, resource_type, resource_name | ✅ 已完成 |
+| `metrics_collector` | 采集 Prometheus 指标��据 | query, time_range                       | ✅ 已完成 |
+| `log_analyzer`      | 分析日志中的异常模式     | source, time_range, level               | ✅ 已完成 |
 
 #### 监控维度
 
@@ -253,7 +592,7 @@ agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 
 所有 Agent 已全部实现完成！以下是详细信息：
 
-### 3.1 ExecutionAgent (执行代理) ✅
+### 8.5 ExecutionAgent (执行代理) ✅
 
 **优先级**: 🔴 高
 **代码量**: 600+ 行
@@ -346,18 +685,18 @@ agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 
 #### 代码统计
 
-| 文件 | 行数 | 说明 |
-|------|------|------|
-| `internal/agent/execution/agent.go` | 100 | ExecutionAgent 主文件 |
-| `internal/agent/execution/tools/generate_plan.go` | 350+ | 执行计划生成 |
-| `internal/agent/execution/tools/execute_step.go` | 200+ | 步骤执行 |
-| `internal/agent/execution/tools/validate_result.go` | 150+ | 结果验证 |
-| `internal/agent/execution/tools/rollback.go` | 150+ | 回滚操作 |
-| **总计** | **950+** | |
+| 文件                                                | 行数     | 说明                  |
+| --------------------------------------------------- | -------- | --------------------- |
+| `internal/agent/execution/agent.go`                 | 100      | ExecutionAgent 主文件 |
+| `internal/agent/execution/tools/generate_plan.go`   | 350+     | 执行计划生成          |
+| `internal/agent/execution/tools/execute_step.go`    | 200+     | 步骤执行              |
+| `internal/agent/execution/tools/validate_result.go` | 150+     | 结果验证              |
+| `internal/agent/execution/tools/rollback.go`        | 150+     | 回滚操作              |
+| **总计**                                            | **950+** |                       |
 
 ---
 
-### 3.2 RCAAgent (根因分析代理) ✅
+### 8.6 RCAAgent (根因分析代理) ✅
 
 **优先级**: 🔴 高
 **代码量**: 700+ 行
@@ -454,18 +793,18 @@ agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 
 #### 代码统计
 
-| 文件 | 行数 | 说明 |
-|------|------|------|
-| `internal/agent/rca/agent.go` | 100 | RCAAgent 主文件 |
-| `internal/agent/rca/tools/build_dependency_graph.go` | 250+ | 依赖图构建 |
-| `internal/agent/rca/tools/correlate_signals.go` | 250+ | 信号关联 |
-| `internal/agent/rca/tools/infer_root_cause.go` | 300+ | 根因推理 |
-| `internal/agent/rca/tools/analyze_impact.go` | 150+ | 影响分析 |
-| **总计** | **1050+** | |
+| 文件                                                 | 行数      | 说明            |
+| ---------------------------------------------------- | --------- | --------------- |
+| `internal/agent/rca/agent.go`                        | 100       | RCAAgent 主文件 |
+| `internal/agent/rca/tools/build_dependency_graph.go` | 250+      | 依赖图构建      |
+| `internal/agent/rca/tools/correlate_signals.go`      | 250+      | 信号关联        |
+| `internal/agent/rca/tools/infer_root_cause.go`       | 300+      | 根因推理        |
+| `internal/agent/rca/tools/analyze_impact.go`         | 150+      | 影响分析        |
+| **总计**                                             | **1050+** |                 |
 
 ---
 
-### 3.3 StrategyAgent (策略代理) ✅
+### 8.7 StrategyAgent (策略代理) ✅
 
 **优先级**: 🟡 中
 **代码量**: 600+ 行
@@ -503,6 +842,7 @@ agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 #### 核心算法
 
 **质量评估算法**：
+
 ```
 质量分数 = 成功率×50% + 时长分数×30% + 回滚分数×20%
 - excellent: 分数 ≥ 90
@@ -512,6 +852,7 @@ agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 ```
 
 **权重更新算法**（指数移动平均）：
+
 ```
 新权重 = α×当前表现 + (1-α)×旧权重
 其中 α = 0.3（学习率）
@@ -520,6 +861,7 @@ agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 ```
 
 **剪枝规则**：
+
 ```
 删除条件：
 1. 权重 < 0.3
@@ -529,20 +871,20 @@ agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 
 #### 代码统计
 
-| 文件 | 行数 | 说明 |
-|------|------|------|
-| `internal/agent/strategy/agent.go` | 100 | StrategyAgent 主文件 |
-| `internal/agent/strategy/tools/evaluate_strategy.go` | 200+ | 策略评估 |
-| `internal/agent/strategy/tools/optimize_strategy.go` | 150+ | 策略优化 |
-| `internal/agent/strategy/tools/update_knowledge.go` | 150+ | 知识库更新 |
-| `internal/agent/strategy/tools/prune_knowledge.go` | 150+ | 知识剪枝 |
-| **总计** | **750+** | |
+| 文件                                                 | 行数     | 说明                 |
+| ---------------------------------------------------- | -------- | -------------------- |
+| `internal/agent/strategy/agent.go`                   | 100      | StrategyAgent 主文件 |
+| `internal/agent/strategy/tools/evaluate_strategy.go` | 200+     | 策略评估             |
+| `internal/agent/strategy/tools/optimize_strategy.go` | 150+     | 策略优化             |
+| `internal/agent/strategy/tools/update_knowledge.go`  | 150+     | 知识库更新           |
+| `internal/agent/strategy/tools/prune_knowledge.go`   | 150+     | 知识剪枝             |
+| **总计**                                             | **750+** |                      |
 
 ---
 
-## 四、外部服务集成
+### 8.8 外部服务集成详情
 
-### 4.1 Milvus 集成（优先级 🔴 高） ✅
+#### 8.8.1 Milvus 集成（优先级 🔴 高） ✅
 
 **目标**: 实现 RAG 检索和知识索引
 **状态**: 已完成（2026-03-06）
@@ -554,7 +896,7 @@ agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 milvus:
   addr: "localhost:19530"
   collection: "oncall_knowledge"
-  dimension: 1536  # Doubao embedding 维度
+  dimension: 1536 # Doubao embedding 维度
   index_type: "IVF_FLAT"
   metric_type: "COSINE"
 ```
@@ -562,24 +904,28 @@ milvus:
 #### 已完成步骤
 
 1. **安装 Milvus** ✅
+
    ```bash
    cd manifest/docker
    docker-compose up -d milvus
    ```
 
 2. **创建 Retriever** ✅
+
    ```go
    // internal/ai/retriever/milvus_retriever.go
    retriever, err := retriever.NewMilvusRetriever(ctx)
    ```
 
 3. **创建 Indexer** ✅
+
    ```go
    // internal/ai/indexer/milvus_indexer.go
    indexer, err := indexer.NewMilvusIndexer(ctx)
    ```
 
 4. **更新 KnowledgeAgent** ✅
+
    ```go
    knowledgeAgent, err := knowledge.NewKnowledgeAgent(ctx, &knowledge.Config{
        ChatModel: chatModel,
@@ -596,7 +942,7 @@ milvus:
 
 ---
 
-### 4.2 Kubernetes 集成（优先级 🟡 中） ✅
+#### 8.8.2 Kubernetes 集成（优先级 🟡 中） ✅
 
 **目标**: 实现 K8s 资源监控
 **状态**: 已完成（2026-03-06）
@@ -629,20 +975,15 @@ k8s:
 3. **工具实现** ✅
    - `internal/agent/ops/tools/k8s_monitor.go` (300+ 行)
    - 完整的资源查询和格式化逻辑
-   }
+     }
+
+   ```
+
    ```
 
 ---
 
-### 4.3 Prometheus 集成（优先级 🟡 中）
-
-**目标**: 实现指标采集和异常检测
-
-#### 配置示例
-
-```yaml
-# manifest/config/config.yaml
-### 4.3 Prometheus 集成（优先级 🟡 中） ✅
+#### 8.8.3 Prometheus 集成（优先级 🟡 中） ✅
 
 **目标**: 实现指标采集和异常检测
 **状态**: 已完成（2026-03-06）
@@ -674,68 +1015,107 @@ prometheus:
 
 ---
 
+---
+
 ## 五、开发路线图
 
-### 阶段 1：核心功能实现 ✅ 已完成
+### 阶段 1：核心功能实现 ✅ 已完成（2026-03-06）
 
-**目标**: 完成 RAG 检索和基础 Agent
+**目标**: 完成所有核心 Agent
 
-| 任务 | 负责人 | 预计时间 | 状态 |
-|------|--------|---------|------|
-| 集成 Milvus | - | 1 周 | ✅ 已完成 |
-| 实现 ExecutionAgent | - | 1 周 | ✅ 已完成 |
-| 实现 RCAAgent | - | 1 周 | ✅ 已完成 |
+| 任务                 | 状态    | 完成时间   |
+| -------------------- | ------- | ---------- |
+| 集成 Milvus          | ✅ 完成 | 2026-03-06 |
+| 实现 SupervisorAgent | ✅ 完成 | 2026-03-06 |
+| 实现 KnowledgeAgent  | ✅ 完成 | 2026-03-06 |
+| 实现 DialogueAgent   | ✅ 完成 | 2026-03-06 |
+| 实现 OpsAgent        | ✅ 完成 | 2026-03-06 |
+| 实现 ExecutionAgent  | ✅ 完成 | 2026-03-06 |
+| 实现 RCAAgent        | ✅ 完成 | 2026-03-06 |
+| 实现 StrategyAgent   | ✅ 完成 | 2026-03-06 |
 
-**里程碑**:
-- ✅ 完成基础架构重构（2026-03-06）
-- ✅ 完成 Milvus 集成（2026-03-06）
-- ✅ 完成 ExecutionAgent 和 RCAAgent（2026-03-06）
-
----
-
-### 阶段 2：监控集成 ✅ 已完成
-
-**目标**: 完成 K8s 和 Prometheus 集成
-
-| 任务 | 负责人 | 预计时间 | 状态 |
-|------|--------|---------|------|
-| 集成 Kubernetes | - | 3-4 天 | ✅ 已完成 |
-| 集成 Prometheus | - | 3-4 天 | ✅ 已完成 |
-| 集成日志系统 | - | 3-4 天 | ⚠️ 部分完成 |
-
-**里程碑**:
-- ✅ 完成 K8s 和 Prometheus 集成（2026-03-06）
-- ⚠️ 日志系统为模拟实现，待集成实际系统
+**里程碑**: ✅ 所有核心 Agent 已完成
 
 ---
 
-### 阶段 3：对话增强 ✅ 已完成
+### 阶段 2：外部服务集成 ⏳ 进行中（预计 2 周）
 
-**目标**: 完成对话意图分析和策略优化
+**目标**: 完善外部服务集成
 
-| 任务 | 负责人 | 预计时间 | 状态 |
-|------|--------|---------|------|
-| 实现 DialogueAgent 工具 | - | 3-4 天 | ✅ 已完成 |
-| 实现 StrategyAgent | - | 3-4 天 | ✅ 已完成 |
+| 任务                 | 优先级 | 预计时间 | 状态      |
+| -------------------- | ------ | -------- | --------- |
+| 集成实际日志系统     | 🔴 高  | 2-3 天   | ⏳ 待开始 |
+| 集成 PostgreSQL      | 🟡 中  | 2-3 天   | ⏳ 待开始 |
+| 完善 K8s 配置        | 🟡 中  | 1-2 天   | ⏳ 待开始 |
+| 完善 Prometheus 配置 | 🟡 中  | 1-2 天   | ⏳ 待开始 |
 
-**里程碑**:
-- ✅ 完成对话增强和策略优化（2026-03-06）
+**里程碑**: 完成所有外部服务集成
 
 ---
 
-### 阶段 4：优化与完善 ⏳ 进行中
+### 阶段 3：测试与优化 ⏳ 待开始（预计 2 周）
 
-**目标**: 性能优化、错误处理、测试覆盖
+**目标**: 添加测试覆盖和性能优化
 
-| 任务 | 负责人 | 预计时间 | 状态 |
-|------|--------|---------|------|
-| 性能优化 | - | 3-4 天 | ⏳ 待开始 |
-| 错误处理完善 | - | 2-3 天 | ⏳ 待开始 |
-| 测试覆盖 | - | 3-4 天 | ⏳ 待开始 |
-| 集成实际日志系统 | - | 2-3 天 | ⏳ 待开始 |
+| 任务         | 优先级 | 预计时间 | 状态      |
+| ------------ | ------ | -------- | --------- |
+| 单元测试     | 🔴 高  | 3-4 天   | ⏳ 待开始 |
+| 集成测试     | 🟡 中  | 2-3 天   | ⏳ 待开始 |
+| 并发处理优化 | 🟡 中  | 2-3 天   | ⏳ 待开始 |
+| 缓存机制     | 🟡 中  | 2-3 天   | ⏳ 待开始 |
+| 响应时间优化 | 🟢 低  | 2-3 天   | ⏳ 待开始 |
 
-**里程碑**:
-- ⏳ 完成系统优化（待定）
+**里程碑**: 测试覆盖率 > 80%，响应时间 < 2s
+
+---
+
+### 阶段 4：功能增强 ⏳ 待开始（预计 3 周）
+
+**目标**: 实现高级功能
+
+| 任务             | 优先级 | 预计时间 | 状态      |
+| ---------------- | ------ | -------- | --------- |
+| 自愈循环         | 🔴 高  | 1 周     | ⏳ 待开始 |
+| 监控告警集成     | 🔴 高  | 1 周     | ⏳ 待开始 |
+| 更多执行模板     | 🟡 中  | 2-3 天   | ⏳ 待开始 |
+| 更智能的根因推理 | 🟡 中  | 1 周     | ⏳ 待开始 |
+| 可视化界面增强   | 🟡 中  | 1 周     | ⏳ 待开始 |
+| 审计日志         | 🟡 中  | 2-3 天   | ⏳ 待开始 |
+| 配置管理         | 🟡 中  | 2-3 天   | ⏳ 待开始 |
+| 指标统计         | 🟡 中  | 2-3 天   | ⏳ 待开始 |
+
+**里程碑**: 实现完整的自愈循环和监控告警
+
+---
+
+### 阶段 5：生产就绪 ⏳ 待开始（预计 1 周）
+
+**目标**: 生产环境部署准备
+
+| 任务         | 优先级 | 预计时间 | 状态      |
+| ------------ | ------ | -------- | --------- |
+| 文档完善     | 🔴 高  | 2-3 天   | ⏳ 待开始 |
+| 部署脚本     | 🔴 高  | 1-2 天   | ⏳ 待开始 |
+| 监控告警配置 | 🔴 高  | 1-2 天   | ⏳ 待开始 |
+| 压力测试     | 🟡 中  | 1-2 天   | ⏳ 待开始 |
+| 安全审计     | 🟡 中  | 1-2 天   | ⏳ 待开始 |
+
+**里程碑**: 生产环境上线
+
+---
+
+### 总体时间线
+
+```
+阶段 1: 核心功能实现     ✅ 已完成 (2026-03-06)
+阶段 2: 外部服务集成     ⏳ 2 周 (2026-03-07 ~ 2026-03-21)
+阶段 3: 测试与优化       ⏳ 2 周 (2026-03-22 ~ 2026-04-04)
+阶段 4: 功能增强         ⏳ 3 周 (2026-04-05 ~ 2026-04-25)
+阶段 5: 生产就绪         ⏳ 1 周 (2026-04-26 ~ 2026-05-02)
+
+预计总时间: 8 周
+预计完成时间: 2026-05-02
+```
 
 ---
 
@@ -775,12 +1155,12 @@ func (t *MyTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts 
         Query string `json:"query"`
         TopK  int    `json:"top_k"`
     }
-    
+
     // 2. 解析 JSON
     if err := json.Unmarshal([]byte(argumentsInJSON), &params); err != nil {
         return "", fmt.Errorf("invalid parameters: %w", err)
     }
-    
+
     // 3. 参数验证
     if params.Query == "" {
         return "", fmt.Errorf("query is required")
@@ -788,13 +1168,13 @@ func (t *MyTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts 
     if params.TopK == 0 {
         params.TopK = 5  // 默认值
     }
-    
+
     // 4. 执行业务逻辑
     result, err := t.doSomething(ctx, params.Query, params.TopK)
     if err != nil {
         return "", err
     }
-    
+
     // 5. 返回 JSON 结果
     output, _ := json.Marshal(result)
     return string(output), nil
@@ -830,7 +1210,7 @@ func (t *MyTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts 
             zap.String("tool", "my_tool"),
             zap.Error(err),
         )
-        
+
         // 返回友好的错误信息
         return "", &AgentError{
             Code:    ErrCodeInternalError,
@@ -930,21 +1310,79 @@ go test ./test/integration/... -v -short
 
 ---
 
-## 八、总结
+## 八、附录：详细完成报告
+
+以下是各个 Agent 的详细完成报告，保留用于参考。
+
+### 8.0 K8s 监控集成修复 ✅
+
+**完成时间**: 2026-03-07 14:50
+
+**问题描述**:
+
+- oncall agent 运行在 K8s 集群外部，K8s 监控工具尝试使用 in-cluster 配置失败
+- 错误信息：`unable to load in-cluster configuration, KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT must be defined`
+- K8s 客户端初始化失败，导致 k8s_monitor 工具返回降级数据
+
+**修复方案**:
+在 `manifest/config/config.yaml` 中添加 kubeconfig 配置：
+
+```yaml
+# K8s 配置
+kubeconfig: "/home/lihaoqian/.kube/config" # K8s kubeconfig 路径
+```
+
+**验证结果**:
+
+- ✅ K8s 客户端初始化成功（日志：`k8s client initialized successfully`）
+- ✅ 可以查询 default 命名空间（返回空列表）
+- ✅ 可以查询 infra 命名空间（返回 11 个 Pod 的详细信息）
+- ✅ Prometheus 监控工具正常工作（查询 `up` 指标、CPU 使用率等）
+- ✅ Agent 正确路由到 ops_agent 并执行 K8s + Prometheus 综合查询
+- ✅ 返回格式化的监控报告
+
+**测试命令**:
+
+```bash
+# 测试 K8s 查询
+curl -X POST http://localhost:6872/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"test-k8s-001","question":"查询 infra 命名空间中的所有 Pod"}'
+
+# 测试 Prometheus 查询
+curl -X POST http://localhost:6872/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"test-prom-001","question":"查询 Prometheus 中所有服务的运行状态"}'
+```
+
+**影响范围**:
+
+- `internal/agent/ops/tools/k8s_monitor.go` - K8s 监控工具（无需修改，已支持 kubeconfig）
+- `internal/agent/ops/tools/metrics_collector.go` - Prometheus 监控工具（已正常工作）
+- `manifest/config/config.yaml` - 配置文件（新增 kubeconfig 字段）
+
+**技术栈状态更新**:
+| 组件 | 技术选型 | 状态 |
+|------|---------|------|
+| **监控** | Prometheus + K8s API | ✅ 已集成并验证 |
+
+---
+
+### 8.1 SupervisorAgent (总控代理) ✅
 
 ### 8.1 当前完成度
 
-| 模块 | 完成度 |
-|------|--------|
-| 架构设计 | 100% ✅ |
+| 模块            | 完成度  |
+| --------------- | ------- |
+| 架构设计        | 100% ✅ |
 | SupervisorAgent | 100% ✅ |
-| KnowledgeAgent | 100% ✅ |
-| DialogueAgent | 100% ✅ |
-| OpsAgent | 100% ✅ |
-| ExecutionAgent | 100% ✅ |
-| RCAAgent | 100% ✅ |
-| StrategyAgent | 100% ✅ |
-| 外部服务集成 | 60% ✅ |
+| KnowledgeAgent  | 100% ✅ |
+| DialogueAgent   | 100% ✅ |
+| OpsAgent        | 100% ✅ |
+| ExecutionAgent  | 100% ✅ |
+| RCAAgent        | 100% ✅ |
+| StrategyAgent   | 100% ✅ |
+| 外部服务集成    | 70% ✅  |
 
 **总体完成度**: **约 75%**
 
@@ -984,7 +1422,7 @@ go test ./test/integration/... -v -short
 
 ---
 
-## 九、Milvus 集成完成报告（2026-03-06）
+### 8.9 Milvus 集成完成报告（2026-03-06）
 
 ### 9.1 完成的功能
 
@@ -1026,22 +1464,22 @@ go test ./test/integration/... -v -short
 
 ### 9.2 代码统计
 
-| 文件 | 行数 | 说明 |
-|------|------|------|
-| `internal/agent/knowledge/agent.go` | 276 | KnowledgeAgent 主文件 |
-| `internal/agent/knowledge/ranker.go` | 175 | 案例排序算法 |
-| `test/milvus_integration_test.go` | 70 | Milvus 集成测试 |
-| `docs/MILVUS_INTEGRATION.md` | 350+ | Milvus 集成文档 |
-| **总计** | **871+** | |
+| 文件                                 | 行数     | 说明                  |
+| ------------------------------------ | -------- | --------------------- |
+| `internal/agent/knowledge/agent.go`  | 276      | KnowledgeAgent 主文件 |
+| `internal/agent/knowledge/ranker.go` | 175      | 案例排序算法          |
+| `test/milvus_integration_test.go`    | 70       | Milvus 集成测试       |
+| `docs/MILVUS_INTEGRATION.md`         | 350+     | Milvus 集成文档       |
+| **总计**                             | **871+** |                       |
 
 ### 9.3 性能指标
 
-| 操作 | 延迟 | 说明 |
-|------|------|------|
+| 操作      | 延迟   | 说明                     |
+| --------- | ------ | ------------------------ |
 | Embedding | ~200ms | 单个文本向量化（Doubao） |
-| 索引 | ~300ms | 单个文档索引到 Milvus |
-| 检索 | ~150ms | Top-3 检索 + 排序 |
-| 排序 | ~5ms | 多维度排序（内存操作） |
+| 索引      | ~300ms | 单个文档索引到 Milvus    |
+| 检索      | ~150ms | Top-3 检索 + 排序        |
+| 排序      | ~5ms   | 多维度排序（内存操作）   |
 
 ### 9.4 测试状态
 
@@ -1081,7 +1519,7 @@ PASS ok  go_agent/test/integration  0.207s
 
 ---
 
-## 十、DialogueAgent 完成报告（2026-03-06）
+### 8.10 DialogueAgent 完成报告（2026-03-06）
 
 ### 10.1 完成的功能
 
@@ -1111,11 +1549,11 @@ PASS ok  go_agent/test/integration  0.207s
 
 ### 10.2 代码统计
 
-| 文件 | 行数 | 说明 |
-|------|------|------|
-| `internal/agent/dialogue/agent.go` | 450+ | DialogueAgent 主文件 |
-| `internal/bootstrap/app.go` | +15 | 集成 Embedder 初始化 |
-| **总计** | **465+** | |
+| 文件                               | 行数     | 说明                 |
+| ---------------------------------- | -------- | -------------------- |
+| `internal/agent/dialogue/agent.go` | 450+     | DialogueAgent 主文件 |
+| `internal/bootstrap/app.go`        | +15      | 集成 Embedder 初始化 |
+| **总计**                           | **465+** |                      |
 
 ### 10.3 核心算法
 
@@ -1213,7 +1651,7 @@ PASS ok  go_agent/test/integration  0.207s
 
 ---
 
-## 十一、OpsAgent 完成报告（2026-03-06）
+### 8.11 OpsAgent 完成报告（2026-03-06）
 
 ### 11.1 完成的功能
 
@@ -1246,13 +1684,13 @@ PASS ok  go_agent/test/integration  0.207s
 
 ### 11.2 代码统计
 
-| 文件 | 行数 | 说明 |
-|------|------|------|
-| `internal/agent/ops/agent.go` | 120 | OpsAgent 主文件 |
-| `internal/agent/ops/tools/k8s_monitor.go` | 300+ | K8s 监控工具 |
-| `internal/agent/ops/tools/metrics_collector.go` | 250+ | Prometheus 指标采集 |
-| `internal/agent/ops/tools/log_analyzer.go` | 250+ | 日志分析工具 |
-| **总计** | **920+** | |
+| 文件                                            | 行数     | 说明                |
+| ----------------------------------------------- | -------- | ------------------- |
+| `internal/agent/ops/agent.go`                   | 120      | OpsAgent 主文件     |
+| `internal/agent/ops/tools/k8s_monitor.go`       | 300+     | K8s 监控工具        |
+| `internal/agent/ops/tools/metrics_collector.go` | 250+     | Prometheus 指标采集 |
+| `internal/agent/ops/tools/log_analyzer.go`      | 250+     | 日志分析工具        |
+| **总计**                                        | **920+** |                     |
 
 ### 11.3 核心功能
 
@@ -1396,7 +1834,7 @@ opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
 
 ---
 
-## 十二、ExecutionAgent 完成报告（2026-03-06）
+### 8.12 ExecutionAgent 完成报告（2026-03-06）
 
 ### 12.1 完成的功能
 
@@ -1435,14 +1873,14 @@ opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
 
 ### 12.2 代码统计
 
-| 文件 | 行数 | 说明 |
-|------|------|------|
-| `internal/agent/execution/agent.go` | 100 | ExecutionAgent 主文件 |
-| `internal/agent/execution/tools/generate_plan.go` | 350+ | 执行计划生成 |
-| `internal/agent/execution/tools/execute_step.go` | 200+ | 步骤执行 |
-| `internal/agent/execution/tools/validate_result.go` | 150+ | 结果验证 |
-| `internal/agent/execution/tools/rollback.go` | 150+ | 回滚操作 |
-| **总计** | **950+** | |
+| 文件                                                | 行数     | 说明                  |
+| --------------------------------------------------- | -------- | --------------------- |
+| `internal/agent/execution/agent.go`                 | 100      | ExecutionAgent 主文件 |
+| `internal/agent/execution/tools/generate_plan.go`   | 350+     | 执行计划生成          |
+| `internal/agent/execution/tools/execute_step.go`    | 200+     | 步骤执行              |
+| `internal/agent/execution/tools/validate_result.go` | 150+     | 结果验证              |
+| `internal/agent/execution/tools/rollback.go`        | 150+     | 回滚操作              |
+| **总计**                                            | **950+** |                       |
 
 ### 12.3 核心算法
 
@@ -1529,6 +1967,7 @@ opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
 ### 12.4 安全机制
 
 1. **命令白名单**
+
    ```go
    AllowedCommands: map[string]bool{
        "kubectl":   true,
@@ -1542,6 +1981,7 @@ opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
    ```
 
 2. **参数安全检查**
+
    ```go
    dangerousPatterns := []string{
        ";",      // 命令注入
@@ -1697,7 +2137,7 @@ opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
 
 ---
 
-## 十三、RCAAgent 完成报告（2026-03-06）
+### 8.13 RCAAgent 完成报告（2026-03-06）
 
 ### 13.1 完成的功能
 
@@ -1711,17 +2151,20 @@ opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
 ### 13.2 核心算法
 
 **反向搜索算法**（BFS）：
+
 ```
 从故障节点开始 → 遍历上游依赖 → 收集证据 → 生成假设 → LLM 增强 → 选择最可能根因
 ```
 
 **信号关联算法**：
+
 ```
 相关系数 = 0.5×同服务 + 0.3×同类型 + 0.2×同严重程度
 置信度 = 相关系数×0.7 + 时间因子×0.3
 ```
 
 **影响评估算法**：
+
 ```
 影响级别 = f(距离, 是否关键服务)
 - 距离1 + 关键 → critical
@@ -1733,13 +2176,13 @@ opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
 
 ### 13.3 代码统计
 
-| 组件 | 行数 |
-|------|------|
-| 依赖图构建 | 250+ |
-| 信号关联 | 250+ |
-| 根因推理 | 300+ |
-| 影响分析 | 150+ |
-| **总计** | **1050+** |
+| 组件       | 行数      |
+| ---------- | --------- |
+| 依赖图构建 | 250+      |
+| 信号关联   | 250+      |
+| 根因推理   | 300+      |
+| 影响分析   | 150+      |
+| **总计**   | **1050+** |
 
 ### 13.4 测试状态
 
@@ -1756,7 +2199,7 @@ opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
 
 ---
 
-## 十四、StrategyAgent 完成报告（2026-03-06）
+### 8.14 StrategyAgent 完成报告（2026-03-06）
 
 ### 14.1 完成的功能
 
@@ -1777,13 +2220,13 @@ opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
 
 ### 14.3 代码统计
 
-| 组件 | 行数 |
-|------|------|
-| 策略评估 | 200+ |
-| 策略优化 | 150+ |
-| 知识库更新 | 150+ |
-| 知识剪枝 | 150+ |
-| **总计** | **750+** |
+| 组件       | 行数     |
+| ---------- | -------- |
+| 策略评估   | 200+     |
+| 策略优化   | 150+     |
+| 知识库更新 | 150+     |
+| 知识剪枝   | 150+     |
+| **总计**   | **750+** |
 
 ---
 
@@ -1792,13 +2235,14 @@ opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
 
 ---
 
-## 🎉 项目完成总结
+## 🎉 项目完成总结（更新于 2026-03-07）
 
 ### 完成情况
 
 **当前完成度**: 75%
 
-**已完成的 8 个 Agent**:
+**已完成的 7 个 Agent**:
+
 1. ✅ **SupervisorAgent** (100%) - 总控代理，协调所有子 Agent
 2. ✅ **KnowledgeAgent** (100%) - 知识库代理，RAG 检索和索引
 3. ✅ **DialogueAgent** (100%) - 对话代理，意图分析和问题预测
@@ -1811,12 +2255,12 @@ opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
 
 ### 核心能力
 
-1. **智能对话** - 意图分析、语义熵计算、问题预测
-2. **知识检索** - Milvus 向量检索、多维度排序
-3. **系统监控** - K8s 资源、Prometheus 指标、日志分析
-4. **安全执行** - 命令白名单、沙盒执行、自动回滚
-5. **根因分析** - 依赖图构建、信号关联、根因推理
-6. **策略优化** - 质量评估、LLM 优化、知识管理
+1. **智能对话** ✅ - 意图分析、语义熵计算、问题预测
+2. **知识检索** ✅ - Milvus 向量检索、多维度排序
+3. **系统监控** ✅ - K8s 资源、Prometheus 指标、日志分析
+4. **安全执行** ✅ - 命令白名单、沙盒执行、自动回滚
+5. **根因分析** ✅ - 依赖图构建、信号关联、根因推理
+6. **策略优化** ✅ - 质量评估、LLM 优化、知识管理
 
 ### 技术亮点
 
@@ -1826,37 +2270,54 @@ opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
 - **完整的安全机制**: 三层防护（白名单+参数检查+黑名单）
 - **智能算法**: 语义熵、指数移动平均、BFS 搜索等
 
-### 下一步建议
+### 下一步重点
 
-1. **完善外部集成** (25%)
-   - 集成实际日志系统（Loki/ElasticSearch/CLS）
-   - 完善 K8s 和 Prometheus 配置
-   - 添加更多监控数据源
+**阶段 2：外部服务集成**（当前阶段，预计 2 周）
 
-2. **添加测试**
-   - 单元测试覆盖
-   - 集成测试
-   - 端到端测试
+1. 集成实际日志系统（Loki/ElasticSearch/CLS）
+2. 集成 PostgreSQL 冷数据存储
+3. 完善 K8s 和 Prometheus 配置
 
-3. **性能优化**
-   - 并发处理
-   - 缓存机制
-   - 响应时间优化
+**阶段 3：测试与优化**（预计 2 周）
 
-4. **功能增强**
-   - 自愈循环
-   - 更多执行模板
-   - 更智能的根因推理
+1. 添加单元测试和集成测试
+2. 并发处理和缓存优化
+3. 响应时间优化
+
+**阶段 4：功能增强**（预计 3 周）
+
+1. 实现自愈循环
+2. 监控告警集成
+3. 可视化界面增强
+4. 审计日志和配置管理
+
+**阶段 5：生产就绪**（预计 1 周）
+
+1. 文档完善
+2. 部署脚本
+3. 压力测试和安全审计
+
+### 预计时间线
+
+```
+✅ 阶段 1: 核心功能实现 (已完成)
+⏳ 阶段 2: 外部服务集成 (2 周, 2026-03-07 ~ 2026-03-21)
+⏳ 阶段 3: 测试与优化   (2 周, 2026-03-22 ~ 2026-04-04)
+⏳ 阶段 4: 功能增强     (3 周, 2026-04-05 ~ 2026-04-25)
+⏳ 阶段 5: 生产就绪     (1 周, 2026-04-26 ~ 2026-05-02)
+
+预计总时间: 8 周
+预计完成时间: 2026-05-02
+```
 
 ---
 
 **项目启动时间**: 2026-03-06
 **所有 Agent 完成时间**: 2026-03-06
-**文档版本**: v3.0
+**文档版本**: v4.0
+**最后更新**: 2026-03-07
 **总体完成度**: 75% ✅
 
 🎊 **恭喜！所有核心 Agent 已全部实现完成！**
 
-
-
-
+---

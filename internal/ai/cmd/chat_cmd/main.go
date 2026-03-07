@@ -45,7 +45,7 @@ func main() {
 
 	// 1) 初始化 Redis（单机测试）
 	rdb := redis.NewClient(&redis.Options{
-		Addr:        "192.168.149.128:30379",
+		Addr:        "127.0.0.1:30379",
 		DB:          0,
 		DialTimeout: 2 * time.Second,
 	})

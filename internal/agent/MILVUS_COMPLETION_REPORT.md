@@ -206,7 +206,7 @@ docker-compose up -d standalone etcd minio
 
 ```bash
 # 检查健康状态
-curl http://192.168.149.128:9091/healthz
+curl http://localhost:9091/healthz
 
 # 访问 Attu 管理界面
 docker-compose up -d attu

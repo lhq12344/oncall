@@ -26,6 +26,12 @@ spec:
               value: "etcd:2379"
             - name: MINIO_ADDRESS
               value: "minio:9000"
+            - name: MINIO_ACCESS_KEY_ID
+              value: "minioadmin"
+            - name: MINIO_SECRET_ACCESS_KEY
+              value: "minioadmin12345678"
+            - name: MINIO_USE_SSL
+              value: "false"
           ports:
             - containerPort: 19530
               name: grpc
