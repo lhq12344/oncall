@@ -2,21 +2,20 @@
 
 ## 概述
 
-全新设计的 OnCall AI 前端界面，参考 Google Gemini 的现代化设计风格，支持与后端七大 Agent 的完整交互。
+全新设计的 OnCall AI 前端界面，参考 Google Gemini 的现代化设计风格，支持与后端六类 Agent 的完整交互。
 
 ## 功能特性
 
-### 1. 七大 Agent 支持
+### 1. 六类 Agent 支持
 
 | Agent | 图标 | 功能 | API 端点 |
 |-------|------|------|---------|
 | 智能助手 (Supervisor) | 🎯 | 综合智能助手，协调所有 Agent | `/api/v1/chat` |
 | 知识库 (Knowledge) | 📚 | 搜索和检索运维知识库 | `/api/v1/chat` |
-| 运维监控 (Ops) | ⚙️ | 查询 K8s、Prometheus、ES 数据 | `/api/v1/ai_ops` |
+| 运维监控 (Ops) | ⚙️ | 查询 K8s、Prometheus、ES 数据 | `/api/v1/ai_ops_stream` (失败回退 `/api/v1/ai_ops`) |
 | 根因分析 (RCA) | 🔍 | 分析故障根本原因 | `/api/v1/chat` |
 | 策略优化 (Strategy) | 💡 | 提供优化策略建议 | `/api/v1/chat` |
 | 执行引擎 (Execution) | ⚡ | 执行运维操作 | `/api/v1/chat` |
-| 自愈循环 (Healing) | 🔄 | 自动故障检测和修复 | `/api/v1/healing/trigger` |
 
 ### 2. 现代化 UI 设计
 
@@ -134,7 +133,7 @@ cd Front_page
 
 ### 2. AI Ops 接口
 
-**端点**: `POST /api/v1/ai_ops`
+**端点**: `POST /api/v1/ai_ops_stream`（流式） / `POST /api/v1/ai_ops`（回退）
 
 **使用 Agent**: Ops
 
@@ -151,35 +150,7 @@ cd Front_page
 }
 ```
 
-### 3. 自愈循环接口
-
-**端点**: `POST /api/v1/healing/trigger`
-
-**使用 Agent**: Healing
-
-**请求**:
-```json
-{
-  "incident_id": "inc-xxx",
-  "type": "pod_crash_loop",
-  "severity": "high",
-  "title": "故障标题",
-  "description": "故障描述"
-}
-```
-
-**响应**:
-```json
-{
-  "message": "OK",
-  "data": {
-    "session_id": "session-xxx",
-    "message": "Healing triggered successfully"
-  }
-}
-```
-
-### 4. 文件上传接口
+### 3. 文件上传接口
 
 **端点**: `POST /api/v1/upload`
 
@@ -197,7 +168,7 @@ cd Front_page
 }
 ```
 
-### 5. 监控接口
+### 4. 监控接口
 
 **端点**: `GET /api/v1/monitoring`
 

@@ -39,7 +39,7 @@ type DialogueState struct {
 }
 
 // NewDialogueAgent 创建 Dialogue Agent（意图分析 + 问题预测）
-func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
+func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
 	}

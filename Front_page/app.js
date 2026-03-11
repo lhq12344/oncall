@@ -1019,78 +1019,109 @@ class SuperBizAgentApp {
     // 发送智能运维请求（流式）
     async sendAIOpsRequest(loadingMessageElement) {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/ai_ops`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                }
-            });
+            await this.sendAIOpsRequestStream(loadingMessageElement);
+        } catch (streamError) {
+            console.warn('ai_ops_stream 调用失败，回退 ai_ops:', streamError);
+            await this.sendAIOpsRequestFallback(loadingMessageElement);
+        }
+    }
 
-            if (!response.ok) {
-                throw new Error(`HTTP错误: ${response.status}`);
+    async sendAIOpsRequestStream(loadingMessageElement) {
+        const response = await fetch(`${this.apiBaseUrl}/ai_ops_stream`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
             }
+        });
 
-            // 处理 SSE 流
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            let fullContent = '';
-            let steps = [];
+        if (!response.ok) {
+            throw new Error(`HTTP错误: ${response.status}`);
+        }
 
-            try {
-                while (true) {
-                    const { done, value } = await reader.read();
+        if (!response.body) {
+            throw new Error('流式响应为空');
+        }
 
-                    if (done) {
-                        break;
-                    }
+        // 处理 SSE 流
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullContent = '';
+        let steps = [];
 
-                    // 解码数据并添加到缓冲区
-                    buffer += decoder.decode(value, { stream: true });
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
 
-                    // 按行分割处理 SSE 数据
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop() || '';
+                if (done) {
+                    break;
+                }
 
-                    for (const line of lines) {
-                        if (!line.trim() || !line.startsWith('data: ')) continue;
+                // 解码数据并添加到缓冲区
+                buffer += decoder.decode(value, { stream: true });
 
-                        const data = line.substring(6);
+                // 按行分割处理 SSE 数据
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
 
-                        try {
-                            const event = JSON.parse(data);
+                for (const line of lines) {
+                    if (!line.trim() || !line.startsWith('data: ')) continue;
 
-                            if (event.type === 'step') {
-                                // 步骤信息
-                                steps.push(event.content);
-                                this.updateAIOpsMessage(loadingMessageElement, fullContent, steps);
-                            } else if (event.type === 'content') {
-                                // 内容信息
-                                fullContent += event.content;
-                                this.updateAIOpsMessage(loadingMessageElement, fullContent, steps);
-                            } else if (event.type === 'error') {
-                                // 错误信息
-                                throw new Error(event.content);
-                            } else if (event.type === 'done') {
-                                // 完成标记
-                                if (loadingMessageElement) {
-                                    loadingMessageElement.classList.remove('streaming');
-                                }
+                    const data = line.substring(6);
+
+                    try {
+                        const event = JSON.parse(data);
+
+                        if (event.type === 'step') {
+                            // 步骤信息
+                            steps.push(event.content);
+                            this.updateAIOpsMessage(loadingMessageElement, fullContent, steps);
+                        } else if (event.type === 'content') {
+                            // 内容信息
+                            fullContent += event.content;
+                            this.updateAIOpsMessage(loadingMessageElement, fullContent, steps);
+                        } else if (event.type === 'error') {
+                            // 错误信息
+                            throw new Error(event.content);
+                        } else if (event.type === 'done') {
+                            // 完成标记
+                            if (loadingMessageElement) {
+                                loadingMessageElement.classList.remove('streaming');
                             }
-                        } catch (parseError) {
-                            console.warn('解析 SSE 数据失败:', parseError, data);
                         }
-
-                        // 自动滚动到底部
-                        this.scrollToBottom();
+                    } catch (parseError) {
+                        console.warn('解析 SSE 数据失败:', parseError, data);
                     }
-                }
-            } finally {
-                reader.releaseLock();
-            }
 
-        } catch (error) {
-            throw error;
+                    // 自动滚动到底部
+                    this.scrollToBottom();
+                }
+            }
+        } finally {
+            reader.releaseLock();
+        }
+    }
+
+    async sendAIOpsRequestFallback(loadingMessageElement) {
+        const response = await fetch(`${this.apiBaseUrl}/ai_ops`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP错误: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const payload = data?.data || data;
+        const result = payload?.result || 'AI Ops 执行完成';
+        const details = Array.isArray(payload?.detail) ? payload.detail : [];
+
+        this.updateAIOpsMessage(loadingMessageElement, result, details);
+        if (loadingMessageElement) {
+            loadingMessageElement.classList.remove('streaming');
         }
     }
 

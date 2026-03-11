@@ -9,7 +9,6 @@ require (
 	github.com/cloudwego/eino-ext/components/indexer/milvus v0.0.0-20251011073417-75b93b87b8a9
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.7
 	github.com/cloudwego/eino-ext/components/retriever/milvus v0.0.0-20251011073417-75b93b87b8a9
-	github.com/cloudwego/eino-ext/components/tool/duckduckgo v0.0.0-20260310075812-cb9c90b6a56a
 	github.com/cloudwego/eino-ext/components/tool/mcp v0.0.5
 	github.com/elastic/go-elasticsearch/v8 v8.19.3
 	github.com/gogf/gf/v2 v2.7.1
@@ -18,7 +17,6 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/common v0.66.1
 	github.com/redis/go-redis/v9 v9.17.2
-	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.27.0
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/gorm v1.31.0

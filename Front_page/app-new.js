@@ -1,5 +1,5 @@
 // OnCall AI - 前端交互逻辑
-// 支持七大 Agent: Supervisor, Knowledge, Ops, RCA, Strategy, Execution, Healing
+// 支持六类 Agent: Supervisor, Knowledge, Ops, RCA, Strategy, Execution
 
 class OnCallAI {
     constructor() {
@@ -141,12 +141,6 @@ class OnCallAI {
                 icon: '⚡',
                 endpoint: '/chat',
                 description: '执行运维操作'
-            },
-            healing: {
-                name: '自愈循环',
-                icon: '🔄',
-                endpoint: '/healing/trigger',
-                description: '自动故障检测和修复'
             }
         };
         return configs[agent] || configs.supervisor;
@@ -194,18 +188,28 @@ class OnCallAI {
         try {
             const config = this.getAgentConfig(this.currentAgent);
             let response;
+            let assistantEntry = null;
 
             // 根据不同 Agent 调用不同接口
             if (this.currentAgent === 'ops') {
-                response = await this.callAIOps();
-            } else if (this.currentAgent === 'healing') {
-                response = await this.callHealing(message);
+                assistantEntry = this.addMessage('assistant', '## AI Ops 执行中...\n\n正在建立流式连接...', config);
+                try {
+                    response = await this.callAIOpsStream((state) => {
+                        this.updateMessageContent(
+                            assistantEntry,
+                            this.formatAIOpsStreamOutput(state, true)
+                        );
+                    });
+                } catch (streamError) {
+                    console.warn('AIOps stream failed, fallback to non-streaming:', streamError);
+                    response = await this.callAIOps();
+                }
+                this.updateMessageContent(assistantEntry, response);
             } else {
                 response = await this.callChat(message);
+                // 添加助手回复
+                this.addMessage('assistant', response, config);
             }
-
-            // 添加助手回复
-            this.addMessage('assistant', response, config);
 
         } catch (error) {
             console.error('Error:', error);
@@ -268,71 +272,128 @@ class OnCallAI {
         return formatted;
     }
 
-    // 调用自愈循环接口
-    async callHealing(message) {
-        // 解析消息，提取故障信息
-        const incidentId = `inc-${Date.now()}`;
-        const type = this.detectIncidentType(message);
-
-        const response = await fetch(`${this.API_BASE}/healing/trigger`, {
+    // 调用 AI Ops 流式接口（SSE over fetch）
+    async callAIOpsStream(onUpdate) {
+        const response = await fetch(`${this.API_BASE}/ai_ops_stream`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                incident_id: incidentId,
-                type: type,
-                severity: 'high',
-                title: '用户触发的自愈流程',
-                description: message
-            })
+            }
         });
 
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
 
-        const data = await response.json();
-        const sessionId = data.data?.session_id || data.session_id;
-
-        // 查询自愈状态
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        const status = await this.getHealingStatus(sessionId);
-
-        return `## 自愈流程已触发\n\n` +
-               `- **会话 ID**: ${sessionId}\n` +
-               `- **故障 ID**: ${incidentId}\n` +
-               `- **故障类型**: ${type}\n` +
-               `- **状态**: ${status}\n\n` +
-               `自愈流程正在后台执行，您可以通过监控端点查看详细进度。`;
-    }
-
-    // 检测故障类型
-    detectIncidentType(message) {
-        const msg = message.toLowerCase();
-        if (msg.includes('crash') || msg.includes('崩溃')) return 'pod_crash_loop';
-        if (msg.includes('cpu') || msg.includes('处理器')) return 'high_cpu';
-        if (msg.includes('memory') || msg.includes('内存')) return 'high_memory';
-        if (msg.includes('error') || msg.includes('错误')) return 'high_error_rate';
-        if (msg.includes('disk') || msg.includes('磁盘')) return 'disk_full';
-        return 'service_down';
-    }
-
-    // 查询自愈状态
-    async getHealingStatus(sessionId) {
-        try {
-            const response = await fetch(`${this.API_BASE}/healing/status?session_id=${sessionId}`);
-            if (!response.ok) return '未知';
-
-            const data = await response.json();
-            const sessions = data.data?.sessions || data.sessions || [];
-            if (sessions.length > 0) {
-                return sessions[0].state || '进行中';
-            }
-            return '已完成';
-        } catch (error) {
-            return '查询失败';
+        if (!response.body) {
+            throw new Error('stream response body is empty');
         }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        const streamState = {
+            steps: [],
+            contents: [],
+            errors: [],
+            done: false,
+        };
+
+        let buffer = '';
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) {
+                break;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const events = buffer.split('\n\n');
+            buffer = events.pop() || '';
+
+            for (const eventBlock of events) {
+                this.consumeSSEBlock(eventBlock, streamState);
+                if (onUpdate) {
+                    onUpdate(streamState);
+                }
+            }
+        }
+
+        if (buffer.trim()) {
+            this.consumeSSEBlock(buffer, streamState);
+            if (onUpdate) {
+                onUpdate(streamState);
+            }
+        }
+
+        return this.formatAIOpsStreamOutput(streamState, false);
+    }
+
+    consumeSSEBlock(eventBlock, streamState) {
+        if (!eventBlock) return;
+
+        const dataLines = eventBlock
+            .split('\n')
+            .filter(line => line.startsWith('data:'))
+            .map(line => line.slice(5).trim());
+
+        if (dataLines.length === 0) return;
+
+        const rawData = dataLines.join('\n');
+        if (!rawData) return;
+
+        try {
+            const payload = JSON.parse(rawData);
+            const type = payload?.type;
+            const content = payload?.content || '';
+
+            if (type === 'step' && content) {
+                streamState.steps.push(content);
+                return;
+            }
+            if (type === 'content' && content) {
+                streamState.contents.push(content);
+                return;
+            }
+            if (type === 'error' && content) {
+                streamState.errors.push(content);
+                return;
+            }
+            if (type === 'done') {
+                streamState.done = true;
+                return;
+            }
+        } catch (_) {
+            // 非 JSON 数据按纯文本处理。
+        }
+
+        streamState.contents.push(rawData);
+    }
+
+    formatAIOpsStreamOutput(state, inProgress = false) {
+        const parts = [];
+
+        if (inProgress && !state.done) {
+            parts.push('## AI Ops 执行中...');
+        } else {
+            parts.push('## AI Ops 执行结果');
+        }
+
+        if (state.contents.length > 0) {
+            parts.push(state.contents.join('\n\n'));
+        } else {
+            parts.push('暂无分析内容。');
+        }
+
+        if (state.steps.length > 0) {
+            const stepLines = state.steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
+            parts.push(`### 执行步骤\n${stepLines}`);
+        }
+
+        if (state.errors.length > 0) {
+            const errorLines = state.errors.map(item => `- ${item}`).join('\n');
+            parts.push(`### 错误\n${errorLines}`);
+        }
+
+        return parts.join('\n\n').trim();
     }
 
     // 添加消息到界面
@@ -377,6 +438,21 @@ class OnCallAI {
         `;
 
         this.messagesContainer.appendChild(messageEl);
+        this.scrollToBottom();
+
+        return { message, messageEl };
+    }
+
+    updateMessageContent(entry, content) {
+        if (!entry || !entry.messageEl) return;
+
+        const bodyEl = entry.messageEl.querySelector('.message-body');
+        if (!bodyEl) return;
+
+        bodyEl.innerHTML = marked.parse(content || '');
+        if (entry.message) {
+            entry.message.content = content || '';
+        }
         this.scrollToBottom();
     }
 

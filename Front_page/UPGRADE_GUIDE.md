@@ -5,7 +5,7 @@
 | 特性 | 旧版本 | 新版本 |
 |------|--------|--------|
 | 设计风格 | 传统 | Gemini 现代化 |
-| Agent 支持 | 仅 Supervisor | 七大 Agent 完整支持 |
+| Agent 支持 | 仅 Supervisor | 六类 Agent 完整支持 |
 | UI 框架 | 自定义 | 参考 Google Material Design |
 | 响应式 | 基础 | 完全响应式 |
 | 动画效果 | 简单 | 流畅过渡动画 |
@@ -44,11 +44,10 @@ fetch('/api/v1/chat', {
 
 **新版**:
 ```javascript
-// 支持七大 Agent
+// 支持六类 Agent
 switch(currentAgent) {
   case 'supervisor': callChat()
   case 'ops': callAIOps()
-  case 'healing': callHealing()
   // ... 其他 Agent
 }
 ```

@@ -38,7 +38,6 @@ oncall/
 │   ├── logic/                 # 业务逻辑层
 │   ├── agent/                 # Agent 核心系统
 │   ├── ai/                    # AI 基础设施
-│   ├── healing/               # 自愈模块
 │   ├── cache/                 # 缓存模块
 │   ├── concurrent/            # 并发控制
 │   └── consts/                # 常量定义
@@ -63,7 +62,7 @@ oncall/
 
 **核心功能**:
 - 初始化配置 (Redis, MySQL, Milvus, Elasticsearch)
-- 初始化所有 Agent (Supervisor, Dialogue, Knowledge, Ops, Execution, RCA, Strategy)
+- 初始化统一工作流 Agent（RCA → Ops → Execution → Strategy）及相关模块
 - 注册 HTTP 路由 `/api/v1/*`
 - 启动 SSE 服务
 
@@ -79,8 +78,6 @@ oncall/
 | `/api/v1/upload` | POST | 文件上传到知识库 |
 | `/api/v1/ai_ops` | POST | AI 运维操作 |
 | `/api/v1/monitoring` | GET | 监控统计 |
-| `/api/v1/healing/trigger` | POST | 触发自愈 |
-| `/api/v1/healing/status` | GET | 自愈状态查询 |
 
 ---
 
@@ -172,14 +169,13 @@ circuit_breaker:
 **结构体** `ControllerV1`:
 ```go
 type ControllerV1 struct {
-    supervisorAgent  adk.ResumableAgent   // 总控 Agent
-    supervisorRunner *adk.Runner          // checkpoint runner
-    supervisorStreamRunner *adk.Runner    // streaming checkpoint runner
+    chatAgent        adk.ResumableAgent   // 会话根 Agent
+    chatRunner       *adk.Runner          // checkpoint runner
+    chatStreamRunner *adk.Runner          // streaming checkpoint runner
     cacheManager    *cache.Manager        // 缓存管理
     llmCache        *cache.LLMCache       // LLM 响应缓存
     cbManager       *concurrent.CircuitBreakerManager  // 熔断器
     opsExecutor     *ops.IntegratedOpsExecutor
-    healingManager  *healing.HealingLoopManager  // 自愈管理
 }
 ```
 
@@ -232,21 +228,18 @@ data: {data}
 
 ### 7. internal/agent/ - Agent 核心系统 (重点)
 
-这是项目的核心模块，包含 7 个专业的 Agent。
+这是项目的核心模块，包含多类专业 Agent，由统一工作流进行编排。
 
-#### 7.1 Supervisor Agent - 总控 Agent
-**文件**: `agent/supervisor/agent.go`
+#### 7.1 Incident Workflow Agent - 统一工作流 Agent
+**文件**: `agent/ops/incident_workflow.go`
 
-**职责**: 协调其他 6 个 Agent，完成复杂运维任务
+**职责**: 以顺序+循环方式编排 RCA、Ops、Execution、Strategy 完成故障处置
 
 **调用流程**:
 ```
-用户请求 → Supervisor → 知识检索 (Knowledge)
-                    → 对话理解 (Dialogue)
-                    → 监控查询 (Ops)
-                    → 故障诊断 (RCA)
-                    → 执行修复 (Execution)
-                    → 策略优化 (Strategy)
+用户请求 → RCA → Ops(规划) → Validator(校验) → Execution(执行)
+                                       ↘ 失败/未解决 ↗
+                               最终进入 Strategy 复盘
 ```
 
 ---
@@ -397,37 +390,7 @@ data: {data}
 
 ---
 
-### 9. internal/healing/ - 自愈模块
-
-**文件**: `healing/`
-
-| 文件 | 作用 |
-|------|------|
-| `types.go` | 类型定义 (HealingState, Severity, IncidentType, StrategyType) |
-| `manager.go` | 自愈循环管理器，核心编排逻辑 |
-| `components.go` | 自愈组件实现 (Monitor, Detector, Diagnoser, Decider, Executor, Verifier, Learner) |
-| `strategies.go` | 策略模板和匹配器 |
-
-**自愈流程**:
-```
-Monitoring → Detecting → Diagnosing → Deciding → Executing → Verifying → Learning → Completed
-```
-
-**默认策略**:
-1. Pod Restart - 重启 Pod (低风险)
-2. Pod Scale Up - 扩容 (低风险)
-3. Pod Scale Down - 缩容 (低风险)
-4. Deployment Rollback - 回滚 (中风险)
-5. Node Drain - 驱逐节点 (高风险)
-6. Service Restart - 服务重启 (中风险)
-7. Database Restart - 数据库重启 (高风险)
-8. Cache Flush - 缓存清理 (中风险)
-9. Config Reload - 配置重载 (低风险)
-10. Network Repair - 网络修复 (中风险)
-
----
-
-### 10. internal/cache/ - 缓存模块
+### 9. internal/cache/ - 缓存模块
 
 | 文件 | 功能 |
 |------|------|
@@ -447,7 +410,7 @@ Monitoring → Detecting → Diagnosing → Deciding → Executing → Verifying
 
 ---
 
-### 11. internal/concurrent/ - 并发控制
+### 10. internal/concurrent/ - 并发控制
 
 | 文件 | 功能 |
 |------|------|
@@ -464,7 +427,7 @@ Monitoring → Detecting → Diagnosing → Deciding → Executing → Verifying
 
 ---
 
-### 12. utility/ - 工具库
+### 11. utility/ - 工具库
 
 | 目录/文件 | 功能 |
 |-----------|------|
@@ -485,14 +448,14 @@ Monitoring → Detecting → Diagnosing → Deciding → Executing → Verifying
 1. **main.go** - 了解项目入口和启动流程
 2. **manifest/config/config.yaml** - 了解配置结构
 3. **internal/controller/chat/chat_v1.go** - 了解请求入口
-4. **internal/agent/supervisor/agent.go** - 了解 Agent 协作方式
+4. **internal/agent/ops/incident_workflow.go** - 了解统一工作流编排
 5. **api/chat/v1/chat.go** - 了解 API 数据结构
 
 ### 路线二: 深入 Agent 系统 (2 小时)
 
 1. **main.go** - 项目入口
 2. **internal/bootstrap/app.go** - 初始化流程
-3. **internal/agent/supervisor/** - 总控 Agent
+3. **internal/agent/ops/incident_workflow.go** - 统一工作流
 4. **internal/agent/dialogue/** - 对话 Agent
 5. **internal/agent/knowledge/** - 知识库 Agent
 6. **internal/agent/ops/** - 运维 Agent
@@ -506,16 +469,15 @@ Monitoring → Detecting → Diagnosing → Deciding → Executing → Verifying
 2. **utility/mysql/mysql.go** - MySQL 连接池
 3. **internal/cache/** - 缓存机制
 4. **internal/concurrent/** - 并发控制和熔断
-5. **internal/healing/** - 自愈系统
-6. **utility/elasticsearch/** - ES 客户端
-7. **utility/client/client.go** - Milvus 客户端
+5. **utility/elasticsearch/** - ES 客户端
+6. **utility/client/client.go** - Milvus 客户端
 
 ### 路线四: 理解请求处理流程
 
 1. HTTP 请求到达 `main.go`
 2. 路由到 `controller/chat/chat_v1.go`
 3. 业务逻辑在 `logic/sse/sse.go`
-4. Agent 执行在 `agent/supervisor/agent.go`
+4. Agent 执行在 `agent/ops/incident_workflow.go`
 5. 工具执行在 `ai/tools/`
 6. 结果返回并缓存
 
@@ -530,12 +492,11 @@ Monitoring → Detecting → Diagnosing → Deciding → Executing → Verifying
 | API | `api/chat/v1/chat.go` |
 | 控制器 | `internal/controller/chat/chat_v1.go` |
 | 逻辑 | `internal/logic/sse/sse.go` |
-| 总控 Agent | `internal/agent/supervisor/agent.go` |
+| 工作流 Agent | `internal/agent/ops/incident_workflow.go` |
 | 知识库 | `internal/agent/knowledge/` |
 | 运维 | `internal/agent/ops/` |
 | 执行 | `internal/agent/execution/` |
 | 工具 | `internal/ai/tools/*.go` |
-| 自愈 | `internal/healing/manager.go` |
 | 缓存 | `internal/cache/cache.go` |
 | 熔断 | `internal/concurrent/circuit_breaker.go` |
 | 会话 | `utility/mem/mem.go` |
@@ -545,23 +506,27 @@ Monitoring → Detecting → Diagnosing → Deciding → Executing → Verifying
 ## Agent 协作关系图
 
 ```
-                    +------------------+
-                    |   Supervisor     |
-                    |    (总控)         |
-                    +--------+---------+
-                             |
-        +---------+-----------+----------+---------+
-        |         |           |          |         |
-        v         v           v          v         v
-   +----+----+ +----+-+ +----+-+ +------+-+ +-----+--+
-   |Dialogue| |Knowledge| | Ops | |Execution| | RCA    |
-   | Agent  | | Agent  | |Agent| | Agent   | | Agent  |
-   +--------+ +--------+ +-----+ +--------+ +--------+
-                                      |
-                               +------+-----+
-                               | Strategy   |
-                               | Agent      |
-                               +------------+
+           +--------------------------------------+
+           |     Incident Workflow (Resumable)    |
+           +----------------+---------------------+
+                            |
+                    +-------v-------+
+                    |  RCA Agent    |
+                    +-------+-------+
+                            |
+                    +-------v-------+
+                    |  Ops Agent    |
+                    +-------+-------+
+                            |
+                    +-------v-------+
+                    | Execution     |
+                    | Agent         |
+                    +-------+-------+
+                            |
+                    +-------v-------+
+                    | Strategy      |
+                    | Agent         |
+                    +---------------+
 ```
 
 ---

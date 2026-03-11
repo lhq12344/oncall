@@ -140,8 +140,6 @@ github.com/cloudwego/eino-ext/components/model/openai v0.1.7 h1:CN3FfIdA8S+lUfng
 github.com/cloudwego/eino-ext/components/model/openai v0.1.7/go.mod h1:J9X399p5Vd0cvDg7ShVrTv7AbEf4ONfjfD6cNsHam+o=
 github.com/cloudwego/eino-ext/components/retriever/milvus v0.0.0-20251011073417-75b93b87b8a9 h1:y+Kc6GSYSvz9FqPA5k71SQTuM+UWZEGnf6C9B52FcfA=
 github.com/cloudwego/eino-ext/components/retriever/milvus v0.0.0-20251011073417-75b93b87b8a9/go.mod h1:PYh8yoOcuFYVfSZZ4vglaeRgaXrMz5D4uKioDZxEDA0=
-github.com/cloudwego/eino-ext/components/tool/duckduckgo v0.0.0-20260310075812-cb9c90b6a56a h1:Zb5FEbVsikN3bnuMTN5pa4ht2cXebAHMZeaeZYiJ74M=
-github.com/cloudwego/eino-ext/components/tool/duckduckgo v0.0.0-20260310075812-cb9c90b6a56a/go.mod h1:k44QvxAxLUCfPieyY3R5t3qLlqB6JoHrTel+pzE+fpI=
 github.com/cloudwego/eino-ext/components/tool/mcp v0.0.5 h1:UOaWYzi6OpCDPV72zxDjPn6o2v2F1migFQgza/cTpQs=
 github.com/cloudwego/eino-ext/components/tool/mcp v0.0.5/go.mod h1:hvj6/sLAC0mki9lXcPBKUJXz6FI2pQRzgE2d3leME7c=
 github.com/cloudwego/eino-ext/libs/acl/openai v0.1.11 h1:1Zm1R6WRLwDKLVlaY/ixIwlPnuVE1DvxNv5eAeE53mI=

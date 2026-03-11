@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"time"
 
+	"go_agent/internal/agent/dialogue"
+	"go_agent/internal/agent/knowledge"
 	"go_agent/internal/agent/ops"
-	"go_agent/internal/ai/indexer"
+	aiembedder "go_agent/internal/ai/embedder"
 	"go_agent/internal/ai/models"
-	"go_agent/internal/concurrent"
 	appcontext "go_agent/internal/context"
 	"go_agent/utility/mem"
 
@@ -21,12 +22,11 @@ import (
 type Application struct {
 	ContextManager *appcontext.ContextManager
 	ChatAgent      adk.ResumableAgent
+	KnowledgeAgent adk.Agent
 	OpsIntegration *ops.IntegratedOpsExecutor
-	OpsAgent       adk.Agent   // Plan-Execute-Replan Ops Agent
-	MilvusIndexer  interface{} // Milvus Indexer for direct document indexing
+	OpsAgent       adk.Agent
 	Logger         *zap.Logger
 	RedisClient    *redis.Client
-	CBManager      *concurrent.CircuitBreakerManager
 }
 
 // Config 应用配置
@@ -83,32 +83,28 @@ func NewApplication(cfg *Config) (*Application, error) {
 		return nil, fmt.Errorf("failed to get chat model: %w", err)
 	}
 
-	// 6. 初始化 Milvus Indexer（用于知识上传接口）
-	var milvusIndexer interface{}
-	createdMilvusIndexer, err := indexer.NewMilvusIndexer(ctx)
+	// 6. 初始化对话 Embedding（失败时降级为关键词分类）
+	dialogueEmbedder, err := aiembedder.DoubaoEmbedding(ctx)
 	if err != nil {
-		logger.Warn("failed to init milvus indexer, file upload indexing disabled", zap.Error(err))
-	} else {
-		milvusIndexer = createdMilvusIndexer
-		logger.Info("milvus indexer initialized")
+		logger.Warn("failed to init dialogue embedder, fallback to keyword-only intent analysis", zap.Error(err))
+		dialogueEmbedder = nil
 	}
 
-	// 7. 初始化 Ops Agent（集成 K8s 和 Prometheus）
-	opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
+	// 7. 初始化 Dialogue Agent（用于前端对话）
+	chatAgent, err := dialogue.NewDialogueAgent(ctx, &dialogue.Config{
 		ChatModel:     chatModel,
-		KubeConfig:    cfg.KubeConfig, // 从配置读取
+		Embedder:      dialogueEmbedder,
+		KubeConfig:    cfg.KubeConfig,
 		PrometheusURL: cfg.PrometheusURL,
 		Logger:        logger,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create ops agent: %w", err)
+		return nil, fmt.Errorf("failed to create dialogue agent: %w", err)
 	}
-	logger.Info("ops agent initialized with K8s and Prometheus integration",
-		zap.String("prometheus_url", cfg.PrometheusURL))
+	logger.Info("dialogue chat agent initialized")
 
-	// 7.1 Ops 集成执行器（并发 + 缓存 + 熔断）
+	// 7.1 Ops 集成执行器（顺序工具查询 + 超时控制）
 	opsIntegration, err := ops.NewIntegratedOpsExecutor(ctx, &ops.IntegratedOpsConfig{
-		RedisClient:   redisClient,
 		KubeConfig:    cfg.KubeConfig,
 		PrometheusURL: cfg.PrometheusURL,
 		Logger:        logger,
@@ -118,8 +114,17 @@ func NewApplication(cfg *Config) (*Application, error) {
 		logger.Warn("failed to init integrated ops executor, degrade to normal path", zap.Error(err))
 	}
 
-	// 8. 初始化统一故障处置工作流 Agent
-	chatAgent, err := ops.NewIncidentWorkflowAgent(ctx, &ops.IncidentWorkflowConfig{
+	// 8. 初始化 Knowledge Agent（用于前端上传）
+	knowledgeAgent, err := knowledge.NewKnowledgeAgent(ctx, &knowledge.Config{
+		Logger: logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create knowledge agent: %w", err)
+	}
+	logger.Info("knowledge upload agent initialized")
+
+	// 9. 初始化 Ops Agent（用于前端 ops 功能）
+	opsAgent, err := ops.NewIncidentWorkflowAgent(ctx, &ops.IncidentWorkflowConfig{
 		ChatModel:     chatModel,
 		KubeConfig:    cfg.KubeConfig,
 		PrometheusURL: cfg.PrometheusURL,
@@ -128,23 +133,19 @@ func NewApplication(cfg *Config) (*Application, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create incident workflow agent: %w", err)
 	}
-	logger.Info("incident workflow chat agent initialized")
-
-	// 9. 初始化全局熔断器管理器（用于监控）
-	cbManager := concurrent.NewCircuitBreakerManager(logger)
+	logger.Info("incident workflow ops agent initialized")
 
 	// 10. 启动后台任务
-	go startBackgroundTasks(contextManager, cbManager, logger)
+	go startBackgroundTasks(contextManager, logger)
 
 	return &Application{
 		ContextManager: contextManager,
 		ChatAgent:      chatAgent,
+		KnowledgeAgent: knowledgeAgent,
 		OpsIntegration: opsIntegration,
 		OpsAgent:       opsAgent,
-		MilvusIndexer:  milvusIndexer,
 		Logger:         logger,
 		RedisClient:    redisClient,
-		CBManager:      cbManager,
 	}, nil
 }
 
@@ -178,7 +179,7 @@ func initLogger(level string) (*zap.Logger, error) {
 }
 
 // startBackgroundTasks 启动后台任务
-func startBackgroundTasks(cm *appcontext.ContextManager, cbManager *concurrent.CircuitBreakerManager, logger *zap.Logger) {
+func startBackgroundTasks(cm *appcontext.ContextManager, logger *zap.Logger) {
 	// 数据迁移任务
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
@@ -192,32 +193,6 @@ func startBackgroundTasks(cm *appcontext.ContextManager, cbManager *concurrent.C
 				logger.Error("failed to migrate to L2", zap.Error(err))
 			} else {
 				logger.Debug("migrated inactive sessions to L2")
-			}
-		}
-	}()
-
-	// 熔断器监控任务
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			breakers := cbManager.List()
-			for _, name := range breakers {
-				cb, err := cbManager.Get(name)
-				if err != nil {
-					continue
-				}
-
-				state := cb.State()
-				requests, successes, failures := cb.Counts()
-
-				logger.Info("circuit breaker status",
-					zap.String("name", name),
-					zap.String("state", state.String()),
-					zap.Uint32("requests", requests),
-					zap.Uint32("successes", successes),
-					zap.Uint32("failures", failures))
 			}
 		}
 	}()

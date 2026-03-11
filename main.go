@@ -99,7 +99,7 @@ func main() {
 		group.Middleware(middleware.ResponseMiddleware)
 		group.Group("/v1", func(v1Group *ghttp.RouterGroup) {
 			// 创建 controller 并传入统一会话 Agent
-			chatController := chat.NewV1(app.ChatAgent, app.Logger, app.RedisClient, app.OpsIntegration, app.OpsAgent, app.MilvusIndexer, nil)
+			chatController := chat.NewV1(app.ChatAgent, app.Logger, app.RedisClient, app.OpsAgent, app.KnowledgeAgent)
 			v1Group.Bind(chatController)
 		})
 	})
