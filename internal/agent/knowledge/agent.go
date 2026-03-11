@@ -2,103 +2,196 @@ package knowledge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-
-	"go_agent/internal/ai/indexer"
-	"go_agent/internal/ai/models"
-	"go_agent/internal/ai/retriever"
+	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/adk"
-	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
+	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
-	"go_agent/internal/agent/knowledge/tools"
 )
 
 // Config Knowledge Agent 配置
 type Config struct {
-	ChatModel *models.ChatModel
-	Logger    *zap.Logger
+	Indexer      interface{}
+	Logger       *zap.Logger
+	DefaultChunk int
 }
 
-// NewKnowledgeAgent 创建 Knowledge Agent（基于 ChatModelAgent + RAG）
+type uploadInput struct {
+	Content string         `json:"content"`
+	Title   string         `json:"title,omitempty"`
+	Tags    string         `json:"tags,omitempty"`
+	Meta    map[string]any `json:"meta,omitempty"`
+}
+
+type uploadResult struct {
+	IDs []string
+}
+
+type KnowledgeUploadAgent struct {
+	name        string
+	description string
+	runnable    compose.Runnable[*uploadInput, *uploadResult]
+	logger      *zap.Logger
+}
+
+// NewKnowledgeAgent 创建 Knowledge Agent（上传专用 Eino Chain）
 func NewKnowledgeAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
 	}
 
-	if cfg.ChatModel == nil {
-		return nil, fmt.Errorf("chat model is required")
-	}
-
-	// 初始化 Milvus Retriever
-	milvusRetriever, err := retriever.NewMilvusRetriever(ctx)
+	runnable, err := BuildKnowledgeUploadChain(ctx)
 	if err != nil {
-		if cfg.Logger != nil {
-			cfg.Logger.Warn("failed to create milvus retriever, using placeholder", zap.Error(err))
-		}
-		milvusRetriever = nil
-	}
-
-	// 初始化 Milvus Indexer
-	milvusIndexer, err := indexer.NewMilvusIndexer(ctx)
-	if err != nil {
-		if cfg.Logger != nil {
-			cfg.Logger.Warn("failed to create milvus indexer, using placeholder", zap.Error(err))
-		}
-		milvusIndexer = nil
-	}
-
-	// 创建工具集
-	tools := []tool.BaseTool{
-		tools.NewVectorSearchTool(milvusRetriever, cfg.Logger),
-		tools.NewKnowledgeIndexTool(milvusIndexer, cfg.Logger),
-	}
-
-	// 创建 ChatModelAgent
-	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
-		Name:        "knowledge_agent",
-		Description: "检索历史故障案例和最佳实践的知识库代理",
-		Model:       cfg.ChatModel.Client,
-		ToolsConfig: adk.ToolsConfig{
-			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools: tools,
-			},
-		},
-		Instruction: `你是一个知识库助手，负责检索历史故障案例和最佳实践。
-
-你的职责：
-1. 使用 vector_search 工具检索相关的历史案例
-2. 使用 knowledge_index 工具索引新的文档到知识库
-3. 根据相似度和时效性对案例进行排序
-4. 提取关键的解决方案和最佳实践
-5. 如果没有找到相关案例，明确告知用户
-
-索引文档时的注意事项：
-- knowledge_index 工具会自动将长文档分片（默认 1000 字符/片）
-- 可以通过 chunk_size 参数调整分片大小
-- 每个分片会自动添加文档标题和位置信息作为上下文
-- 分片后的文档更适合向量检索
-
-检索时的注意事项：
-- 优先返回成功率高的案例
-- 关注案例的时效性（最近的案例更有参考价值）
-- 提供具体的操作步骤，而不是泛泛而谈
-- 如果检索到多个分片，综合所有分片内容给出完整答案`,
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to create knowledge agent: %w", err)
+		return nil, fmt.Errorf("failed to build knowledge upload chain: %w", err)
 	}
 
 	if cfg.Logger != nil {
-		cfg.Logger.Info("knowledge agent created",
-			zap.Bool("retriever_available", milvusRetriever != nil),
-			zap.Bool("indexer_available", milvusIndexer != nil))
+		cfg.Logger.Info("knowledge upload agent created")
 	}
 
-	return agent, nil
+	return &KnowledgeUploadAgent{
+		name:        "knowledge_agent",
+		description: "知识库上传代理，仅负责将文本分片并索引到向量库",
+		runnable:    runnable,
+		logger:      cfg.Logger,
+	}, nil
 }
 
+func (a *KnowledgeUploadAgent) Name(ctx context.Context) string {
+	return a.name
+}
 
+func (a *KnowledgeUploadAgent) Description(ctx context.Context) string {
+	return a.description
+}
 
+func (a *KnowledgeUploadAgent) Run(ctx context.Context, input *adk.AgentInput, _ ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
+	iter, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+
+	go func() {
+		defer gen.Close()
+
+		uploadReq, err := parseUploadInput(input)
+		if err != nil {
+			gen.Send(&adk.AgentEvent{AgentName: a.name, Err: err})
+			return
+		}
+
+		result, err := a.runnable.Invoke(ctx, uploadReq)
+		if err != nil {
+			gen.Send(&adk.AgentEvent{AgentName: a.name, Err: err})
+			return
+		}
+
+		if a.logger != nil {
+			a.logger.Info("knowledge uploaded",
+				zap.Int("chunks", len(result.IDs)),
+				zap.String("title", uploadReq.Title))
+		}
+
+		msg := schema.AssistantMessage(
+			fmt.Sprintf("知识上传完成，已入库 %d 个分片。", len(result.IDs)),
+			nil,
+		)
+		event := adk.EventFromMessage(msg, nil, schema.Assistant, "")
+		event.AgentName = a.name
+		event.Output.CustomizedOutput = map[string]any{
+			"indexed": true,
+			"ids":     result.IDs,
+			"title":   uploadReq.Title,
+			"tags":    uploadReq.Tags,
+		}
+		gen.Send(event)
+	}()
+
+	return iter
+}
+
+func parseUploadInput(input *adk.AgentInput) (*uploadInput, error) {
+	if input == nil || len(input.Messages) == 0 {
+		return nil, fmt.Errorf("upload content is required")
+	}
+
+	content := latestUserContent(input.Messages)
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil, fmt.Errorf("upload content is required")
+	}
+
+	var req uploadInput
+	if strings.HasPrefix(content, "{") {
+		if err := json.Unmarshal([]byte(content), &req); err == nil {
+			if strings.TrimSpace(req.Content) != "" {
+				return &req, nil
+			}
+		}
+	}
+
+	return &uploadInput{
+		Content: content,
+		Title:   inferTitle(content),
+	}, nil
+}
+
+func latestUserContent(messages []adk.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i] == nil {
+			continue
+		}
+		if messages[i].Role == schema.User && strings.TrimSpace(messages[i].Content) != "" {
+			return messages[i].Content
+		}
+	}
+
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i] != nil && strings.TrimSpace(messages[i].Content) != "" {
+			return messages[i].Content
+		}
+	}
+
+	return ""
+}
+
+func inferTitle(content string) string {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		line = strings.TrimPrefix(line, "#")
+		line = strings.TrimSpace(line)
+		runes := []rune(line)
+		if len(runes) > 48 {
+			return string(runes[:48])
+		}
+		return line
+	}
+	return "knowledge_upload"
+}
+
+func toDocuments(in *uploadInput) []*schema.Document {
+	now := time.Now().Unix()
+	doc := &schema.Document{
+		ID:      fmt.Sprintf("knowledge_%d_1", now),
+		Content: strings.TrimSpace(in.Content),
+		MetaData: map[string]any{
+			"title":      strings.TrimSpace(in.Title),
+			"tags":       strings.TrimSpace(in.Tags),
+			"upload_at":  time.Now().Format(time.RFC3339),
+			"split_type": "raw",
+		},
+	}
+
+	if in.Meta != nil {
+		for k, v := range in.Meta {
+			doc.MetaData[k] = v
+		}
+	}
+
+	return []*schema.Document{doc}
+}

@@ -16,12 +16,19 @@ import (
 // QuestionPredictionTool 问题预测工具
 type QuestionPredictionTool struct {
 	chatModel *models.ChatModel
+	llmEnable bool
 	logger    *zap.Logger
 }
 
-func NewQuestionPredictionTool(chatModel *models.ChatModel, logger *zap.Logger) tool.BaseTool {
+func NewQuestionPredictionTool(chatModel *models.ChatModel, logger *zap.Logger, enableLLM ...bool) tool.BaseTool {
+	llmEnable := false
+	if len(enableLLM) > 0 {
+		llmEnable = enableLLM[0]
+	}
+
 	return &QuestionPredictionTool{
 		chatModel: chatModel,
+		llmEnable: llmEnable,
 		logger:    logger,
 	}
 }
@@ -68,21 +75,23 @@ func (t *QuestionPredictionTool) InvokableRun(ctx context.Context, argumentsInJS
 		in.Count = 5
 	}
 
-	// 1. 尝试使用 LLM 生成上下文相关的问题
-	method := "llm"
-	questions, err := t.llmBasedPrediction(ctx, in.Context, in.Count)
-	if err != nil {
-		if t.logger != nil {
-			t.logger.Warn("LLM prediction failed, fallback to template",
-				zap.Error(err))
+	// 默认使用模板预测；仅在显式启用时使用 LLM 增强。
+	method := "template"
+	questions := t.templateBasedPrediction(in.Context, in.Count)
+	if t.llmEnable {
+		method = "llm"
+		llmQuestions, err := t.llmBasedPrediction(ctx, in.Context, in.Count)
+		if err != nil {
+			if t.logger != nil {
+				t.logger.Warn("LLM prediction failed, fallback to template",
+					zap.Error(err))
+			}
+			method = "template"
+		} else if len(llmQuestions) > 0 {
+			questions = llmQuestions
+		} else {
+			method = "template"
 		}
-		// 降级到模板问题
-		questions = t.templateBasedPrediction(in.Context, in.Count)
-		method = "template"
-	} else if len(questions) == 0 {
-		// LLM 返回空结果时也降级，保证始终有可用问题建议
-		questions = t.templateBasedPrediction(in.Context, in.Count)
-		method = "template"
 	}
 
 	result := map[string]interface{}{

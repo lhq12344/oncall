@@ -5,19 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"go_agent/internal/agent/dialogue"
-	"go_agent/internal/agent/execution"
-	"go_agent/internal/agent/knowledge"
 	"go_agent/internal/agent/ops"
-	"go_agent/internal/agent/rca"
-	"go_agent/internal/agent/strategy"
-	"go_agent/internal/agent/supervisor"
-	"go_agent/internal/ai/embedder"
 	"go_agent/internal/ai/indexer"
 	"go_agent/internal/ai/models"
 	"go_agent/internal/concurrent"
 	appcontext "go_agent/internal/context"
-	"go_agent/internal/healing"
 	"go_agent/utility/mem"
 
 	"github.com/cloudwego/eino/adk"
@@ -27,15 +19,14 @@ import (
 
 // Application 应用实例
 type Application struct {
-	ContextManager  *appcontext.ContextManager
-	SupervisorAgent adk.ResumableAgent
-	OpsIntegration  *ops.IntegratedOpsExecutor
-	OpsAgent        adk.Agent // Plan-Execute-Replan Ops Agent
-	MilvusIndexer   interface{} // Milvus Indexer for direct document indexing
-	HealingManager  *healing.HealingLoopManager
-	Logger          *zap.Logger
-	RedisClient     *redis.Client
-	CBManager       *concurrent.CircuitBreakerManager
+	ContextManager *appcontext.ContextManager
+	ChatAgent      adk.ResumableAgent
+	OpsIntegration *ops.IntegratedOpsExecutor
+	OpsAgent       adk.Agent   // Plan-Execute-Replan Ops Agent
+	MilvusIndexer  interface{} // Milvus Indexer for direct document indexing
+	Logger         *zap.Logger
+	RedisClient    *redis.Client
+	CBManager      *concurrent.CircuitBreakerManager
 }
 
 // Config 应用配置
@@ -86,55 +77,23 @@ func NewApplication(cfg *Config) (*Application, error) {
 	// 4. 初始化上下文管理器
 	contextManager := appcontext.NewContextManager(storage)
 
-	// 5. 初始化 LLM 模型
+	// // 5. 初始化 LLM 模型
 	chatModel, err := models.GetChatModel()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get chat model: %w", err)
 	}
 
-	// 5.1 初始化 Embedder（用于语义相似度计算）
-	embeddingModel, err := embedder.DoubaoEmbedding(ctx)
+	// 6. 初始化 Milvus Indexer（用于知识上传接口）
+	var milvusIndexer interface{}
+	createdMilvusIndexer, err := indexer.NewMilvusIndexer(ctx)
 	if err != nil {
-		logger.Warn("failed to initialize embedder, dialogue agent will work without semantic similarity",
-			zap.Error(err))
-		embeddingModel = nil // 允许降级
+		logger.Warn("failed to init milvus indexer, file upload indexing disabled", zap.Error(err))
 	} else {
-		logger.Info("embedder initialized (Doubao)")
+		milvusIndexer = createdMilvusIndexer
+		logger.Info("milvus indexer initialized")
 	}
 
-	// 6. 初始化各个 Agent
-
-	// 6.0 初始化 Milvus Indexer（用于直接文档索引）
-	milvusIndexer, err := indexer.NewMilvusIndexer(ctx)
-	if err != nil {
-		logger.Warn("failed to create milvus indexer", zap.Error(err))
-		milvusIndexer = nil
-	} else {
-		logger.Info("milvus indexer initialized for direct document indexing")
-	}
-
-	// 6.1 Knowledge Agent（集成 Milvus）
-	knowledgeAgent, err := knowledge.NewKnowledgeAgent(ctx, &knowledge.Config{
-		ChatModel: chatModel,
-		Logger:    logger,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create knowledge agent: %w", err)
-	}
-	logger.Info("knowledge agent initialized with Milvus integration")
-
-	// 6.2 Dialogue Agent（集成 Embedder）
-	dialogueAgent, err := dialogue.NewDialogueAgent(ctx, &dialogue.Config{
-		ChatModel: chatModel,
-		Embedder:  embeddingModel, // 可能为 nil（降级）
-		Logger:    logger,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create dialogue agent: %w", err)
-	}
-	logger.Info("dialogue agent initialized with enhanced intent analysis")
-
-	// 6.3 Ops Agent（集成 K8s 和 Prometheus）
+	// 7. 初始化 Ops Agent（集成 K8s 和 Prometheus）
 	opsAgent, err := ops.NewOpsAgent(ctx, &ops.Config{
 		ChatModel:     chatModel,
 		KubeConfig:    cfg.KubeConfig, // 从配置读取
@@ -147,7 +106,7 @@ func NewApplication(cfg *Config) (*Application, error) {
 	logger.Info("ops agent initialized with K8s and Prometheus integration",
 		zap.String("prometheus_url", cfg.PrometheusURL))
 
-	// 6.3.1 Ops 集成执行器（并发 + 缓存 + 熔断）
+	// 7.1 Ops 集成执行器（并发 + 缓存 + 熔断）
 	opsIntegration, err := ops.NewIntegratedOpsExecutor(ctx, &ops.IntegratedOpsConfig{
 		RedisClient:   redisClient,
 		KubeConfig:    cfg.KubeConfig,
@@ -159,102 +118,33 @@ func NewApplication(cfg *Config) (*Application, error) {
 		logger.Warn("failed to init integrated ops executor, degrade to normal path", zap.Error(err))
 	}
 
-	// 6.4 Execution Agent（执行计划生成和安全执行）
-	executionAgent, err := execution.NewExecutionAgent(ctx, &execution.Config{
-		ChatModel: chatModel,
-		Logger:    logger,
+	// 8. 初始化统一故障处置工作流 Agent
+	chatAgent, err := ops.NewIncidentWorkflowAgent(ctx, &ops.IncidentWorkflowConfig{
+		ChatModel:     chatModel,
+		KubeConfig:    cfg.KubeConfig,
+		PrometheusURL: cfg.PrometheusURL,
+		Logger:        logger,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create execution agent: %w", err)
+		return nil, fmt.Errorf("failed to create incident workflow agent: %w", err)
 	}
-	logger.Info("execution agent initialized with sandbox execution")
+	logger.Info("incident workflow chat agent initialized")
 
-	// 6.5 RCA Agent（根因分析）
-	rcaAgent, err := rca.NewRCAAgent(ctx, &rca.Config{
-		ChatModel: chatModel,
-		Logger:    logger,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create rca agent: %w", err)
-	}
-	logger.Info("rca agent initialized with root cause analysis")
-
-	// 6.6 Strategy Agent（策略评估和优化）
-	strategyAgent, err := strategy.NewStrategyAgent(ctx, &strategy.Config{
-		ChatModel: chatModel,
-		Logger:    logger,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create strategy agent: %w", err)
-	}
-	logger.Info("strategy agent initialized with strategy optimization")
-
-	// 6.7 Supervisor Agent（使用 Eino ADK prebuilt supervisor）
-	supervisorAgent, err := supervisor.NewSupervisorAgent(ctx, &supervisor.Config{
-		ChatModel:      chatModel,
-		KnowledgeAgent: knowledgeAgent,
-		DialogueAgent:  dialogueAgent,
-		OpsAgent:       opsAgent,
-		ExecutionAgent: executionAgent,
-		RCAAgent:       rcaAgent,
-		StrategyAgent:  strategyAgent,
-		Logger:         logger,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create supervisor agent: %w", err)
-	}
-
-	logger.Info("supervisor agent initialized with Eino ADK")
-
-	// 7. 初始化全局熔断器管理器（用于监控）
+	// 9. 初始化全局熔断器管理器（用于监控）
 	cbManager := concurrent.NewCircuitBreakerManager(logger)
 
-	// 8. 初始化自愈循环管理器
-	healingConfig := &healing.HealingConfig{
-		AutoTrigger:       true,
-		MonitorInterval:   30 * time.Second,
-		DetectionWindow:   5 * time.Minute,
-		MaxRetries:        3,
-		RetryDelay:        30 * time.Second,
-		BackoffMultiplier: 2.0,
-		RequireApproval:   false,
-		ApprovalTimeout:   5 * time.Minute,
-		EnableLearning:    true,
-		MinConfidence:     0.7,
-		RCAAgent:          rcaAgent,
-		StrategyAgent:     strategyAgent,
-		ExecutionAgent:    executionAgent,
-		KnowledgeAgent:    knowledgeAgent,
-		OpsAgent:          opsAgent,
-	}
-
-	healingManager, err := healing.NewHealingLoopManager(healingConfig, logger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create healing manager: %w", err)
-	}
-
-	// 启动自愈循环
-	go func() {
-		if err := healingManager.Start(context.Background()); err != nil {
-			logger.Error("failed to start healing manager", zap.Error(err))
-		}
-	}()
-
-	logger.Info("healing loop manager initialized and started")
-
-	// 9. 启动后台任务
+	// 10. 启动后台任务
 	go startBackgroundTasks(contextManager, cbManager, logger)
 
 	return &Application{
-		ContextManager:  contextManager,
-		SupervisorAgent: supervisorAgent,
-		OpsIntegration:  opsIntegration,
-		OpsAgent:        opsAgent,
-		MilvusIndexer:   milvusIndexer,
-		HealingManager:  healingManager,
-		Logger:          logger,
-		RedisClient:     redisClient,
-		CBManager:       cbManager,
+		ContextManager: contextManager,
+		ChatAgent:      chatAgent,
+		OpsIntegration: opsIntegration,
+		OpsAgent:       opsAgent,
+		MilvusIndexer:  milvusIndexer,
+		Logger:         logger,
+		RedisClient:    redisClient,
+		CBManager:      cbManager,
 	}, nil
 }
 
@@ -335,13 +225,6 @@ func startBackgroundTasks(cm *appcontext.ContextManager, cbManager *concurrent.C
 
 // Close 关闭应用
 func (app *Application) Close() error {
-	// 停止自愈循环
-	if app.HealingManager != nil {
-		if err := app.HealingManager.Stop(); err != nil {
-			app.Logger.Error("failed to stop healing manager", zap.Error(err))
-		}
-	}
-
 	if err := app.RedisClient.Close(); err != nil {
 		return fmt.Errorf("failed to close redis: %w", err)
 	}

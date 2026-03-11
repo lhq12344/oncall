@@ -3,9 +3,11 @@ package embedder
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
+	"github.com/cloudwego/eino-ext/components/embedding/ark"
 	"github.com/cloudwego/eino/components/embedding"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
@@ -139,13 +141,14 @@ func NewDoubaoMultimodalEmbedder(model, apiKey, baseURL string, dimensions int) 
 		return nil, fmt.Errorf("empty baseURL")
 	}
 
-	// arkruntime.WithBaseUrl 用于指定方舟数据面 Base URL（带 /api/v3/）:contentReference[oaicite:6]{index=6}
-	cli := arkruntime.NewClientWithApiKey(apiKey, arkruntime.WithBaseUrl(baseURL))
+	embedder, err := ark.NewEmbedder(context.Background(), &ark.EmbeddingConfig{
+		APIKey: apiKey, // for example, "xxxxxx-xxxx-xxxx-xxxx-xxxxxxx"
+		Model:  model,  // for example, "ep-20240909094235-xxxx"
+	})
+	if err != nil {
+		log.Printf("new embedder error: %v\n", err)
+		return nil, fmt.Errorf("empty baseURL")
+	}
+	return embedder, nil
 
-	return &DoubaoMultimodalEmbedder{
-		client:     cli,
-		model:      model,
-		dimensions: dimensions,
-		retry:      2, // 至少重试 2 次
-	}, nil
 }

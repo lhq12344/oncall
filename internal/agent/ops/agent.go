@@ -33,42 +33,7 @@ func NewOpsAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 		return nil, fmt.Errorf("chat model is required")
 	}
 
-	// 创建工具集
-	var toolsList []tool.BaseTool
-
-	// K8s 监控工具
-	k8sTool, err := tools.NewK8sMonitorTool(cfg.KubeConfig, cfg.Logger)
-	if err != nil {
-		if cfg.Logger != nil {
-			cfg.Logger.Warn("failed to create k8s monitor tool", zap.Error(err))
-		}
-	} else {
-		toolsList = append(toolsList, k8sTool)
-	}
-
-	// Prometheus 指标采集工具
-	metricsTool, err := tools.NewMetricsCollectorTool(cfg.PrometheusURL, cfg.Logger)
-	if err != nil {
-		if cfg.Logger != nil {
-			cfg.Logger.Warn("failed to create metrics collector tool", zap.Error(err))
-		}
-	} else {
-		toolsList = append(toolsList, metricsTool)
-	}
-
-	// Elasticsearch 日志查询工具
-	esLogTool, err := tools.NewESLogQueryTool(cfg.Logger)
-	if err != nil {
-		if cfg.Logger != nil {
-			cfg.Logger.Warn("failed to create es log query tool", zap.Error(err))
-		}
-	} else {
-		toolsList = append(toolsList, esLogTool)
-	}
-
-	// 日志分析工具（保留作为备用）
-	logTool := tools.NewLogAnalyzerTool(cfg.Logger)
-	toolsList = append(toolsList, logTool)
+	toolsList := buildOpsTools(cfg)
 
 	if len(toolsList) == 0 {
 		return nil, fmt.Errorf("no tools available for ops agent")
@@ -82,19 +47,19 @@ func NewOpsAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 			// 构建包含工具列表的系统提示
 			systemPrompt := `你是一个运维诊断规划专家。根据用户的运维需求，制定详细的诊断计划。
 
-可用工具（只能使用以下工具）：
-1. k8s_monitor - 查看 Kubernetes 资源状态（Pod、Node、Deployment）
-2. metrics_collector - 采集 Prometheus 指标数据（CPU、内存、网络等）
-3. es_log_query - 查询 Elasticsearch 日志（支持关键词、时间范围、日志级别过滤）
-4. log_analyzer - 分析日志模式（备用）
+				可用工具（只能使用以下工具）：
+				1. k8s_monitor - 查看 Kubernetes 资源状态（Pod、Node、Deployment）
+				2. metrics_collector - 采集 Prometheus 指标数据（CPU、内存、网络等）
+				3. es_log_query - 查询 Elasticsearch 日志（支持关键词、时间范围、日志级别过滤）
+				4. log_analyzer - 分析日志模式（备用）
 
-重要：不要使用任何其他工具（如 execute_command、shell_exec 等），只使用上述 4 个工具。
+				重要：不要使用任何其他工具（如 execute_command、shell_exec 等），只使用上述 4 个工具。
 
-规划原则：
-1. 先收集基础状态（K8s 资源、关键指标）
-2. 根据初步结果，针对性查询日志或详细指标
-3. 每个步骤要明确目标和预期输出
-4. 步骤之间要有逻辑关联`
+				规划原则：
+				1. 先收集基础状态（K8s 资源、关键指标）
+				2. 根据初步结果，针对性查询日志或详细指标
+				3. 每个步骤要明确目标和预期输出
+				4. 步骤之间要有逻辑关联`
 
 			messages := []adk.Message{
 				{
@@ -151,10 +116,46 @@ func NewOpsAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	namedAgent := &NamedAgent{
 		Agent: agent,
 		name:  "ops_agent",
-		desc:  "监控系���状态、采集指标、分析日志的运维代理",
+		desc:  "监控系统状态、采集指标、分析日志的运维代理",
 	}
 
 	return namedAgent, nil
+}
+
+func buildOpsTools(cfg *Config) []tool.BaseTool {
+	var toolsList []tool.BaseTool
+
+	k8sTool, err := tools.NewK8sMonitorTool(cfg.KubeConfig, cfg.Logger)
+	if err != nil {
+		if cfg.Logger != nil {
+			cfg.Logger.Warn("failed to create k8s monitor tool", zap.Error(err))
+		}
+	} else {
+		toolsList = append(toolsList, k8sTool)
+	}
+
+	metricsTool, err := tools.NewMetricsCollectorTool(cfg.PrometheusURL, cfg.Logger)
+	if err != nil {
+		if cfg.Logger != nil {
+			cfg.Logger.Warn("failed to create metrics collector tool", zap.Error(err))
+		}
+	} else {
+		toolsList = append(toolsList, metricsTool)
+	}
+
+	esLogTool, err := tools.NewESLogQueryTool(cfg.Logger)
+	if err != nil {
+		if cfg.Logger != nil {
+			cfg.Logger.Warn("failed to create es log query tool", zap.Error(err))
+		}
+	} else {
+		toolsList = append(toolsList, esLogTool)
+	}
+
+	logTool := tools.NewLogAnalyzerTool(cfg.Logger)
+	toolsList = append(toolsList, logTool)
+
+	return toolsList
 }
 
 // NamedAgent 包装 Agent 并添加名称和描述

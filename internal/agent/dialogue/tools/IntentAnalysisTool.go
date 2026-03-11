@@ -19,13 +19,20 @@ import (
 type IntentAnalysisTool struct {
 	chatModel *models.ChatModel
 	embedder  embedding.Embedder
+	llmEnable bool
 	logger    *zap.Logger
 }
 
-func NewIntentAnalysisTool(chatModel *models.ChatModel, embedder embedding.Embedder, logger *zap.Logger) tool.BaseTool {
+func NewIntentAnalysisTool(chatModel *models.ChatModel, embedder embedding.Embedder, logger *zap.Logger, enableLLM ...bool) tool.BaseTool {
+	llmEnable := false
+	if len(enableLLM) > 0 {
+		llmEnable = enableLLM[0]
+	}
+
 	return &IntentAnalysisTool{
 		chatModel: chatModel,
 		embedder:  embedder,
+		llmEnable: llmEnable,
 		logger:    logger,
 	}
 }
@@ -62,32 +69,37 @@ func (t *IntentAnalysisTool) InvokableRun(ctx context.Context, argumentsInJSON s
 	// 1. 关键词匹配（快速初步分类）
 	intentType, keywordConfidence := t.keywordMatching(in.UserInput)
 
-	// 2. LLM 增强分类（提高准确性）
-	llmIntent, llmConfidence, err := t.llmEnhancedClassification(ctx, in.UserInput)
-	if err != nil {
-		if t.logger != nil {
-			t.logger.Warn("LLM classification failed, fallback to keyword matching",
-				zap.Error(err))
-		}
-		// 降级到关键词匹配结果
-	} else {
-		// 如果 LLM 置信度更高，使用 LLM 结果
-		if llmConfidence > keywordConfidence {
+	// 2. Embedding 语义分类（提高准确性）
+	semanticIntent, semanticConfidence, err := t.semanticEmbeddingClassification(ctx, in.UserInput)
+	if err == nil && semanticConfidence > keywordConfidence {
+		intentType = semanticIntent
+		keywordConfidence = semanticConfidence
+	}
+
+	// 3. 可选 LLM 增强分类（默认关闭，避免二次模型调用开销）
+	if t.llmEnable {
+		llmIntent, llmConfidence, llmErr := t.llmEnhancedClassification(ctx, in.UserInput)
+		if llmErr != nil {
+			if t.logger != nil {
+				t.logger.Warn("LLM classification failed, fallback to non-LLM classifiers",
+					zap.Error(llmErr))
+			}
+		} else if llmConfidence > keywordConfidence {
 			intentType = llmIntent
 			keywordConfidence = llmConfidence
 		}
 	}
 
-	// 3. 语义熵计算（评估意图明确程度）
+	// 4. 语义熵计算（评估意图明确程度）
 	entropy := t.calculateSemanticEntropy(in.UserInput, intentType, keywordConfidence)
 
-	// 4. 置信度评估
+	// 5. 置信度评估
 	finalConfidence := t.evaluateConfidence(keywordConfidence, entropy, len(in.UserInput))
 
-	// 5. 判断是否收敛
+	// 6. 判断是否收敛
 	converged := entropy < 0.6 && finalConfidence > 0.7
 
-	// 6. 识别缺失信息
+	// 7. 识别缺失信息
 	missingInfo := t.identifyMissingInfo(in.UserInput, intentType)
 
 	result := map[string]interface{}{
@@ -116,6 +128,54 @@ func (t *IntentAnalysisTool) InvokableRun(ctx context.Context, argumentsInJSON s
 	}
 
 	return string(out), nil
+}
+
+// semanticEmbeddingClassification 基于 embedding 的语义分类
+func (t *IntentAnalysisTool) semanticEmbeddingClassification(ctx context.Context, input string) (string, float64, error) {
+	if t.embedder == nil {
+		return "", 0, fmt.Errorf("embedder not available")
+	}
+
+	intentPrototypes := map[string]string{
+		"monitor":   "查看系统监控指标和资源使用情况",
+		"diagnose":  "排查故障异常并分析错误原因",
+		"knowledge": "查询历史案例文档和最佳实践",
+		"execute":   "执行运维操作并修复系统问题",
+		"general":   "一般对话咨询和日常沟通",
+	}
+
+	texts := make([]string, 0, len(intentPrototypes)+1)
+	texts = append(texts, input)
+	intentOrder := make([]string, 0, len(intentPrototypes))
+	for intent, proto := range intentPrototypes {
+		intentOrder = append(intentOrder, intent)
+		texts = append(texts, proto)
+	}
+
+	vectors, err := t.embedder.EmbedStrings(ctx, texts)
+	if err != nil {
+		return "", 0, err
+	}
+	if len(vectors) != len(texts) {
+		return "", 0, fmt.Errorf("embedding result size mismatch")
+	}
+
+	inputVec := vectors[0]
+	bestIntent := "general"
+	bestScore := 0.0
+	for idx, intent := range intentOrder {
+		score := cosineSimilarity(inputVec, vectors[idx+1])
+		if score > bestScore {
+			bestScore = score
+			bestIntent = intent
+		}
+	}
+
+	if bestScore <= 0 {
+		return "general", 0.55, nil
+	}
+
+	return bestIntent, bestScore, nil
 }
 
 // keywordMatching 基于关键词的快速分类
@@ -284,6 +344,34 @@ func (t *IntentAnalysisTool) evaluateConfidence(baseConfidence, entropy float64,
 	}
 
 	return confidence
+}
+
+func cosineSimilarity(a, b []float64) float64 {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0
+	}
+
+	dot := 0.0
+	normA := 0.0
+	normB := 0.0
+	for i := range a {
+		dot += a[i] * b[i]
+		normA += a[i] * a[i]
+		normB += b[i] * b[i]
+	}
+
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+
+	score := dot / (math.Sqrt(normA) * math.Sqrt(normB))
+	if score < 0 {
+		return 0
+	}
+	if score > 1 {
+		return 1
+	}
+	return score
 }
 
 // identifyMissingInfo 识别缺失的关键信息

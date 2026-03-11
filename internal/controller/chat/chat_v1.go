@@ -2,8 +2,10 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -11,21 +13,28 @@ import (
 	"go_agent/internal/agent/ops"
 	"go_agent/internal/cache"
 	"go_agent/internal/concurrent"
+	appcontext "go_agent/internal/context"
 	"go_agent/internal/healing"
 	"go_agent/utility/mem"
 	"go_agent/utility/tokenizer"
 
 	milvusIndexer "github.com/cloudwego/eino-ext/components/indexer/milvus"
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"github.com/gogf/gf/v2/frame/g"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
 
 type ControllerV1 struct {
-	supervisorAgent adk.ResumableAgent
-	logger          *zap.Logger
+	chatAgent        adk.ResumableAgent
+	chatRunner       *adk.Runner
+	chatStreamRunner *adk.Runner
+	rootAgentName    string
+	checkPointStore  compose.CheckPointStore
+	logger           *zap.Logger
 
 	cacheManager   *cache.Manager
 	llmCache       *cache.LLMCache
@@ -34,13 +43,17 @@ type ControllerV1 struct {
 	opsAgent       adk.Agent   // Plan-Execute-Replan Ops Agent
 	milvusIndexer  interface{} // Milvus Indexer for direct document indexing
 	healingManager *healing.HealingLoopManager
+	redisClient    *redis.Client
 
-	cacheHits   int64
-	cacheMisses int64
+	localInterruptState sync.Map // key: session_id:checkpoint_id -> []v1.InterruptContext
+
+	checkpointTTL time.Duration
+	cacheHits     int64
+	cacheMisses   int64
 }
 
 func NewV1(
-	supervisorAgent adk.ResumableAgent,
+	chatAgent adk.ResumableAgent,
 	logger *zap.Logger,
 	redisClient *redis.Client,
 	opsExecutor *ops.IntegratedOpsExecutor,
@@ -49,12 +62,36 @@ func NewV1(
 	healingManager *healing.HealingLoopManager,
 ) *ControllerV1 {
 	ctrl := &ControllerV1{
-		supervisorAgent: supervisorAgent,
-		logger:          logger,
-		opsExecutor:     opsExecutor,
-		opsAgent:        opsAgent,
-		milvusIndexer:   milvusIndexer,
-		healingManager:  healingManager,
+		chatAgent:      chatAgent,
+		rootAgentName:  "chat_agent",
+		logger:         logger,
+		opsExecutor:    opsExecutor,
+		opsAgent:       opsAgent,
+		milvusIndexer:  milvusIndexer,
+		healingManager: healingManager,
+		redisClient:    redisClient,
+		checkpointTTL:  24 * time.Hour,
+	}
+
+	if chatAgent != nil {
+		if agentName := strings.TrimSpace(chatAgent.Name(context.Background())); agentName != "" {
+			ctrl.rootAgentName = agentName
+		}
+		if redisClient != nil {
+			ctrl.checkPointStore = appcontext.NewRedisCheckPointStore(redisClient, "oncall", ctrl.checkpointTTL)
+		} else {
+			ctrl.checkPointStore = newInMemoryCheckPointStore()
+		}
+		ctrl.chatRunner = adk.NewRunner(context.Background(), adk.RunnerConfig{
+			Agent:           chatAgent,
+			EnableStreaming: false,
+			CheckPointStore: ctrl.checkPointStore,
+		})
+		ctrl.chatStreamRunner = adk.NewRunner(context.Background(), adk.RunnerConfig{
+			Agent:           chatAgent,
+			EnableStreaming: true,
+			CheckPointStore: ctrl.checkPointStore,
+		})
 	}
 
 	ctrl.cbManager = concurrent.NewCircuitBreakerManager(logger)
@@ -88,6 +125,18 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 	}
 	if req.Id == "" {
 		req.Id = "default-session"
+	}
+
+	// 默认走 SSE，对话请求可通过 sse=false 显式关闭。
+	if req.SSE == nil || *req.SSE {
+		_, err = c.ChatStream(ctx, &v1.ChatStreamReq{
+			Id:       req.Id,
+			Question: req.Question,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &v1.ChatRes{}, nil
 	}
 
 	c.logger.Info("chat request received",
@@ -149,49 +198,41 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 		}
 	}
 
-	cb := c.cbManager.GetOrCreate("supervisor_chat", &concurrent.CircuitBreakerConfig{
+	cb := c.cbManager.GetOrCreate(c.rootAgentName+"_chat", &concurrent.CircuitBreakerConfig{
 		FailureThreshold: 3,
 		MinRequestCount:  3,
 		Timeout:          30 * time.Second,
 	})
 
+	checkpointID := c.generateCheckpointID(req.Id)
 	result, execErr := cb.Execute(ctx, func(execCtx context.Context) (interface{}, error) {
-		iterator := c.supervisorAgent.Run(execCtx, input)
-
-		var answer string
-		for {
-			event, ok := iterator.Next()
-			if !ok {
-				break
-			}
-
-			if event.Err != nil {
-				return nil, event.Err
-			}
-
-			if event.Output != nil && event.Output.MessageOutput != nil {
-				if event.Output.MessageOutput.Message != nil {
-					answer += event.Output.MessageOutput.Message.Content
-				}
-			}
+		if c.chatRunner == nil {
+			return nil, fmt.Errorf("chat runner is not initialized")
 		}
-
-		return answer, nil
+		iterator := c.chatRunner.Run(execCtx, input.Messages, adk.WithCheckPointID(checkpointID))
+		return c.collectChatResult(iterator, checkpointID)
 	})
 	if execErr != nil {
-		c.logger.Error("supervisor agent execution failed",
+		c.logger.Error("chat agent execution failed",
 			zap.String("session_id", req.Id),
 			zap.Error(execErr))
 		return nil, fmt.Errorf("agent error: %w", execErr)
 	}
 
-	answer, _ := result.(string)
+	runResult, _ := result.(*chatRunResult)
+	answer := ""
+	if runResult != nil {
+		answer = runResult.Answer
+		if runResult.Interrupted {
+			c.saveInterruptState(ctx, req.Id, checkpointID, runResult.InterruptContexts)
+		}
+	}
 
 	if answer == "" {
 		answer = "抱歉，我无法生成回答。"
 	}
 
-	if c.llmCache != nil {
+	if c.llmCache != nil && (runResult == nil || !runResult.Interrupted) {
 		cacheCtx := context.WithValue(ctx, cache.CacheTimestampContextKey, time.Now().Unix())
 		if cacheErr := c.llmCache.Set(cacheCtx, cacheKey, schema.AssistantMessage(answer, nil)); cacheErr != nil {
 			c.logger.Warn("failed to set llm cache",
@@ -215,11 +256,13 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 		completionTokens = preciseCompletionTokens
 	}
 
-	err = memory.SetMessages(ctx, userMsg, assistantMsg, historyMsgs, promptTokens, completionTokens)
-	if err != nil {
-		c.logger.Warn("failed to save history",
-			zap.String("session_id", req.Id),
-			zap.Error(err))
+	if runResult == nil || !runResult.Interrupted {
+		err = memory.SetMessages(ctx, userMsg, assistantMsg, historyMsgs, promptTokens, completionTokens)
+		if err != nil {
+			c.logger.Warn("failed to save history",
+				zap.String("session_id", req.Id),
+				zap.Error(err))
+		}
 	}
 
 	c.logger.Info("chat response generated",
@@ -227,9 +270,16 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 		zap.Int("answer_length", len(answer)),
 		zap.Float64("cache_hit_rate", c.getCacheHitRate()))
 
-	return &v1.ChatRes{
+	response := &v1.ChatRes{
 		Answer: answer,
-	}, nil
+	}
+	if runResult != nil && runResult.Interrupted {
+		response.Interrupted = true
+		response.CheckpointID = runResult.CheckpointID
+		response.InterruptContexts = runResult.InterruptContexts
+	}
+
+	return response, nil
 }
 
 func (c *ControllerV1) buildLLMCacheKey(sessionID string, historyMsgs []*schema.Message, question string) *cache.LLMCacheKey {
@@ -238,10 +288,10 @@ func (c *ControllerV1) buildLLMCacheKey(sessionID string, historyMsgs []*schema.
 	cacheMessages = append(cacheMessages, schema.UserMessage(question))
 
 	return &cache.LLMCacheKey{
-		AgentID:   "supervisor",
+		AgentID:   c.rootAgentName,
 		SessionID: sessionID,
 		Messages:  cacheMessages,
-		Model:     "supervisor",
+		Model:     c.rootAgentName,
 	}
 }
 
@@ -253,6 +303,284 @@ func (c *ControllerV1) getCacheHitRate() float64 {
 		return 0
 	}
 	return float64(hits) / float64(total)
+}
+
+type chatRunResult struct {
+	Answer            string
+	Interrupted       bool
+	CheckpointID      string
+	InterruptContexts []v1.InterruptContext
+}
+
+type interruptStateRecord struct {
+	CheckpointID      string                `json:"checkpoint_id"`
+	InterruptContexts []v1.InterruptContext `json:"interrupt_contexts"`
+}
+
+func (c *ControllerV1) collectChatResult(iterator *adk.AsyncIterator[*adk.AgentEvent], checkpointID string) (*chatRunResult, error) {
+	result := &chatRunResult{
+		CheckpointID: checkpointID,
+	}
+	if iterator == nil {
+		return result, fmt.Errorf("agent iterator is nil")
+	}
+
+	var lastAssistant string
+	var lastRootAgent string
+
+	for {
+		event, ok := iterator.Next()
+		if !ok {
+			break
+		}
+		if event == nil {
+			continue
+		}
+		if event.Err != nil {
+			return nil, event.Err
+		}
+
+		if event.Action != nil && event.Action.Interrupted != nil {
+			result.Interrupted = true
+			result.InterruptContexts = convertInterruptContexts(event.Action.Interrupted.InterruptContexts)
+
+			msg := buildInterruptMessage(event.Action.Interrupted.Data)
+			if msg != "" {
+				if event.AgentName == c.rootAgentName {
+					lastRootAgent = msg
+				} else {
+					lastAssistant = msg
+				}
+			}
+			continue
+		}
+
+		if event.Output == nil || event.Output.MessageOutput == nil || event.Output.MessageOutput.Message == nil {
+			continue
+		}
+		msg := event.Output.MessageOutput.Message
+		if msg.Role != schema.Assistant {
+			continue
+		}
+		content := sanitizeUserFacingContent(msg.Content)
+		if content == "" {
+			continue
+		}
+		if event.AgentName == c.rootAgentName {
+			lastRootAgent = content
+		} else {
+			lastAssistant = content
+		}
+	}
+
+	if lastRootAgent != "" {
+		result.Answer = lastRootAgent
+	} else {
+		result.Answer = lastAssistant
+	}
+	return result, nil
+}
+
+func (c *ControllerV1) generateCheckpointID(sessionID string) string {
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" {
+		sid = "default-session"
+	}
+	return fmt.Sprintf("%s:%s", sid, uuid.NewString())
+}
+
+func convertInterruptContexts(contexts []*adk.InterruptCtx) []v1.InterruptContext {
+	result := make([]v1.InterruptContext, 0, len(contexts))
+	for _, item := range contexts {
+		if item == nil {
+			continue
+		}
+		result = append(result, v1.InterruptContext{
+			ID:          item.ID,
+			Address:     item.Address.String(),
+			Info:        strings.TrimSpace(fmt.Sprintf("%v", item.Info)),
+			IsRootCause: item.IsRootCause,
+		})
+	}
+	return result
+}
+
+func (c *ControllerV1) resolveInterruptTargets(ctx context.Context, sessionID, checkpointID string, provided []string) ([]string, error) {
+	normalized := normalizeIDList(provided)
+	if len(normalized) > 0 {
+		return normalized, nil
+	}
+
+	contexts, ok := c.loadInterruptState(ctx, sessionID, checkpointID)
+	if !ok || len(contexts) == 0 {
+		return nil, fmt.Errorf("interrupt ids are required: no saved interrupt context found for checkpoint %s", checkpointID)
+	}
+
+	root := make([]string, 0, len(contexts))
+	all := make([]string, 0, len(contexts))
+	for _, item := range contexts {
+		if item.ID == "" {
+			continue
+		}
+		all = append(all, item.ID)
+		if item.IsRootCause {
+			root = append(root, item.ID)
+		}
+	}
+
+	if len(root) > 0 {
+		return normalizeIDList(root), nil
+	}
+	return normalizeIDList(all), nil
+}
+
+func normalizeIDList(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	uniq := make(map[string]struct{}, len(ids))
+	result := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := uniq[id]; exists {
+			continue
+		}
+		uniq[id] = struct{}{}
+		result = append(result, id)
+	}
+	return result
+}
+
+func (c *ControllerV1) resumeAgent(
+	ctx context.Context,
+	checkpointID string,
+	targetIDs []string,
+	approved *bool,
+	resolved *bool,
+	comment string,
+	streaming bool,
+) (*adk.AsyncIterator[*adk.AgentEvent], error) {
+	targetIDs = normalizeIDList(targetIDs)
+	if len(targetIDs) == 0 {
+		return nil, fmt.Errorf("interrupt ids cannot be empty when resuming")
+	}
+
+	payload := map[string]any{}
+	if approved != nil {
+		payload["approved"] = *approved
+	}
+	if resolved != nil {
+		payload["resolved"] = *resolved
+	}
+	if strings.TrimSpace(comment) != "" {
+		payload["comment"] = strings.TrimSpace(comment)
+	}
+	if len(payload) == 0 {
+		payload["comment"] = "继续执行"
+	}
+
+	targets := make(map[string]any, len(targetIDs))
+	for _, id := range targetIDs {
+		targets[id] = payload
+	}
+
+	var runner *adk.Runner
+	if streaming {
+		runner = c.chatStreamRunner
+	} else {
+		runner = c.chatRunner
+	}
+	if runner == nil {
+		return nil, fmt.Errorf("chat runner is not initialized")
+	}
+
+	return runner.ResumeWithParams(ctx, checkpointID, &adk.ResumeParams{Targets: targets})
+}
+
+func (c *ControllerV1) saveInterruptState(ctx context.Context, sessionID, checkpointID string, contexts []v1.InterruptContext) {
+	if len(contexts) == 0 {
+		return
+	}
+
+	record := interruptStateRecord{
+		CheckpointID:      checkpointID,
+		InterruptContexts: contexts,
+	}
+	key := c.interruptStateKey(sessionID, checkpointID)
+
+	if c.redisClient != nil {
+		data, err := json.Marshal(record)
+		if err == nil {
+			if err = c.redisClient.Set(ctx, key, data, c.checkpointTTL).Err(); err == nil {
+				return
+			}
+		}
+		if c.logger != nil {
+			c.logger.Warn("failed to save interrupt state to redis", zap.String("key", key), zap.Error(err))
+		}
+	}
+
+	c.localInterruptState.Store(key, contexts)
+}
+
+func (c *ControllerV1) loadInterruptState(ctx context.Context, sessionID, checkpointID string) ([]v1.InterruptContext, bool) {
+	key := c.interruptStateKey(sessionID, checkpointID)
+
+	if c.redisClient != nil {
+		data, err := c.redisClient.Get(ctx, key).Bytes()
+		if err == nil {
+			record := interruptStateRecord{}
+			if unmarshalErr := json.Unmarshal(data, &record); unmarshalErr == nil {
+				return record.InterruptContexts, len(record.InterruptContexts) > 0
+			}
+		}
+	}
+
+	if value, ok := c.localInterruptState.Load(key); ok {
+		contexts, castOK := value.([]v1.InterruptContext)
+		if castOK {
+			return contexts, len(contexts) > 0
+		}
+	}
+
+	return nil, false
+}
+
+func (c *ControllerV1) interruptStateKey(sessionID, checkpointID string) string {
+	return fmt.Sprintf("oncall:interrupt:%s:%s", sessionID, checkpointID)
+}
+
+type inMemoryCheckPointStore struct {
+	mu   sync.RWMutex
+	data map[string][]byte
+}
+
+func newInMemoryCheckPointStore() compose.CheckPointStore {
+	return &inMemoryCheckPointStore{data: make(map[string][]byte)}
+}
+
+func (s *inMemoryCheckPointStore) Get(_ context.Context, checkPointID string) ([]byte, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	data, ok := s.data[checkPointID]
+	if !ok {
+		return nil, false, nil
+	}
+	copied := make([]byte, len(data))
+	copy(copied, data)
+	return copied, true, nil
+}
+
+func (s *inMemoryCheckPointStore) Set(_ context.Context, checkPointID string, checkPoint []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	copied := make([]byte, len(checkPoint))
+	copy(copied, checkPoint)
+	s.data[checkPointID] = copied
+	return nil
 }
 
 func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (res *v1.ChatStreamRes, err error) {
@@ -280,6 +608,10 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 	r.Response.Header().Set("Connection", "keep-alive")
 	r.Response.Header().Set("X-Accel-Buffering", "no")
 
+	// 立即写入响应头，确保连接建立
+	r.Response.WriteHeader(200)
+	r.Response.Flush()
+
 	// 获取会话历史
 	memory := mem.GetSimpleMemory(req.Id)
 	historyMsgs, err := mem.GetMessagesForRequest(ctx, req.Id, schema.UserMessage(req.Question), 5)
@@ -296,23 +628,54 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 		EnableStreaming: true,
 	}
 
-	// 流式执行 supervisor agent
+	// 流式执行 chat agent
 	var fullAnswer strings.Builder
-	iter := c.supervisorAgent.Run(ctx, input)
 
-	for {
-		event, hasNext := iter.Next()
-		if !hasNext {
+	// 使用独立的 goroutine 执行 agent，避免阻塞
+	resultChan := make(chan struct {
+		event   *adk.AgentEvent
+		hasNext bool
+	}, 10) // 缓冲通道，避免阻塞
+
+	checkpointID := c.generateCheckpointID(req.Id)
+	go func() {
+		defer close(resultChan)
+		if c.chatStreamRunner == nil {
+			resultChan <- struct {
+				event   *adk.AgentEvent
+				hasNext bool
+			}{
+				event:   &adk.AgentEvent{Err: fmt.Errorf("chat stream runner is not initialized")},
+				hasNext: true,
+			}
+			return
+		}
+		iter := c.chatStreamRunner.Run(ctx, input.Messages, adk.WithCheckPointID(checkpointID))
+		for {
+			event, hasNext := iter.Next()
+			resultChan <- struct {
+				event   *adk.AgentEvent
+				hasNext bool
+			}{event, hasNext}
+			if !hasNext {
+				break
+			}
+		}
+	}()
+
+	for result := range resultChan {
+		if !result.hasNext {
 			break
 		}
 
+		event := result.event
 		if event == nil {
 			continue
 		}
 
 		// 检查错误
 		if event.Err != nil {
-			c.logger.Error("supervisor agent stream error",
+			c.logger.Error("chat agent stream error",
 				zap.String("session_id", req.Id),
 				zap.Error(event.Err))
 
@@ -324,18 +687,50 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 		}
 
 		// 提取消息内容
-		if event.Output != nil && event.Output.MessageOutput != nil {
-			if event.Output.MessageOutput.Message != nil {
-				chunk := event.Output.MessageOutput.Message.Content
-				if chunk != "" {
-					fullAnswer.WriteString(chunk)
+		if event.Action != nil && event.Action.Interrupted != nil {
+			contexts := convertInterruptContexts(event.Action.Interrupted.InterruptContexts)
+			c.saveInterruptState(ctx, req.Id, checkpointID, contexts)
 
-					// 发送 SSE 数据
-					data := fmt.Sprintf("data: %s\n\n", chunk)
-					r.Response.Write(data)
-					r.Response.Flush()
-				}
+			interruptPayload := map[string]any{
+				"type":               "interrupt",
+				"checkpoint_id":      checkpointID,
+				"interrupt_contexts": contexts,
+				"message":            buildInterruptMessage(event.Action.Interrupted.Data),
 			}
+			payloadBytes, _ := json.Marshal(interruptPayload)
+
+			interruptMsg := buildInterruptMessage(event.Action.Interrupted.Data)
+			if interruptMsg != "" {
+				fullAnswer.WriteString(interruptMsg)
+				data := fmt.Sprintf("data: %s\n\n", string(payloadBytes))
+				r.Response.Write(data)
+				r.Response.Flush()
+			}
+			continue
+		}
+
+		if event.Output != nil && event.Output.MessageOutput != nil && event.Output.MessageOutput.Message != nil {
+			msg := event.Output.MessageOutput.Message
+			if msg.Role != schema.Assistant {
+				continue
+			}
+
+			// 仅对外流式输出根 agent 的回答，避免子 agent 原始结果泄漏。
+			if event.AgentName != "" && event.AgentName != c.rootAgentName {
+				continue
+			}
+
+			chunk := sanitizeUserFacingContent(msg.Content)
+			if chunk == "" {
+				continue
+			}
+
+			fullAnswer.WriteString(chunk)
+
+			// 发送 SSE 数据
+			data := fmt.Sprintf("data: %s\n\n", chunk)
+			r.Response.Write(data)
+			r.Response.Flush()
 		}
 	}
 
@@ -372,6 +767,143 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 		zap.Int("answer_length", fullAnswer.Len()))
 
 	return &v1.ChatStreamRes{}, nil
+}
+
+func (c *ControllerV1) ChatResume(ctx context.Context, req *v1.ChatResumeReq) (res *v1.ChatResumeRes, err error) {
+	if req.CheckpointID == "" {
+		return nil, fmt.Errorf("checkpoint_id is required")
+	}
+	if req.Id == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+
+	if req.SSE == nil || *req.SSE {
+		_, err = c.ChatResumeStream(ctx, &v1.ChatResumeStreamReq{
+			Id:           req.Id,
+			CheckpointID: req.CheckpointID,
+			InterruptIDs: req.InterruptIDs,
+			Approved:     req.Approved,
+			Resolved:     req.Resolved,
+			Comment:      req.Comment,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &v1.ChatResumeRes{}, nil
+	}
+
+	targetIDs, err := c.resolveInterruptTargets(ctx, req.Id, req.CheckpointID, req.InterruptIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	iter, err := c.resumeAgent(ctx, req.CheckpointID, targetIDs, req.Approved, req.Resolved, req.Comment, false)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := c.collectChatResult(iter, req.CheckpointID)
+	if err != nil {
+		return nil, err
+	}
+
+	response := &v1.ChatResumeRes{
+		Answer:       result.Answer,
+		Interrupted:  result.Interrupted,
+		CheckpointID: req.CheckpointID,
+	}
+	if response.Answer == "" {
+		response.Answer = "恢复执行完成。"
+	}
+	if result.Interrupted {
+		response.InterruptContexts = result.InterruptContexts
+		c.saveInterruptState(ctx, req.Id, req.CheckpointID, result.InterruptContexts)
+	}
+	return response, nil
+}
+
+func (c *ControllerV1) ChatResumeStream(ctx context.Context, req *v1.ChatResumeStreamReq) (res *v1.ChatResumeStreamRes, err error) {
+	if req.CheckpointID == "" {
+		return nil, fmt.Errorf("checkpoint_id is required")
+	}
+	if req.Id == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+
+	targetIDs, err := c.resolveInterruptTargets(ctx, req.Id, req.CheckpointID, req.InterruptIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	iter, err := c.resumeAgent(ctx, req.CheckpointID, targetIDs, req.Approved, req.Resolved, req.Comment, true)
+	if err != nil {
+		return nil, err
+	}
+
+	r := g.RequestFromCtx(ctx)
+	if r == nil {
+		return nil, fmt.Errorf("failed to get request from context")
+	}
+
+	r.Response.Header().Set("Content-Type", "text/event-stream")
+	r.Response.Header().Set("Cache-Control", "no-cache")
+	r.Response.Header().Set("Connection", "keep-alive")
+	r.Response.Header().Set("X-Accel-Buffering", "no")
+	r.Response.WriteHeader(200)
+	r.Response.Flush()
+
+	for {
+		event, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if event == nil {
+			continue
+		}
+
+		if event.Err != nil {
+			errorData := fmt.Sprintf("data: [ERROR] %s\n\n", event.Err.Error())
+			r.Response.Write(errorData)
+			r.Response.Flush()
+			return nil, nil
+		}
+
+		if event.Action != nil && event.Action.Interrupted != nil {
+			contexts := convertInterruptContexts(event.Action.Interrupted.InterruptContexts)
+			c.saveInterruptState(ctx, req.Id, req.CheckpointID, contexts)
+
+			payload := map[string]any{
+				"type":               "interrupt",
+				"checkpoint_id":      req.CheckpointID,
+				"interrupt_contexts": contexts,
+				"message":            buildInterruptMessage(event.Action.Interrupted.Data),
+			}
+			b, _ := json.Marshal(payload)
+			r.Response.Write(fmt.Sprintf("data: %s\n\n", string(b)))
+			r.Response.Flush()
+			continue
+		}
+
+		if event.Output != nil && event.Output.MessageOutput != nil && event.Output.MessageOutput.Message != nil {
+			msg := event.Output.MessageOutput.Message
+			if msg.Role != schema.Assistant {
+				continue
+			}
+			if event.AgentName != "" && event.AgentName != c.rootAgentName {
+				continue
+			}
+			chunk := sanitizeUserFacingContent(msg.Content)
+			if chunk == "" {
+				continue
+			}
+			r.Response.Write(fmt.Sprintf("data: %s\n\n", chunk))
+			r.Response.Flush()
+		}
+	}
+
+	r.Response.Write("data: [DONE]\n\n")
+	r.Response.Flush()
+	return &v1.ChatResumeStreamRes{}, nil
 }
 
 func (c *ControllerV1) FileUpload(ctx context.Context, req *v1.FileUploadReq) (res *v1.FileUploadRes, err error) {
@@ -551,6 +1083,78 @@ func splitText(content string, maxChunkSize int) []string {
 	}
 
 	return result
+}
+
+func sanitizeUserFacingContent(content string) string {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "successfully transferred to agent") {
+		return ""
+	}
+
+	// 过滤工具原始 JSON 结果，避免直接回显给用户。
+	if strings.HasPrefix(trimmed, "{") && strings.Contains(trimmed, "\"status\"") && strings.Contains(trimmed, "\"results\"") && strings.Contains(trimmed, "\"count\"") {
+		return ""
+	}
+
+	return trimmed
+}
+
+func buildInterruptMessage(data any) string {
+	base := "流程已暂停，等待你的确认。请回复“确认已修复”或“继续重试”。"
+	raw := extractInterruptDetail(data)
+	if raw == "" {
+		return base
+	}
+
+	if len([]rune(raw)) > 400 {
+		raw = string([]rune(raw)[:400]) + "..."
+	}
+
+	return fmt.Sprintf("%s\n中断信息：%s", base, raw)
+}
+
+func extractInterruptDetail(data any) string {
+	if data == nil {
+		return ""
+	}
+
+	switch value := data.(type) {
+	case *adk.ChatModelAgentInterruptInfo:
+		if value.Info != nil {
+			if detail := extractInterruptContextsDetail(value.Info.InterruptContexts); detail != "" {
+				return detail
+			}
+		}
+		return ""
+	case []byte:
+		return ""
+	case map[string]any:
+		if reason, ok := value["reason"].(string); ok && strings.TrimSpace(reason) != "" {
+			return strings.TrimSpace(reason)
+		}
+		return strings.TrimSpace(fmt.Sprintf("%v", value))
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", value))
+	}
+}
+
+func extractInterruptContextsDetail(contexts []*adk.InterruptCtx) string {
+	for i := len(contexts) - 1; i >= 0; i-- {
+		ctx := contexts[i]
+		if ctx == nil || ctx.Info == nil {
+			continue
+		}
+		text := strings.TrimSpace(fmt.Sprintf("%v", ctx.Info))
+		if text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func (c *ControllerV1) Monitoring(ctx context.Context, req *v1.MonitoringReq) (res *v1.MonitoringRes, err error) {

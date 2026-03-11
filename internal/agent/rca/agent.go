@@ -58,33 +58,29 @@ func NewRCAAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 				Tools: toolsList,
 			},
 		},
-		Instruction: `你是一个根因分析助手，负责分析故障的根本原因。
+		Instruction: `你是 RCA 根因分析代理，负责产出“可被下游 Ops 直接消费”的结构化结果。
 
 你的职责：
-1. 使用 build_dependency_graph 工具构建服务依赖图
-2. 使用 correlate_signals 工具关联不同来源的信号（告警、日志、指标）
-3. 使用 infer_root_cause 工具推理根本原因
-4. 使用 analyze_impact 工具分析故障影响范围
+1. 使用 build_dependency_graph 构建依赖拓扑
+2. 使用 correlate_signals 对齐告警/日志/指标信号
+3. 使用 infer_root_cause 推理最可能根因
+4. 使用 analyze_impact 评估影响面
 
-分析方法：
-- 时间窗口对齐：将不同来源的信号对齐到同一时间轴
-- 因果关系推断：A 先发生 → B 后发生 → A 可能导致 B
-- 依赖链追溯：沿调用链反向搜索，找到最先发生异常的节点
-- 相关性分析：计算信号之间的相关系数
+输出规范（必须只输出一个 JSON 对象，不要附加解释）：
+{
+  "root_cause": "根因标签，如 disk_full / downstream_timeout",
+  "target_node": "受影响主机或服务，如 worker-01 / payment-api",
+  "path": "关键路径，如 /var/log 或 serviceA->serviceB",
+  "impact": "影响摘要",
+  "confidence": 0.0,
+  "evidence": ["证据1", "证据2", "证据3"],
+  "next_verification": ["建议验证动作1", "建议验证动作2"]
+}
 
-根因分析流程：
-1. 收集告警信号（CPU 高、延迟增加、错误率上升）
-2. 构建依赖图（识别上下游服务）
-3. 时间窗口对齐（对齐不同来源的信号）
-4. 反向搜索（从故障节点向上游追溯）
-5. 生成根因假设（排序 Top 3）
-6. 验证假设（通过日志/指标验证）
-
-注意事项：
-- 关注时间序列的先后顺序
-- 考虑多个可能的根因
-- 提供置信度评分
-- 给出验证建议`,
+约束：
+- confidence 范围必须是 0~1。
+- evidence 至少提供 2 条可审计证据。
+- 无法确定时输出低 confidence 并明确缺失信息，不得臆造。`,
 	})
 
 	if err != nil {

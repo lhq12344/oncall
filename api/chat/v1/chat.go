@@ -8,10 +8,14 @@ type ChatReq struct {
 	g.Meta   `path:"/chat" method:"post" summary:"对话"`
 	Id       string
 	Question string
+	SSE      *bool `json:"sse,omitempty" dc:"是否使用SSE，默认true"`
 }
 
 type ChatRes struct {
-	Answer string `json:"answer"`
+	Answer            string             `json:"answer"`
+	Interrupted       bool               `json:"interrupted,omitempty" dc:"是否发生中断，需调用resume接口"`
+	CheckpointID      string             `json:"checkpoint_id,omitempty" dc:"中断恢复用checkpoint id"`
+	InterruptContexts []InterruptContext `json:"interrupt_contexts,omitempty" dc:"可恢复的中断点信息"`
 }
 
 type ChatStreamReq struct {
@@ -21,6 +25,44 @@ type ChatStreamReq struct {
 }
 
 type ChatStreamRes struct {
+}
+
+type InterruptContext struct {
+	ID          string `json:"id" dc:"中断点ID，用于resume target"`
+	Address     string `json:"address" dc:"中断点地址"`
+	Info        string `json:"info" dc:"中断信息"`
+	IsRootCause bool   `json:"is_root_cause" dc:"是否根因中断点"`
+}
+
+type ChatResumeReq struct {
+	g.Meta       `path:"/chat_resume" method:"post" summary:"恢复中断对话"`
+	Id           string   `json:"id" v:"required"`
+	CheckpointID string   `json:"checkpoint_id" v:"required" dc:"上次中断返回的checkpoint id"`
+	InterruptIDs []string `json:"interrupt_ids,omitempty" dc:"可选，中断点ID列表；不传则使用上次中断根因点"`
+	Approved     *bool    `json:"approved,omitempty" dc:"是否批准执行"`
+	Resolved     *bool    `json:"resolved,omitempty" dc:"是否确认问题已解决"`
+	Comment      string   `json:"comment,omitempty" dc:"补充说明"`
+	SSE          *bool    `json:"sse,omitempty" dc:"是否使用SSE，默认true"`
+}
+
+type ChatResumeRes struct {
+	Answer            string             `json:"answer"`
+	Interrupted       bool               `json:"interrupted,omitempty" dc:"是否仍处于中断状态"`
+	CheckpointID      string             `json:"checkpoint_id,omitempty" dc:"当前checkpoint id"`
+	InterruptContexts []InterruptContext `json:"interrupt_contexts,omitempty" dc:"新的中断点信息"`
+}
+
+type ChatResumeStreamReq struct {
+	g.Meta       `path:"/chat_resume_stream" method:"post" summary:"流式恢复中断对话"`
+	Id           string   `json:"id" v:"required"`
+	CheckpointID string   `json:"checkpoint_id" v:"required"`
+	InterruptIDs []string `json:"interrupt_ids,omitempty"`
+	Approved     *bool    `json:"approved,omitempty"`
+	Resolved     *bool    `json:"resolved,omitempty"`
+	Comment      string   `json:"comment,omitempty"`
+}
+
+type ChatResumeStreamRes struct {
 }
 
 type FileUploadReq struct {
@@ -47,10 +89,10 @@ type MonitoringReq struct {
 }
 
 type MonitoringRes struct {
-	CacheHitRate     float64                    `json:"cache_hit_rate" dc:"缓存命中率"`
-	CacheHits        int64                      `json:"cache_hits" dc:"缓存命中次数"`
-	CacheMisses      int64                      `json:"cache_misses" dc:"缓存未命中次数"`
-	CircuitBreakers  []CircuitBreakerStatus     `json:"circuit_breakers" dc:"熔断器状态"`
+	CacheHitRate    float64                `json:"cache_hit_rate" dc:"缓存命中率"`
+	CacheHits       int64                  `json:"cache_hits" dc:"缓存命中次数"`
+	CacheMisses     int64                  `json:"cache_misses" dc:"缓存未命中次数"`
+	CircuitBreakers []CircuitBreakerStatus `json:"circuit_breakers" dc:"熔断器状态"`
 }
 
 type CircuitBreakerStatus struct {
@@ -87,15 +129,15 @@ type HealingStatusRes struct {
 }
 
 type HealingSessionInfo struct {
-	SessionID   string `json:"session_id" dc:"会话ID"`
-	State       string `json:"state" dc:"当前状态"`
-	IncidentID  string `json:"incident_id" dc:"故障ID"`
+	SessionID    string `json:"session_id" dc:"会话ID"`
+	State        string `json:"state" dc:"当前状态"`
+	IncidentID   string `json:"incident_id" dc:"故障ID"`
 	IncidentType string `json:"incident_type" dc:"故障类型"`
-	Severity    string `json:"severity" dc:"严重程度"`
-	StartTime   string `json:"start_time" dc:"开始时间"`
-	RetryCount  int    `json:"retry_count" dc:"重试次数"`
-	RootCause   string `json:"root_cause,omitempty" dc:"根因（如果已诊断）"`
-	Strategy    string `json:"strategy,omitempty" dc:"修复策略（如果已决策）"`
+	Severity     string `json:"severity" dc:"严重程度"`
+	StartTime    string `json:"start_time" dc:"开始时间"`
+	RetryCount   int    `json:"retry_count" dc:"重试次数"`
+	RootCause    string `json:"root_cause,omitempty" dc:"根因（如果已诊断）"`
+	Strategy     string `json:"strategy,omitempty" dc:"修复策略（如果已决策）"`
 }
 
 // HealingHistoryReq 查询历史案例请求

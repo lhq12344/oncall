@@ -17,18 +17,7 @@ func NewMilvusIndexer(ctx context.Context) (*milvus.Indexer, error) {
 	if err != nil {
 		return nil, err
 	}
-	// ======= 关键：删掉旧 schema 的 collection =======
-	//has, err := cli.HasCollection(ctx, common.MilvusCollectionName)
-	//if err != nil {
-	//	return nil, err
-	//}
-	//if has {
-	//	// 开发环境直接删掉重建（生产环境不要这么干）
-	//	if err := cli.DropCollection(ctx, common.MilvusCollectionName); err != nil {
-	//		return nil, err
-	//	}
-	//}
-	// ============================================
+
 	eb, err := embedder2.DoubaoEmbedding(ctx)
 	if err != nil {
 		return nil, err

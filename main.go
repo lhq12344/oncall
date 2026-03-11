@@ -89,7 +89,7 @@ func main() {
 	defer app.Close()
 
 	log.Println("Agent architecture initialized successfully")
-	log.Printf("Supervisor Agent ready")
+	log.Printf("Incident workflow agent ready")
 	log.Printf("Prometheus URL: %s", prometheusURL.String())
 
 	// 启动 HTTP 服务
@@ -98,8 +98,8 @@ func main() {
 		group.Middleware(middleware.CORSMiddleware)
 		group.Middleware(middleware.ResponseMiddleware)
 		group.Group("/v1", func(v1Group *ghttp.RouterGroup) {
-			// 创建 controller 并传入 supervisor agent 和 healing manager
-			chatController := chat.NewV1(app.SupervisorAgent, app.Logger, app.RedisClient, app.OpsIntegration, app.OpsAgent, app.MilvusIndexer, app.HealingManager)
+			// 创建 controller 并传入统一会话 Agent
+			chatController := chat.NewV1(app.ChatAgent, app.Logger, app.RedisClient, app.OpsIntegration, app.OpsAgent, app.MilvusIndexer, nil)
 			v1Group.Bind(chatController)
 		})
 	})

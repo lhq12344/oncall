@@ -56,6 +56,9 @@ func InitRedis(client *redis.Client, c *Config) error {
 	if client == nil {
 		return errors.New("redis client is nil")
 	}
+	if inited {
+		return nil // 已经初始化过了
+	}
 	onceMu.Lock()
 	defer onceMu.Unlock()
 
