@@ -40,7 +40,7 @@ spec:
   ports:
     - port: 3000
       targetPort: 3000
-      nodePort: 30900
+      nodePort: 30902
       name: http
   selector:
     app: milvus-attu

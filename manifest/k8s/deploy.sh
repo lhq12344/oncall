@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Prometheus & Milvus 部署管理脚本
+# Prometheus & Milvus & Elasticsearch 部署管理脚本
 # 用法: ./deploy.sh [start|stop|restart|status]
 
 set -e
@@ -9,6 +9,7 @@ NAMESPACE="infra"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROMETHEUS_DIR="${SCRIPT_DIR}/prometheus"
 MILVUS_DIR="${SCRIPT_DIR}/milvus"
+ELASTICSEARCH_DIR="${SCRIPT_DIR}/elasticsearch"
 
 # 颜色输出
 RED='\033[0;31m'
@@ -89,14 +90,23 @@ EOF
     log_info "Milvus 部署完成"
 }
 
+# 部署 Elasticsearch
+deploy_elasticsearch() {
+    log_info "部署 Elasticsearch..."
+    kubectl apply -f ${ELASTICSEARCH_DIR}/configmap.yaml
+    kubectl apply -f ${ELASTICSEARCH_DIR}/elasticsearch.yaml
+    log_info "Elasticsearch 部署完成"
+}
+
 # 启动所有服务
 start_all() {
-    log_info "开始部署 Prometheus 和 Milvus 到命名空间 ${NAMESPACE}"
+    log_info "开始部署 Prometheus、Milvus 和 Elasticsearch 到命名空间 ${NAMESPACE}"
     check_kubectl
     ensure_namespace
 
     deploy_prometheus
     deploy_milvus
+    deploy_elasticsearch
 
     log_info "所有服务部署完成！"
     log_info "等待 Pod 就绪..."
@@ -109,12 +119,13 @@ start_all() {
     log_info "  Milvus gRPC: <node-ip>:31953"
     log_info "  Milvus Metrics: http://<node-ip>:30091/metrics"
     log_info "  MinIO Console: http://<node-ip>:30901 (minioadmin/minioadmin)"
-    log_info "  Milvus Attu WebUI: http://<node-ip>:30900"
+    log_info "  Milvus Attu WebUI: http://<node-ip>:30902"
+    log_info "  Elasticsearch: http://<node-ip>:30920"
 }
 
 # 停止所有服务
 stop_all() {
-    log_info "停止 Prometheus 和 Milvus..."
+    log_info "停止 Prometheus、Milvus 和 Elasticsearch..."
     check_kubectl
 
     log_info "删除 Prometheus..."
@@ -131,6 +142,10 @@ stop_all() {
     kubectl delete -f ${MILVUS_DIR}/attu.yaml --ignore-not-found=true
     kubectl delete svc minio -n ${NAMESPACE} --ignore-not-found=true
 
+    log_info "删除 Elasticsearch..."
+    kubectl delete -f ${ELASTICSEARCH_DIR}/elasticsearch.yaml --ignore-not-found=true
+    kubectl delete -f ${ELASTICSEARCH_DIR}/configmap.yaml --ignore-not-found=true
+
     log_info "所有服务已停止"
 }
 
@@ -146,10 +161,10 @@ restart_all() {
 show_status() {
     log_info "服务状态:"
     echo ""
-    kubectl get pods -n ${NAMESPACE} -l 'app in (prometheus,milvus,etcd)' -o wide
+    kubectl get pods -n ${NAMESPACE} -l 'app in (prometheus,milvus,etcd,elasticsearch)' -o wide
     echo ""
     log_info "服务端口:"
-    kubectl get svc -n ${NAMESPACE} -l 'app in (prometheus,milvus)'
+    kubectl get svc -n ${NAMESPACE} -l 'app in (prometheus,milvus,elasticsearch)'
     echo ""
     log_info "MinIO (复用现有):"
     kubectl get pods -n ${NAMESPACE} -l app=minio
@@ -195,7 +210,7 @@ main() {
             echo "用法: $0 {start|stop|restart|status|cleanup}"
             echo ""
             echo "命令说明:"
-            echo "  start   - 部署 Prometheus 和 Milvus"
+            echo "  start   - 部署 Prometheus、Milvus 和 Elasticsearch"
             echo "  stop    - 停止所有服务（保留数据）"
             echo "  restart - 重启所有服务"
             echo "  status  - 查看服务状态"

@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-config
+  namespace: infra
+data:
+  elasticsearch.yml: |
+    cluster.name: oncall-es
+    network.host: 0.0.0.0
+    discovery.type: single-node
+    xpack.security.enabled: false
+    http.cors.enabled: true
+    http.cors.allow-origin: "*"

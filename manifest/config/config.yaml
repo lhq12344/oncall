@@ -29,7 +29,7 @@ file_dir: "/home/lihaoqian/myproject/go_agent/docs/"
 cls_mcp_url: "https://mcp-api.tencent-cloud.com/sse/77977c99c3e6593c"
 
 redis:
-  addr: "localhost:30379"
+  addr: "localhost:31029"
   db: 0
   dialTimeout: 2
 

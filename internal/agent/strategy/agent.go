@@ -3,6 +3,7 @@ package strategy
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"go_agent/internal/agent/strategy/tools"
 	aiindexer "go_agent/internal/ai/indexer"
@@ -12,6 +13,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
+	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
 )
 
@@ -56,9 +58,10 @@ func NewStrategyAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 
 	// 创建 ChatModelAgent
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
-		Name:        "strategy_agent",
-		Description: "评估和优化执行策略的策略代理",
-		Model:       cfg.ChatModel.Client,
+		Name:          "strategy_agent",
+		Description:   "评估和优化执行策略的策略代理",
+		Model:         cfg.ChatModel.Client,
+		GenModelInput: noFormatGenModelInput,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
 				Tools: toolsList,
@@ -105,4 +108,18 @@ func NewStrategyAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	}
 
 	return agent, nil
+}
+
+// noFormatGenModelInput 构建模型输入消息，不对 instruction 执行 FString 变量替换。
+// 输入：instruction 系统提示词，input 用户/历史消息。
+// 输出：拼接后的模型消息列表（system + input.Messages）。
+func noFormatGenModelInput(_ context.Context, instruction string, input *adk.AgentInput) ([]adk.Message, error) {
+	msgs := make([]adk.Message, 0, 1)
+	if strings.TrimSpace(instruction) != "" {
+		msgs = append(msgs, schema.SystemMessage(instruction))
+	}
+	if input != nil && len(input.Messages) > 0 {
+		msgs = append(msgs, input.Messages...)
+	}
+	return msgs, nil
 }

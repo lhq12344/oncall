@@ -3,17 +3,16 @@ package embedder
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
-	"time"
 
 	"github.com/cloudwego/eino-ext/components/embedding/ark"
 	"github.com/cloudwego/eino/components/embedding"
 	"github.com/gogf/gf/v2/frame/g"
-	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
-	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
 )
 
+// DoubaoEmbedding 从配置构建 Ark Embedder。
+// 输入：配置项 doubao_embedding_model.{model,api_key,base_url,api_type}
+// 输出：符合 Eino embedding.Embedder 接口的实例。
 func DoubaoEmbedding(ctx context.Context) (embedding.Embedder, error) {
 	model, err := g.Cfg().Get(ctx, "doubao_embedding_model.model")
 	if err != nil {
@@ -27,110 +26,37 @@ func DoubaoEmbedding(ctx context.Context) (embedding.Embedder, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 可选维度（没有就用 0）
-	dimV, _ := g.Cfg().Get(ctx, "doubao_embedding_model.dimensions")
-	dim := 0
-	if dimV != nil {
-		// 按你的配置系统类型做转换，这里示例：
-		if dimV.Int() > 0 {
-			dim = int(dimV.Int())
-			fmt.Println("dim:", dim)
-		}
+
+	// 可选配置：api_type=text|multi_modal。未配置时根据模型名自动推断。
+	apiTypeCfg, _ := g.Cfg().Get(ctx, "doubao_embedding_model.api_type")
+	apiType, err := resolveAPIType(model.String(), apiTypeCfg.String())
+	if err != nil {
+		return nil, err
 	}
-	return NewDoubaoMultimodalEmbedder(model.String(), apiKey.String(), baseURL.String(), dim)
+
+	return newArkEmbedder(model.String(), apiKey.String(), baseURL.String(), apiType)
 }
 
-// 确保实现 Eino 的 embedding.Embedder 接口（核心方法：EmbedStrings）
-// Eino Embedder 形态：EmbedStrings(ctx, []string) -> [][]float64
-type DoubaoMultimodalEmbedder struct {
-	client     *arkruntime.Client
-	model      string
-	dimensions int // 0 表示不传，让服务端默认
-	retry      int
+// NewCustomDoubaoEmbedder 为兼容旧调用保留，行为同 NewDoubaoMultimodalEmbedder。
+// 输入：模型、鉴权、服务地址、维度（当前 Ark 组件不使用 dimensions 参数）。
+// 输出：Embedder。
+func NewCustomDoubaoEmbedder(model, apiKey, baseURL string, dimensions int) (embedding.Embedder, error) {
+	return NewDoubaoMultimodalEmbedder(model, apiKey, baseURL, dimensions)
 }
 
-// EmbedStrings：把每个文本 chunk 走一次 CreateMultiModalEmbeddings（multimodal endpoint 一次只返回一条 embedding）
-func (e *DoubaoMultimodalEmbedder) EmbedStrings(
-	ctx context.Context,
-	texts []string,
-	_ ...embedding.Option,
-) ([][]float64, error) {
-	out := make([][]float64, len(texts)) // 关键：长度固定
-
-	for i, t := range texts {
-		// 1) 空文本处理：两种策略二选一
-		// 策略 A（推荐）：直接报错，保证数据质量
-		if strings.TrimSpace(t) == "" {
-			return nil, fmt.Errorf("empty text at index=%d", i)
-		}
-
-		vec, err := e.embedOne(ctx, t)
-		if err != nil {
-			return nil, fmt.Errorf("embed failed at index=%d: %w", i, err)
-		}
-		if len(vec) == 0 {
-			return nil, fmt.Errorf("empty embedding returned at index=%d", i)
-		}
-
-		out[i] = vec
-	}
-
-	// 2) 再做一次硬校验（防御式编程）
-	if len(out) != len(texts) {
-		return nil, fmt.Errorf("embedding length mismatch: in=%d out=%d", len(texts), len(out))
-	}
-	for i := range out {
-		if out[i] == nil || len(out[i]) == 0 {
-			return nil, fmt.Errorf("nil/empty embedding at index=%d", i)
-		}
-	}
-
-	return out, nil
-}
-
-func (e *DoubaoMultimodalEmbedder) embedOne(ctx context.Context, text string) ([]float64, error) {
-	// SDK 请求结构来自 volcengine-go-sdk：
-	// MultiModalEmbeddingRequest{ Model, Dimensions, Input: []MultimodalEmbeddingInput{ {Type:"text", Text:*string} } }
-	// :contentReference[oaicite:4]{index=4}
-	req := arkmodel.MultiModalEmbeddingRequest{
-		Model: e.model,
-		Input: []arkmodel.MultimodalEmbeddingInput{
-			{
-				Type: arkmodel.MultiModalEmbeddingInputTypeText,
-				Text: &text,
-			},
-		},
-	}
-	if e.dimensions > 0 {
-		dim := e.dimensions
-		req.Dimensions = &dim
-	}
-
-	var lastErr error
-	for attempt := 0; attempt <= e.retry; attempt++ {
-		resp, err := e.client.CreateMultiModalEmbeddings(ctx, req)
-		if err == nil {
-			// resp.Data.Embedding 是 []float32 :contentReference[oaicite:5]{index=5}
-			f32 := resp.Data.Embedding
-			vec := make([]float64, len(f32))
-			for i := range f32 {
-				vec[i] = float64(f32[i])
-			}
-			return vec, nil
-		}
-
-		lastErr = err
-		// 简单退避（避免 500 抖动时瞬间打爆）
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(time.Duration(200*(attempt+1)) * time.Millisecond):
-		}
-	}
-	return nil, lastErr
-}
-
+// NewDoubaoMultimodalEmbedder 创建 Ark Embedder。
+// 输入：模型、鉴权、服务地址、维度（当前 Ark 组件不使用 dimensions 参数）。
+// 输出：Embedder。
 func NewDoubaoMultimodalEmbedder(model, apiKey, baseURL string, dimensions int) (embedding.Embedder, error) {
+	_ = dimensions
+	apiType, err := resolveAPIType(model, "")
+	if err != nil {
+		return nil, err
+	}
+	return newArkEmbedder(model, apiKey, baseURL, apiType)
+}
+
+func newArkEmbedder(model, apiKey, baseURL string, apiType ark.APIType) (embedding.Embedder, error) {
 	if model == "" {
 		return nil, fmt.Errorf("empty model")
 	}
@@ -142,13 +68,32 @@ func NewDoubaoMultimodalEmbedder(model, apiKey, baseURL string, dimensions int) 
 	}
 
 	embedder, err := ark.NewEmbedder(context.Background(), &ark.EmbeddingConfig{
-		APIKey: apiKey, // for example, "xxxxxx-xxxx-xxxx-xxxx-xxxxxxx"
-		Model:  model,  // for example, "ep-20240909094235-xxxx"
+		APIKey:  apiKey,
+		Model:   model,
+		BaseURL: baseURL,
+		APIType: &apiType,
 	})
 	if err != nil {
-		log.Printf("new embedder error: %v\n", err)
-		return nil, fmt.Errorf("empty baseURL")
+		return nil, fmt.Errorf("new ark embedder failed: %w", err)
 	}
 	return embedder, nil
+}
 
+func resolveAPIType(model, cfgValue string) (ark.APIType, error) {
+	lowerModel := strings.ToLower(strings.TrimSpace(model))
+	lowerCfg := strings.ToLower(strings.TrimSpace(cfgValue))
+
+	switch lowerCfg {
+	case "", "auto":
+		if strings.Contains(lowerModel, "vision") || strings.Contains(lowerModel, "multimodal") {
+			return ark.APITypeMultiModal, nil
+		}
+		return ark.APITypeText, nil
+	case "text", "text_api", "embedding", "embeddings":
+		return ark.APITypeText, nil
+	case "multi_modal", "multimodal", "multi_modal_api", "vision":
+		return ark.APITypeMultiModal, nil
+	default:
+		return "", fmt.Errorf("invalid doubao_embedding_model.api_type: %s", cfgValue)
+	}
 }

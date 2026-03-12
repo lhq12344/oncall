@@ -2,7 +2,7 @@
 class SuperBizAgentApp {
     constructor() {
         this.apiBaseUrl = 'http://127.0.0.1:6872/api/v1';
-        this.currentMode = 'quick'; // 'quick' 或 'stream'
+        this.currentMode = 'stream'; // 仅保留流式模式
         this.sessionId = this.generateSessionId();
         this.isStreaming = false;
         this.activeStreamContext = null;
@@ -292,8 +292,8 @@ class SuperBizAgentApp {
         // 生成新的会话ID
         this.sessionId = this.generateSessionId();
         
-        // 重置模式为快速
-        this.currentMode = 'quick';
+        // 重置模式为流式
+        this.currentMode = 'stream';
         this.updateUI();
         
         // 重新设置居中样式（确保对话框居中显示）
@@ -524,16 +524,20 @@ class SuperBizAgentApp {
             this.showNotification('请等待当前对话完成后再切换模式', 'warning');
             return;
         }
-        
-        this.currentMode = mode;
+
+        // 后端已下线非流式 /chat，前端统一使用流式接口
+        this.currentMode = mode === 'stream' ? 'stream' : 'stream';
         this.updateUI();
-        
+
         const modeNames = {
-            'quick': '快速',
             'stream': '流式'
         };
-        
-        this.showNotification(`已切换到${modeNames[mode]}模式`, 'info');
+
+        if (mode !== 'stream') {
+            this.showNotification('快速模式已下线，已切换为流式模式', 'info');
+            return;
+        }
+        this.showNotification(`已切换到${modeNames[this.currentMode]}模式`, 'info');
     }
 
     // 更新UI
@@ -541,10 +545,9 @@ class SuperBizAgentApp {
         // 更新模式选择器显示
         if (this.currentModeText) {
             const modeNames = {
-                'quick': '快速',
                 'stream': '流式'
             };
-            this.currentModeText.textContent = modeNames[this.currentMode] || '快速';
+            this.currentModeText.textContent = modeNames[this.currentMode] || '流式';
         }
         
         // 更新下拉菜单选中状态
@@ -605,11 +608,7 @@ class SuperBizAgentApp {
         this.updateUI();
 
         try {
-            if (this.currentMode === 'quick') {
-                await this.sendQuickMessage(message);
-            } else if (this.currentMode === 'stream') {
-                await this.sendStreamMessage(message);
-            }
+            await this.sendStreamMessage(message);
         } catch (error) {
             console.error('发送消息失败:', error);
             this.addMessage('assistant', '抱歉，发送消息时出现错误：' + error.message);
@@ -627,32 +626,7 @@ class SuperBizAgentApp {
 
     // 发送快速消息（普通对话）
     async sendQuickMessage(message) {
-        try {
-            const response = await fetch(`${this.apiBaseUrl}/chat`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    Id: this.sessionId,
-                    Question: message
-                })
-            });
-
-            if (!response.ok) {
-                throw new Error(`HTTP错误: ${response.status}`);
-            }
-
-            const data = await response.json();
-            
-            if (data.message === 'OK' && data.data && data.data.answer) {
-                this.addMessage('assistant', data.data.answer);
-            } else {
-                throw new Error(data.message || '未知错误');
-            }
-        } catch (error) {
-            throw error;
-        }
+        return this.sendStreamMessage(message);
     }
 
     // 发送流式消息
@@ -1278,12 +1252,7 @@ class SuperBizAgentApp {
 
     // 发送智能运维请求（流式）
     async sendAIOpsRequest(loadingMessageElement) {
-        try {
-            await this.sendAIOpsRequestStream(loadingMessageElement);
-        } catch (streamError) {
-            console.warn('ai_ops_stream 调用失败，回退 ai_ops:', streamError);
-            await this.sendAIOpsRequestFallback(loadingMessageElement);
-        }
+        await this.sendAIOpsRequestStream(loadingMessageElement);
     }
 
     async sendAIOpsRequestStream(loadingMessageElement) {
@@ -1339,29 +1308,6 @@ class SuperBizAgentApp {
         }
         this.scrollToBottom();
         return { type: 'continue' };
-    }
-
-    async sendAIOpsRequestFallback(loadingMessageElement) {
-        const response = await fetch(`${this.apiBaseUrl}/ai_ops`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            }
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP错误: ${response.status}`);
-        }
-
-        const data = await response.json();
-        const payload = data?.data || data;
-        const result = payload?.result || 'AI Ops 执行完成';
-        const details = Array.isArray(payload?.detail) ? payload.detail : [];
-
-        this.updateAIOpsMessage(loadingMessageElement, result, details);
-        if (loadingMessageElement) {
-            loadingMessageElement.classList.remove('streaming');
-        }
     }
 
     // 更新智能运维消息（带折叠详情）

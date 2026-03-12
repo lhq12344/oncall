@@ -8,7 +8,27 @@ import (
 
 // CORSMiddleware 处理CORS跨域请求
 func CORSMiddleware(r *ghttp.Request) {
-	r.Response.CORSDefault()
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		origin = "*"
+	}
+
+	r.Response.Header().Set("Access-Control-Allow-Origin", origin)
+	r.Response.Header().Set("Vary", "Origin")
+	r.Response.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+
+	requestHeaders := strings.TrimSpace(r.Header.Get("Access-Control-Request-Headers"))
+	if requestHeaders == "" {
+		requestHeaders = "Content-Type, Authorization, X-Requested-With"
+	}
+	r.Response.Header().Set("Access-Control-Allow-Headers", requestHeaders)
+	r.Response.Header().Set("Access-Control-Max-Age", "86400")
+
+	if strings.EqualFold(r.Method, "OPTIONS") {
+		r.Response.WriteStatus(204)
+		return
+	}
+
 	r.Middleware.Next()
 }
 
