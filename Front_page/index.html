@@ -127,6 +127,26 @@
         </div>
     </div>
 
+    <!-- Interrupt确认面板 -->
+    <div id="interruptModal" class="interrupt-modal" aria-hidden="true">
+        <div class="interrupt-panel" role="dialog" aria-modal="true" aria-labelledby="interruptTitle">
+            <h3 id="interruptTitle">流程已暂停，等待确认</h3>
+            <p id="interruptMessage" class="interrupt-message"></p>
+            <div class="interrupt-contexts">
+                <div class="interrupt-contexts-title">中断上下文</div>
+                <div id="interruptContextList" class="interrupt-context-list"></div>
+            </div>
+            <label class="interrupt-comment-label" for="interruptCommentInput">备注（可选）</label>
+            <textarea id="interruptCommentInput" class="interrupt-comment-input" placeholder="可填写执行说明或风险备注"></textarea>
+            <div id="interruptError" class="interrupt-error"></div>
+            <div class="interrupt-actions">
+                <button id="interruptContinueBtn" class="interrupt-btn interrupt-btn-primary" data-interrupt-action="continue">继续</button>
+                <button id="interruptResolvedBtn" class="interrupt-btn interrupt-btn-success" data-interrupt-action="resolved">已修复</button>
+                <button id="interruptRetryBtn" class="interrupt-btn interrupt-btn-warning" data-interrupt-action="retry">重试</button>
+            </div>
+        </div>
+    </div>
+
     <script src="app.js?v=20260111"></script>
 </body>
 </html>

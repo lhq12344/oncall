@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cloudwego/eino/components/indexer"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
@@ -13,7 +14,8 @@ import (
 
 // UpdateKnowledgeTool 知识库更新工具
 type UpdateKnowledgeTool struct {
-	logger *zap.Logger
+	indexer indexer.Indexer
+	logger  *zap.Logger
 }
 
 // KnowledgeCase 知识案例
@@ -31,17 +33,18 @@ type KnowledgeCase struct {
 
 // UpdateResult 更新结果
 type UpdateResult struct {
-	Action      string        `json:"action"` // save/update/skip
-	CaseID      string        `json:"case_id"`
-	OldWeight   float64       `json:"old_weight"`
-	NewWeight   float64       `json:"new_weight"`
-	Reason      string        `json:"reason"`
+	Action      string         `json:"action"` // save/update/skip
+	CaseID      string         `json:"case_id"`
+	OldWeight   float64        `json:"old_weight"`
+	NewWeight   float64        `json:"new_weight"`
+	Reason      string         `json:"reason"`
 	UpdatedCase *KnowledgeCase `json:"updated_case"`
 }
 
-func NewUpdateKnowledgeTool(logger *zap.Logger) tool.BaseTool {
+func NewUpdateKnowledgeTool(idx indexer.Indexer, logger *zap.Logger) tool.BaseTool {
 	return &UpdateKnowledgeTool{
-		logger: logger,
+		indexer: idx,
+		logger:  logger,
 	}
 }
 
@@ -89,7 +92,51 @@ func (t *UpdateKnowledgeTool) InvokableRun(ctx context.Context, argumentsInJSON 
 			zap.String("case_id", result.CaseID))
 	}
 
+	if result.UpdatedCase != nil && (result.Action == "save" || result.Action == "update") {
+		if err := t.archiveCase(ctx, result); err != nil {
+			if t.logger != nil {
+				t.logger.Warn("failed to archive ops case",
+					zap.String("case_id", result.CaseID),
+					zap.Error(err))
+			}
+		}
+	}
+
 	return string(output), nil
+}
+
+func (t *UpdateKnowledgeTool) archiveCase(ctx context.Context, result *UpdateResult) error {
+	if t.indexer == nil || result == nil || result.UpdatedCase == nil {
+		return nil
+	}
+	caseDoc := result.UpdatedCase
+	if caseDoc.CaseID == "" {
+		caseDoc.CaseID = fmt.Sprintf("case_%d", time.Now().UnixNano())
+	}
+
+	payload := map[string]any{
+		"case_id":      caseDoc.CaseID,
+		"title":        caseDoc.Title,
+		"description":  caseDoc.Description,
+		"strategy":     caseDoc.Strategy,
+		"success_rate": caseDoc.SuccessRate,
+		"weight":       caseDoc.Weight,
+		"updated_at":   caseDoc.UpdatedAt.Format(time.RFC3339),
+	}
+	body, _ := json.Marshal(payload)
+
+	doc := &schema.Document{
+		ID:      caseDoc.CaseID,
+		Content: string(body),
+		MetaData: map[string]any{
+			"type":       "ops_case",
+			"action":     result.Action,
+			"reason":     result.Reason,
+			"updated_at": caseDoc.UpdatedAt.Format(time.RFC3339),
+		},
+	}
+	_, err := t.indexer.Store(ctx, []*schema.Document{doc})
+	return err
 }
 
 // decideUpdate 决定是否更新

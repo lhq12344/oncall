@@ -72,6 +72,12 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 		return nil, fmt.Errorf("create strategy agent failed: %w", err)
 	}
 
+	// 将结构化结果写入 Graph State（session values），避免把大段日志作为聊天历史反复回灌。
+	rcaAgent = wrapWithIncidentState("rca", rcaAgent, cfg.Logger)
+	opsAgent = wrapWithIncidentState("ops", opsAgent, cfg.Logger)
+	executionAgent = wrapWithIncidentState("execution", executionAgent, cfg.Logger)
+	strategyAgent = wrapWithIncidentState("strategy", strategyAgent, cfg.Logger)
+
 	validator := newPlanValidatorAgent(cfg.Logger)
 	gate := newExecutionGateAgent(cfg.Logger)
 
@@ -104,5 +110,10 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 			zap.Int("max_execution_loops", maxLoops))
 	}
 
-	return workflow, nil
+	withState := adk.AgentWithOptions(ctx, workflow, adk.WithHistoryRewriter(incidentHistoryRewriter))
+	resumable, ok := withState.(adk.ResumableAgent)
+	if !ok {
+		return nil, fmt.Errorf("incident workflow agent is not resumable after state binding")
+	}
+	return resumable, nil
 }

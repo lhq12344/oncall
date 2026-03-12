@@ -3,7 +3,7 @@ module go_agent
 go 1.25.5
 
 require (
-	github.com/cloudwego/eino v0.7.14
+	github.com/cloudwego/eino v0.8.1
 	github.com/cloudwego/eino-ext/components/document/loader/file v0.0.0-20260310075812-cb9c90b6a56a
 	github.com/cloudwego/eino-ext/components/embedding/ark v0.1.1
 	github.com/cloudwego/eino-ext/components/indexer/milvus v0.0.0-20251011073417-75b93b87b8a9

@@ -6,6 +6,7 @@ import (
 	"go_agent/internal/ai/embedder"
 	"go_agent/utility/client"
 	"go_agent/utility/common"
+	"strings"
 
 	"github.com/cloudwego/eino-ext/components/retriever/milvus"
 	"github.com/cloudwego/eino/components/retriever"
@@ -21,6 +22,10 @@ func f64ToF32(v []float64) []float32 {
 }
 
 func NewMilvusRetriever(ctx context.Context) (rtr retriever.Retriever, err error) {
+	return NewMilvusRetrieverWithCollection(ctx, common.MilvusCollectionName)
+}
+
+func NewMilvusRetrieverWithCollection(ctx context.Context, collection string) (rtr retriever.Retriever, err error) {
 	cli, err := client.NewMilvusClient(ctx)
 	if err != nil {
 		return nil, err
@@ -36,9 +41,14 @@ func NewMilvusRetriever(ctx context.Context) (rtr retriever.Retriever, err error
 		return nil, err
 	}
 
+	collection = strings.TrimSpace(collection)
+	if collection == "" {
+		collection = common.MilvusCollectionName
+	}
+
 	r, err := milvus.NewRetriever(ctx, &milvus.RetrieverConfig{
 		Client:      cli,
-		Collection:  common.MilvusCollectionName,
+		Collection:  collection,
 		VectorField: "vector",
 		// 必须显式返回 content / metadata，否则默认文档会出现空内容。
 		OutputFields: []string{

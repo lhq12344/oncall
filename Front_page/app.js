@@ -5,6 +5,10 @@ class SuperBizAgentApp {
         this.currentMode = 'quick'; // 'quick' 或 'stream'
         this.sessionId = this.generateSessionId();
         this.isStreaming = false;
+        this.activeStreamContext = null;
+        this.interruptDecisionResolver = null;
+        this.currentInterruptEvent = null;
+        this.isInterruptSubmitting = false;
         this.currentChatHistory = []; // 当前对话的消息历史
         this.chatHistories = this.loadChatHistories(); // 所有历史对话
         this.isCurrentChatFromHistory = false; // 标记当前对话是否是从历史记录加载的
@@ -116,6 +120,21 @@ class SuperBizAgentApp {
         this.chatContainer = document.querySelector('.chat-container');
         this.welcomeGreeting = document.getElementById('welcomeGreeting');
         this.chatHistoryList = document.getElementById('chatHistoryList');
+
+        // interrupt确认面板元素
+        this.interruptModal = document.getElementById('interruptModal');
+        this.interruptMessage = document.getElementById('interruptMessage');
+        this.interruptContextList = document.getElementById('interruptContextList');
+        this.interruptCommentInput = document.getElementById('interruptCommentInput');
+        this.interruptError = document.getElementById('interruptError');
+        this.interruptContinueBtn = document.getElementById('interruptContinueBtn');
+        this.interruptResolvedBtn = document.getElementById('interruptResolvedBtn');
+        this.interruptRetryBtn = document.getElementById('interruptRetryBtn');
+        this.interruptActionButtons = [
+            this.interruptContinueBtn,
+            this.interruptResolvedBtn,
+            this.interruptRetryBtn
+        ].filter(Boolean);
         
         // 初始化时检查是否需要居中
         this.checkAndSetCentered();
@@ -203,6 +222,13 @@ class SuperBizAgentApp {
         if (this.fileInput) {
             this.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
         }
+
+        this.interruptActionButtons.forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const action = btn.getAttribute('data-interrupt-action');
+                this.handleInterruptAction(action);
+            });
+        });
     }
 
     // 切换工具菜单显示/隐藏
@@ -634,103 +660,24 @@ class SuperBizAgentApp {
         try {
             // 创建助手消息元素
             const assistantMessageElement = this.addMessage('assistant', '', true);
-            let fullResponse = '';
+            const streamContext = {
+                channel: 'chat',
+                messageElement: assistantMessageElement,
+                fullResponse: ''
+            };
+            this.activeStreamContext = streamContext;
 
-            // 使用 EventSource 接收 SSE
-            const url = `${this.apiBaseUrl}/chat_stream`;
-
-            // 由于 EventSource 不支持 POST，我们需要使用 fetch + ReadableStream
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
+            await this.runStreamWithInterrupt({
+                channel: 'chat',
+                startEndpoint: '/chat_stream',
+                startPayload: {
                     Id: this.sessionId,
                     Question: message
-                })
+                },
+                onData: async (data) => this.handleChatStreamData(data, streamContext)
             });
 
-            if (!response.ok) {
-                throw new Error(`HTTP错误: ${response.status}`);
-            }
-
-            // 处理 SSE 流
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-
-            try {
-                while (true) {
-                    const { done, value } = await reader.read();
-
-                    if (done) {
-                        break;
-                    }
-
-                    // 解码数据并添加到缓冲区
-                    buffer += decoder.decode(value, { stream: true });
-
-                    // 按行分割处理 SSE 数据
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop() || ''; // 保留最后一行（可能不完整）
-
-                    for (const line of lines) {
-                        if (!line.trim() || !line.startsWith('data: ')) continue;
-
-                        const data = line.substring(6); // 移除 "data: " 前缀
-
-                        // 检查是否是结束标记
-                        if (data === '[DONE]') {
-                            // 流结束，渲染完整的 Markdown
-                            if (assistantMessageElement) {
-                                assistantMessageElement.classList.remove('streaming');
-                                const messageContent = assistantMessageElement.querySelector('.message-content');
-                                if (messageContent) {
-                                    messageContent.innerHTML = this.renderMarkdown(fullResponse);
-                                    this.highlightCodeBlocks(messageContent);
-                                }
-                            }
-
-                            // 保存到历史记录
-                            if (fullResponse) {
-                                this.currentChatHistory.push({
-                                    type: 'assistant',
-                                    content: fullResponse,
-                                    timestamp: new Date().toISOString()
-                                });
-                                if (this.isCurrentChatFromHistory) {
-                                    this.updateCurrentChatHistory();
-                                    this.renderChatHistory();
-                                }
-                            }
-                            continue;
-                        }
-
-                        // 检查是否是错误消息
-                        if (data.startsWith('[ERROR]')) {
-                            const errorMsg = data.substring(8);
-                            throw new Error(errorMsg);
-                        }
-
-                        // 累积响应内容
-                        fullResponse += data;
-
-                        // 实时更新显示（纯文本，避免频繁渲染 Markdown）
-                        if (assistantMessageElement) {
-                            const messageContent = assistantMessageElement.querySelector('.message-content');
-                            if (messageContent) {
-                                messageContent.textContent = fullResponse;
-                            }
-                        }
-
-                        // 自动滚动到底部
-                        this.scrollToBottom();
-                    }
-                }
-            } finally {
-                reader.releaseLock();
-            }
+            this.finalizeChatStream(streamContext);
 
         } catch (error) {
             console.error('流式消息发送失败:', error);
@@ -739,9 +686,322 @@ class SuperBizAgentApp {
             // 显示错误消息
             this.addMessage('assistant', `抱歉，发生了错误：${error.message}`);
         } finally {
+            this.activeStreamContext = null;
             this.isStreaming = false;
             this.updateUI();
         }
+    }
+
+    async runStreamWithInterrupt(config) {
+        if (!config || !config.startEndpoint || typeof config.onData !== 'function') {
+            throw new Error('流式配置不完整');
+        }
+
+        let response = await this.postJSON(config.startEndpoint, config.startPayload);
+        while (true) {
+            const result = await this.consumeSSEStream(response, config.onData);
+            if (!result || result.type === 'done' || result.type === 'eof') {
+                return;
+            }
+            if (result.type !== 'interrupt') {
+                throw new Error(`未知流事件类型: ${result.type}`);
+            }
+
+            response = await this.awaitInterruptAndResume(config.channel, result.event);
+        }
+    }
+
+    async postJSON(endpoint, payload) {
+        const response = await fetch(`${this.apiBaseUrl}${endpoint}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload || {})
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP错误: ${response.status}`);
+        }
+        return response;
+    }
+
+    async consumeSSEStream(response, onData) {
+        if (!response || !response.body) {
+            throw new Error('流式响应为空');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let streamResult = { type: 'eof' };
+
+        try {
+            readLoop:
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    break;
+                }
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (!line.trim() || !line.startsWith('data: ')) {
+                        continue;
+                    }
+                    const data = line.substring(6);
+                    const result = await onData(data);
+                    if (result && result.type && result.type !== 'continue') {
+                        streamResult = result;
+                        break readLoop;
+                    }
+                }
+            }
+
+            if (streamResult.type === 'eof' && buffer.startsWith('data: ')) {
+                const result = await onData(buffer.substring(6));
+                if (result && result.type && result.type !== 'continue') {
+                    streamResult = result;
+                }
+            }
+        } finally {
+            if (streamResult.type !== 'eof') {
+                try {
+                    await reader.cancel();
+                } catch (cancelErr) {
+                    console.warn('提前结束流读取失败:', cancelErr);
+                }
+            }
+            reader.releaseLock();
+        }
+
+        return streamResult;
+    }
+
+    handleChatStreamData(data, streamContext) {
+        if (data === '[DONE]') {
+            return { type: 'done' };
+        }
+        if (data.startsWith('[ERROR]')) {
+            throw new Error(data.substring(8));
+        }
+
+        const interruptEvent = this.tryParseInterruptEvent(data);
+        if (interruptEvent) {
+            return { type: 'interrupt', event: interruptEvent };
+        }
+
+        streamContext.fullResponse += data;
+        const messageContent = streamContext.messageElement?.querySelector('.message-content');
+        if (messageContent) {
+            messageContent.textContent = streamContext.fullResponse;
+        }
+        this.scrollToBottom();
+        return { type: 'continue' };
+    }
+
+    finalizeChatStream(streamContext) {
+        if (!streamContext) {
+            return;
+        }
+        const assistantMessageElement = streamContext.messageElement;
+        const fullResponse = (streamContext.fullResponse || '').trim();
+
+        if (assistantMessageElement) {
+            assistantMessageElement.classList.remove('streaming');
+            const messageContent = assistantMessageElement.querySelector('.message-content');
+            if (messageContent) {
+                messageContent.innerHTML = this.renderMarkdown(fullResponse);
+                this.highlightCodeBlocks(messageContent);
+            }
+        }
+
+        if (fullResponse) {
+            this.currentChatHistory.push({
+                type: 'assistant',
+                content: fullResponse,
+                timestamp: new Date().toISOString()
+            });
+            if (this.isCurrentChatFromHistory) {
+                this.updateCurrentChatHistory();
+                this.renderChatHistory();
+            }
+        }
+    }
+
+    tryParseInterruptEvent(data) {
+        if (typeof data !== 'string' || data.trim() === '') {
+            return null;
+        }
+        try {
+            const parsed = JSON.parse(data);
+            if (parsed && parsed.type === 'interrupt' && parsed.checkpoint_id) {
+                return parsed;
+            }
+        } catch (e) {
+            return null;
+        }
+        return null;
+    }
+
+    async awaitInterruptAndResume(channel, interruptEvent) {
+        if (!interruptEvent || !interruptEvent.checkpoint_id) {
+            throw new Error('缺少checkpoint_id，无法续跑');
+        }
+
+        const checkpointID = interruptEvent.checkpoint_id;
+        const interruptIDs = Array.isArray(interruptEvent.interrupt_contexts)
+            ? interruptEvent.interrupt_contexts.map((item) => item?.id).filter(Boolean)
+            : [];
+
+        let resetModal = true;
+        while (true) {
+            const decision = await this.waitInterruptDecision(interruptEvent, { reset: resetModal });
+            this.setInterruptSubmitting(true);
+            this.setInterruptError('');
+
+            const payload = {
+                checkpoint_id: checkpointID,
+                interrupt_ids: interruptIDs,
+                approved: decision.approved,
+                resolved: decision.resolved,
+                comment: decision.comment || ''
+            };
+            if (channel === 'chat') {
+                payload.id = this.sessionId;
+            }
+
+            const endpoint = channel === 'chat' ? '/chat_resume_stream' : '/ai_ops_resume_stream';
+            try {
+                const response = await this.postJSON(endpoint, payload);
+                this.hideInterruptModal();
+                this.setInterruptSubmitting(false);
+                return response;
+            } catch (error) {
+                this.setInterruptSubmitting(false);
+                this.setInterruptError(`续跑失败：${error.message}`);
+                resetModal = false;
+            }
+        }
+    }
+
+    waitInterruptDecision(interruptEvent, options = {}) {
+        const shouldReset = options.reset !== false;
+        this.currentInterruptEvent = interruptEvent;
+        if (shouldReset) {
+            this.renderInterruptModal(interruptEvent);
+        } else {
+            this.showInterruptModal();
+            this.setInterruptSubmitting(false);
+        }
+
+        return new Promise((resolve) => {
+            this.interruptDecisionResolver = resolve;
+        });
+    }
+
+    renderInterruptModal(interruptEvent) {
+        if (!this.interruptModal) {
+            throw new Error('interrupt面板未初始化');
+        }
+
+        const message = typeof interruptEvent?.message === 'string'
+            ? interruptEvent.message
+            : '流程已暂停，等待你的确认。';
+        if (this.interruptMessage) {
+            this.interruptMessage.textContent = message;
+        }
+
+        if (this.interruptContextList) {
+            const contexts = Array.isArray(interruptEvent?.interrupt_contexts) ? interruptEvent.interrupt_contexts : [];
+            if (contexts.length === 0) {
+                this.interruptContextList.innerHTML = '<div class="interrupt-context-item"><div class="interrupt-context-info">无上下文信息</div></div>';
+            } else {
+                this.interruptContextList.innerHTML = contexts.map((item) => {
+                    const id = this.escapeHtml(item?.id || '');
+                    const info = this.escapeHtml(item?.info || item?.address || '');
+                    return `
+                        <div class="interrupt-context-item">
+                            <div class="interrupt-context-id">${id}</div>
+                            <div class="interrupt-context-info">${info || '无附加信息'}</div>
+                        </div>
+                    `;
+                }).join('');
+            }
+        }
+
+        if (this.interruptCommentInput && !this.isInterruptSubmitting) {
+            this.interruptCommentInput.value = '';
+        }
+        this.setInterruptError('');
+        this.setInterruptSubmitting(false);
+    }
+
+    showInterruptModal() {
+        if (!this.interruptModal) {
+            return;
+        }
+        this.interruptModal.classList.add('show');
+        this.interruptModal.setAttribute('aria-hidden', 'false');
+        document.body.style.overflow = 'hidden';
+    }
+
+    hideInterruptModal() {
+        if (!this.interruptModal) {
+            return;
+        }
+        this.interruptModal.classList.remove('show');
+        this.interruptModal.setAttribute('aria-hidden', 'true');
+        this.currentInterruptEvent = null;
+        this.interruptDecisionResolver = null;
+        this.setInterruptError('');
+        if (this.interruptCommentInput) {
+            this.interruptCommentInput.value = '';
+        }
+        document.body.style.overflow = '';
+    }
+
+    setInterruptSubmitting(submitting) {
+        this.isInterruptSubmitting = Boolean(submitting);
+        this.interruptActionButtons.forEach((btn) => {
+            btn.disabled = this.isInterruptSubmitting;
+        });
+        if (this.interruptCommentInput) {
+            this.interruptCommentInput.disabled = this.isInterruptSubmitting;
+        }
+    }
+
+    setInterruptError(text) {
+        if (this.interruptError) {
+            this.interruptError.textContent = text || '';
+        }
+    }
+
+    handleInterruptAction(action) {
+        if (!this.interruptDecisionResolver || this.isInterruptSubmitting) {
+            return;
+        }
+
+        const mapping = {
+            continue: { approved: true, resolved: false },
+            resolved: { approved: true, resolved: true },
+            retry: { approved: false, resolved: false }
+        };
+        const mapped = mapping[action];
+        if (!mapped) {
+            return;
+        }
+
+        const comment = this.interruptCommentInput ? this.interruptCommentInput.value.trim() : '';
+        const resolver = this.interruptDecisionResolver;
+        this.interruptDecisionResolver = null;
+        resolver({
+            approved: mapped.approved,
+            resolved: mapped.resolved,
+            comment
+        });
     }
 
     // 添加消息到聊天界面
@@ -1027,79 +1287,58 @@ class SuperBizAgentApp {
     }
 
     async sendAIOpsRequestStream(loadingMessageElement) {
-        const response = await fetch(`${this.apiBaseUrl}/ai_ops_stream`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            }
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP错误: ${response.status}`);
-        }
-
-        if (!response.body) {
-            throw new Error('流式响应为空');
-        }
-
-        // 处理 SSE 流
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let fullContent = '';
-        let steps = [];
+        const streamContext = {
+            channel: 'aiops',
+            messageElement: loadingMessageElement,
+            aiopsContent: '',
+            aiopsSteps: []
+        };
+        this.activeStreamContext = streamContext;
 
         try {
-            while (true) {
-                const { done, value } = await reader.read();
+            await this.runStreamWithInterrupt({
+                channel: 'aiops',
+                startEndpoint: '/ai_ops_stream',
+                startPayload: {},
+                onData: async (data) => this.handleAIOpsStreamData(data, streamContext)
+            });
 
-                if (done) {
-                    break;
-                }
-
-                // 解码数据并添加到缓冲区
-                buffer += decoder.decode(value, { stream: true });
-
-                // 按行分割处理 SSE 数据
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-
-                for (const line of lines) {
-                    if (!line.trim() || !line.startsWith('data: ')) continue;
-
-                    const data = line.substring(6);
-
-                    try {
-                        const event = JSON.parse(data);
-
-                        if (event.type === 'step') {
-                            // 步骤信息
-                            steps.push(event.content);
-                            this.updateAIOpsMessage(loadingMessageElement, fullContent, steps);
-                        } else if (event.type === 'content') {
-                            // 内容信息
-                            fullContent += event.content;
-                            this.updateAIOpsMessage(loadingMessageElement, fullContent, steps);
-                        } else if (event.type === 'error') {
-                            // 错误信息
-                            throw new Error(event.content);
-                        } else if (event.type === 'done') {
-                            // 完成标记
-                            if (loadingMessageElement) {
-                                loadingMessageElement.classList.remove('streaming');
-                            }
-                        }
-                    } catch (parseError) {
-                        console.warn('解析 SSE 数据失败:', parseError, data);
-                    }
-
-                    // 自动滚动到底部
-                    this.scrollToBottom();
-                }
+            if (loadingMessageElement) {
+                loadingMessageElement.classList.remove('streaming');
             }
         } finally {
-            reader.releaseLock();
+            this.activeStreamContext = null;
         }
+    }
+
+    handleAIOpsStreamData(data, streamContext) {
+        let event;
+        try {
+            event = JSON.parse(data);
+        } catch (parseError) {
+            console.warn('解析 SSE 数据失败:', parseError, data);
+            return { type: 'continue' };
+        }
+
+        if (event.type === 'interrupt') {
+            return { type: 'interrupt', event };
+        }
+        if (event.type === 'done') {
+            return { type: 'done' };
+        }
+        if (event.type === 'error') {
+            throw new Error(event.content || 'AI Ops执行失败');
+        }
+
+        if (event.type === 'step') {
+            streamContext.aiopsSteps.push(event.content || '');
+            this.updateAIOpsMessage(streamContext.messageElement, streamContext.aiopsContent, streamContext.aiopsSteps);
+        } else if (event.type === 'content') {
+            streamContext.aiopsContent += event.content || '';
+            this.updateAIOpsMessage(streamContext.messageElement, streamContext.aiopsContent, streamContext.aiopsSteps);
+        }
+        this.scrollToBottom();
+        return { type: 'continue' };
     }
 
     async sendAIOpsRequestFallback(loadingMessageElement) {

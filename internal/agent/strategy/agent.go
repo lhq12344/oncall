@@ -5,7 +5,9 @@ import (
 	"fmt"
 
 	"go_agent/internal/agent/strategy/tools"
+	aiindexer "go_agent/internal/ai/indexer"
 	"go_agent/internal/ai/models"
+	"go_agent/utility/common"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
@@ -41,7 +43,11 @@ func NewStrategyAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	toolsList = append(toolsList, optimizeTool)
 
 	// 知识库更新工具
-	updateTool := tools.NewUpdateKnowledgeTool(cfg.Logger)
+	opsCaseIndexer, err := aiindexer.NewMilvusIndexerWithCollection(ctx, common.MilvusOpsCollection)
+	if err != nil && cfg.Logger != nil {
+		cfg.Logger.Warn("failed to initialize ops case indexer, continue without archive", zap.Error(err))
+	}
+	updateTool := tools.NewUpdateKnowledgeTool(opsCaseIndexer, cfg.Logger)
 	toolsList = append(toolsList, updateTool)
 
 	// 知识剪枝工具

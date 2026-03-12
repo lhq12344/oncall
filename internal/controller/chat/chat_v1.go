@@ -11,8 +11,6 @@ import (
 
 	v1 "go_agent/api/chat/v1"
 	appcontext "go_agent/internal/context"
-	"go_agent/utility/mem"
-	"go_agent/utility/tokenizer"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/compose"
@@ -25,9 +23,8 @@ import (
 )
 
 const (
-	defaultSessionID       = "default-session"
-	defaultReserveToolCost = 5
-	opsDiagnosticPrompt    = "请执行系统健康检查，分析当前系统状态，识别潜在问题并给出分步骤的诊断和解决方案。重点关注：1) Kubernetes Pod状态 2) 关键指标异常 3) 错误日志"
+	defaultSessionID    = "default-session"
+	opsDiagnosticPrompt = "请执行系统健康检查，分析当前系统状态，识别潜在问题并给出分步骤的诊断和解决方案。重点关注：1) Kubernetes Pod状态 2) 关键指标异常 3) 错误日志"
 )
 
 type ControllerV1 struct {
@@ -35,6 +32,7 @@ type ControllerV1 struct {
 	chatStreamRunner *adk.Runner
 	opsStreamRunner  *adk.Runner
 	rootAgentName    string
+	sessionMemory    *appcontext.SessionMemory
 	logger           *zap.Logger
 	opsAgent         adk.Agent
 	knowledgeAgent   adk.Agent
@@ -50,6 +48,7 @@ func NewV1(
 	ctrl := &ControllerV1{
 		chatAgent:      chatAgent,
 		rootAgentName:  "chat_agent",
+		sessionMemory:  appcontext.NewSessionMemory(nil, logger),
 		logger:         logger,
 		opsAgent:       opsAgent,
 		knowledgeAgent: knowledgeAgent,
@@ -98,14 +97,18 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 		return nil, err
 	}
 
-	memory := mem.GetSimpleMemory(sessionID)
-	messages, err := c.buildHistoryMessages(ctx, sessionID, question)
+	messages, err := c.sessionMemory.BuildMessages(ctx, sessionID, question)
 	if err != nil {
 		return nil, err
 	}
 
 	checkpointID := generateCheckpointID(sessionID)
-	iter := c.chatStreamRunner.Run(ctx, messages, adk.WithCheckPointID(checkpointID))
+	iter := c.chatStreamRunner.Run(ctx, messages,
+		adk.WithCheckPointID(checkpointID),
+		adk.WithSessionValues(map[string]any{
+			"session_id": sessionID,
+		}),
+	)
 
 	var fullAnswer strings.Builder
 	interrupted := false
@@ -148,7 +151,7 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 
 	answer := strings.TrimSpace(fullAnswer.String())
 	if answer != "" && !interrupted {
-		c.saveDialogueHistory(ctx, memory, question, answer, messages, sessionID)
+		c.sessionMemory.SaveTurn(ctx, sessionID, question, answer, messages)
 	}
 
 	return &v1.ChatStreamRes{}, nil
@@ -165,7 +168,9 @@ func (c *ControllerV1) ChatResumeStream(ctx context.Context, req *v1.ChatResumeS
 		return nil, fmt.Errorf("id is required")
 	}
 
-	iter, err := c.resumeAgent(ctx, c.chatStreamRunner, req.CheckpointID, req.InterruptIDs, req.Approved, req.Resolved, req.Comment)
+	iter, err := c.resumeAgent(ctx, c.chatStreamRunner, req.CheckpointID, req.InterruptIDs, req.Approved, req.Resolved, req.Comment, map[string]any{
+		"session_id": normalizeSessionID(req.Id),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -300,7 +305,9 @@ func (c *ControllerV1) AIOpsStream(ctx context.Context, req *v1.AIOpsStreamReq) 
 	checkpointID := generateCheckpointID("aiops")
 	iter := c.opsStreamRunner.Run(ctx, []adk.Message{
 		schema.UserMessage(opsDiagnosticPrompt),
-	}, adk.WithCheckPointID(checkpointID))
+	}, adk.WithCheckPointID(checkpointID), adk.WithSessionValues(map[string]any{
+		"session_id": "aiops",
+	}))
 
 	stepNum := 1
 	for {
@@ -354,7 +361,9 @@ func (c *ControllerV1) AIOpsResumeStream(ctx context.Context, req *v1.AIOpsResum
 		return nil, fmt.Errorf("checkpoint_id is required")
 	}
 
-	iter, err := c.resumeAgent(ctx, c.opsStreamRunner, req.CheckpointID, req.InterruptIDs, req.Approved, req.Resolved, req.Comment)
+	iter, err := c.resumeAgent(ctx, c.opsStreamRunner, req.CheckpointID, req.InterruptIDs, req.Approved, req.Resolved, req.Comment, map[string]any{
+		"session_id": "aiops",
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -425,14 +434,19 @@ func (c *ControllerV1) resumeAgent(
 	approved *bool,
 	resolved *bool,
 	comment string,
+	sessionValues map[string]any,
 ) (*adk.AsyncIterator[*adk.AgentEvent], error) {
 	if runner == nil {
 		return nil, fmt.Errorf("runner is not initialized")
 	}
 
 	targetIDs := normalizeIDList(interruptIDs)
+	baseOpts := make([]adk.AgentRunOption, 0, 1)
+	if len(sessionValues) > 0 {
+		baseOpts = append(baseOpts, adk.WithSessionValues(sessionValues))
+	}
 	if len(targetIDs) == 0 {
-		return runner.Resume(ctx, checkpointID)
+		return runner.Resume(ctx, checkpointID, baseOpts...)
 	}
 
 	targetPayload := map[string]any{}
@@ -454,55 +468,7 @@ func (c *ControllerV1) resumeAgent(
 		targets[id] = targetPayload
 	}
 
-	return runner.ResumeWithParams(ctx, checkpointID, &adk.ResumeParams{Targets: targets})
-}
-
-func (c *ControllerV1) buildHistoryMessages(ctx context.Context, sessionID, question string) ([]*schema.Message, error) {
-	messages, err := mem.GetMessagesForRequest(ctx, sessionID, schema.UserMessage(question), defaultReserveToolCost)
-	if err != nil {
-		if c.logger != nil {
-			c.logger.Warn("failed to get history, fallback to current question",
-				zap.String("session_id", sessionID),
-				zap.Error(err))
-		}
-		return []*schema.Message{schema.UserMessage(question)}, nil
-	}
-	if len(messages) == 0 {
-		return []*schema.Message{schema.UserMessage(question)}, nil
-	}
-	return messages, nil
-}
-
-func (c *ControllerV1) saveDialogueHistory(
-	ctx context.Context,
-	memory *mem.SimpleMemory,
-	question string,
-	answer string,
-	promptMessages []*schema.Message,
-	sessionID string,
-) {
-	if memory == nil || strings.TrimSpace(answer) == "" {
-		return
-	}
-
-	userMsg := schema.UserMessage(question)
-	assistantMsg := schema.AssistantMessage(answer, nil)
-
-	promptTokens := len(question) / 4
-	if precisePromptTokens, err := tokenizer.CountMessagesTokens(ctx, promptMessages, false); err == nil && precisePromptTokens > 0 {
-		promptTokens = precisePromptTokens
-	}
-
-	completionTokens := len(answer) / 4
-	if preciseCompletionTokens, err := tokenizer.CountMessageTokens(ctx, assistantMsg, false); err == nil && preciseCompletionTokens > 0 {
-		completionTokens = preciseCompletionTokens
-	}
-
-	if err := memory.SetMessages(ctx, userMsg, assistantMsg, promptMessages, promptTokens, completionTokens); err != nil && c.logger != nil {
-		c.logger.Warn("failed to save history",
-			zap.String("session_id", sessionID),
-			zap.Error(err))
-	}
+	return runner.ResumeWithParams(ctx, checkpointID, &adk.ResumeParams{Targets: targets}, baseOpts...)
 }
 
 func (c *ControllerV1) extractAssistantContent(event *adk.AgentEvent) (string, bool) {

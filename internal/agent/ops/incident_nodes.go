@@ -264,11 +264,19 @@ func (a *executionGateAgent) Resume(ctx context.Context, info *adk.ResumeInfo, _
 		}
 
 		approved, resolved, comment := parseResumeDecision(info.ResumeData)
-		if approved || resolved {
+		if resolved {
 			if strings.TrimSpace(comment) == "" {
 				comment = "用户已确认"
 			}
 			generator.Send(breakLoopEvent(a.name, fmt.Sprintf("收到确认：%s。结束执行循环，进入 strategy_agent 生成最终报告。", comment)))
+			return
+		}
+
+		if approved {
+			if strings.TrimSpace(comment) == "" {
+				comment = "用户批准继续执行"
+			}
+			generator.Send(assistantEvent(fmt.Sprintf("收到批准：%s。继续执行自动修复流程。", comment)))
 			return
 		}
 

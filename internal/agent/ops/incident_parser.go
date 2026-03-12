@@ -7,6 +7,19 @@ import (
 	"github.com/cloudwego/eino/adk"
 )
 
+func parseRCAReport(messages []adk.Message) (*RCAReport, bool) {
+	_, raw, ok := findLatestJSONObject(messages, "root_cause", "confidence")
+	if !ok {
+		return nil, false
+	}
+
+	var report RCAReport
+	if err := json.Unmarshal([]byte(raw), &report); err != nil {
+		return nil, false
+	}
+	return &report, true
+}
+
 func parseOpsExecutionPlan(messages []adk.Message) (*OpsExecutionPlan, bool) {
 	obj, raw, ok := findLatestJSONObject(messages, "commands")
 	if !ok {
@@ -41,6 +54,22 @@ func parseValidationResult(messages []adk.Message) (*PlanValidationResult, bool)
 	}
 
 	return &result, true
+}
+
+func parseExecutionResult(messages []adk.Message) (map[string]any, bool) {
+	obj, _, ok := findLatestJSONObject(messages, "execution_status")
+	if !ok {
+		return nil, false
+	}
+	return obj, true
+}
+
+func parseStrategyReport(messages []adk.Message) (map[string]any, bool) {
+	obj, _, ok := findLatestJSONObject(messages, "final_status")
+	if !ok {
+		return nil, false
+	}
+	return obj, true
 }
 
 func detectExecutionStatus(messages []adk.Message) ExecutionStatus {

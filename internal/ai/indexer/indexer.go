@@ -6,6 +6,7 @@ import (
 	embedder2 "go_agent/internal/ai/embedder"
 	"go_agent/utility/client"
 	"go_agent/utility/common"
+	"strings"
 
 	"github.com/cloudwego/eino-ext/components/indexer/milvus"
 	"github.com/cloudwego/eino/schema"
@@ -13,6 +14,10 @@ import (
 )
 
 func NewMilvusIndexer(ctx context.Context) (*milvus.Indexer, error) {
+	return NewMilvusIndexerWithCollection(ctx, common.MilvusCollectionName)
+}
+
+func NewMilvusIndexerWithCollection(ctx context.Context, collection string) (*milvus.Indexer, error) {
 	cli, err := client.NewMilvusClient(ctx)
 	if err != nil {
 		return nil, err
@@ -22,9 +27,14 @@ func NewMilvusIndexer(ctx context.Context) (*milvus.Indexer, error) {
 	if err != nil {
 		return nil, err
 	}
+	collection = strings.TrimSpace(collection)
+	if collection == "" {
+		collection = common.MilvusCollectionName
+	}
+
 	config := &milvus.IndexerConfig{
 		Client:            cli,
-		Collection:        common.MilvusCollectionName,
+		Collection:        collection,
 		Fields:            fields,
 		Embedding:         eb,
 		MetricType:        milvus.MetricType(entity.COSINE),
