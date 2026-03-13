@@ -22,8 +22,7 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
   isOps = false,
   opsStepId
 }) => {
-  const { theme, currentSessionId, updateLastMessage, updateOpsStep, setStreaming, setConnectionStatus } = useStore();
-  const [comment, setComment] = useState('');
+  const { theme, currentSessionId, addMessage, updateLastMessage, updateOpsStep, setStreaming, setConnectionStatus } = useStore();
   const [isHandled, setIsHandled] = useState(Boolean(interrupt.handled));
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorText, setErrorText] = useState('');
@@ -39,7 +38,7 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
     setIsSubmitting(false);
     setErrorText('');
     setLastAction('');
-  }, [interrupt.checkpoint_id, interrupt.message, interrupt.bash_request?.raw_command]);
+  }, [interrupt.checkpoint_id, interrupt.bash_request?.raw_command]);
 
   const handleAction = async (actionName: string, approved: boolean, resolved: boolean) => {
     if (isSubmitting || isHandled) {
@@ -60,6 +59,24 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
     setIsSubmitting(true);
     setStreaming(true);
     setConnectionStatus('streaming');
+    const interruptIDs = contexts
+      .map((item) => item?.id)
+      .filter((id): id is string => Boolean(id));
+    if (interruptIDs.length === 0) {
+      setIsSubmitting(false);
+      setStreaming(false);
+      setConnectionStatus('error');
+      setErrorText('缺少 interrupt_ids，无法恢复到具体中断点');
+      return;
+    }
+
+    if (!isOps && currentSessionId) {
+      addMessage(currentSessionId, {
+        role: 'assistant',
+        type: 'text',
+        content: ''
+      });
+    }
 
     const onContent = (content: string) => {
       if (isOps && opsStepId) {
@@ -118,7 +135,11 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
     };
 
     try {
-      const payload = { approved, resolved, comment: comment.trim() };
+      const payload = {
+        approved,
+        resolved,
+        interrupt_ids: interruptIDs
+      };
       if (isOps) {
         await resumeOps(checkpointId, payload, options);
       } else if (currentSessionId) {
@@ -173,10 +194,7 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
             💡 动作请求：执行系统命令
           </h3>
           <p className="text-xs opacity-80 whitespace-pre-wrap break-words">
-            {interrupt.message}
-          </p>
-          <p className="text-[10px] mt-2 opacity-60 font-mono">
-            Checkpoint: {checkpointId}
+            请确认是否执行以下命令。
           </p>
         </div>
       </div>
@@ -223,21 +241,6 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
       )}
 
       <div className="space-y-4">
-        <div>
-          <textarea
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            disabled={isHandled || isSubmitting}
-            placeholder="可选备注（如审批理由、人工处理说明）"
-            className={cn(
-              "w-full px-3 py-2 rounded-xl text-sm min-h-[80px] transition-all outline-none border",
-              theme === 'dark' 
-                ? "bg-black/50 border-cyber-neon/20 focus:border-cyber-neon/50" 
-                : "bg-white border-cyber-purple/20 focus:border-cyber-purple/50"
-            )}
-          />
-        </div>
-
         {errorText && (
           <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 px-3 py-2 rounded-lg">
             {errorText}

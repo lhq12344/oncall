@@ -17,6 +17,8 @@ const executionToolStateSessionKey = "_execution_tool_state_v1"
 type executionToolState struct {
 	mu sync.RWMutex
 
+	planPrepared        bool
+	planID              string
 	hasValidStep        bool
 	lastValidStepID     int
 	consecutiveInvalids int
@@ -37,6 +39,33 @@ func getExecutionToolState(ctx context.Context) *executionToolState {
 	state := &executionToolState{}
 	adk.AddSessionValue(ctx, executionToolStateSessionKey, state)
 	return state
+}
+
+// markExecutionPlanPrepared 标记当前执行轮次已完成计划生成。
+// 输入：ctx（Agent 运行上下文）、planID（计划 ID，可为空）。
+// 输出：无。
+func markExecutionPlanPrepared(ctx context.Context, planID string) {
+	state := getExecutionToolState(ctx)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.planPrepared = true
+	state.planID = planID
+}
+
+// hasPreparedExecutionPlan 判断当前执行轮次是否已生成可执行计划。
+// 输入：ctx（Agent 运行上下文）。
+// 输出：是否已准备计划、计划 ID。
+func hasPreparedExecutionPlan(ctx context.Context) (bool, string) {
+	state := getExecutionToolState(ctx)
+	if state == nil {
+		return false, ""
+	}
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	return state.planPrepared, state.planID
 }
 
 // shouldSkipExecutionStep 判断当前步骤是否应被跳过。

@@ -192,13 +192,25 @@ export const OpsPanel: React.FC = () => {
                       
                       <div className="flex gap-2">
                         <button 
-                          onClick={() => handleResume(step.id, step.interrupt!.checkpoint_id, true, false)}
+                          onClick={() => handleResume(
+                            step.id,
+                            step.interrupt!.checkpoint_id,
+                            true,
+                            false,
+                            (step.interrupt?.interrupt_contexts || []).map((item) => item.id).filter(Boolean)
+                          )}
                           className="flex-1 py-2 rounded-lg bg-green-500/20 border border-green-500/40 text-green-400 text-[10px] font-bold uppercase tracking-widest hover:bg-green-500/30 transition-all"
                         >
                           继续执行
                         </button>
                         <button 
-                          onClick={() => handleResume(step.id, step.interrupt!.checkpoint_id, true, true)}
+                          onClick={() => handleResume(
+                            step.id,
+                            step.interrupt!.checkpoint_id,
+                            true,
+                            true,
+                            (step.interrupt?.interrupt_contexts || []).map((item) => item.id).filter(Boolean)
+                          )}
                           className="flex-1 py-2 rounded-lg bg-blue-600 text-white text-[10px] font-bold uppercase tracking-widest hover:bg-blue-500 transition-all shadow-[0_0_15px_rgba(37,99,235,0.3)]"
                         >
                           已修复完成
@@ -230,7 +242,7 @@ export const OpsPanel: React.FC = () => {
   );
 };
 
-async function handleResume(stepId: string, checkpointId: string, approved: boolean, resolved: boolean) {
+async function handleResume(stepId: string, checkpointId: string, approved: boolean, resolved: boolean, interruptIDs: string[]) {
   const { updateOpsStep, setStreaming, setConnectionStatus } = useStore.getState();
   
   setStreaming(true);
@@ -254,5 +266,5 @@ async function handleResume(stepId: string, checkpointId: string, approved: bool
     }
   };
 
-  await resumeOps(checkpointId, { approved, resolved }, options);
+  await resumeOps(checkpointId, { approved, resolved, interrupt_ids: interruptIDs }, options);
 }

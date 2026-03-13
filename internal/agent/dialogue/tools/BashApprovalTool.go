@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -18,6 +19,10 @@ const (
 	maxBashTimeoutSeconds     = 180
 	maxBashOutputRunes        = 8000
 )
+
+func init() {
+	gob.Register(&BashApprovalInterruptInfo{})
+}
 
 // BashApprovalTool 为对话 Agent 提供「执行前人工确认」的 Bash 命令执行能力。
 type BashApprovalTool struct {

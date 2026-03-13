@@ -28,18 +28,18 @@ type ExecutionStep struct {
 	ExpectedResult  string   `json:"expected_result"`
 	RollbackCommand string   `json:"rollback_command"`
 	RollbackArgs    []string `json:"rollback_args"`
-	Timeout         int      `json:"timeout"` // 秒
+	Timeout         int      `json:"timeout"`  // 秒
 	Critical        bool     `json:"critical"` // 是否关键步骤
 }
 
 // ExecutionPlan 执行计划
 type ExecutionPlan struct {
-	PlanID      string          `json:"plan_id"`
-	Description string          `json:"description"`
-	Steps       []ExecutionStep `json:"steps"`
-	TotalSteps  int             `json:"total_steps"`
-	EstimatedTime int           `json:"estimated_time"` // 秒
-	RiskLevel   string          `json:"risk_level"`     // low/medium/high
+	PlanID        string          `json:"plan_id"`
+	Description   string          `json:"description"`
+	Steps         []ExecutionStep `json:"steps"`
+	TotalSteps    int             `json:"total_steps"`
+	EstimatedTime int             `json:"estimated_time"` // 秒
+	RiskLevel     string          `json:"risk_level"`     // low/medium/high
 }
 
 func NewGeneratePlanTool(chatModel *models.ChatModel, logger *zap.Logger) tool.BaseTool {
@@ -102,6 +102,7 @@ func (t *GeneratePlanTool) InvokableRun(ctx context.Context, argumentsInJSON str
 
 	// 3. 评估风险等级
 	plan.RiskLevel = t.assessRiskLevel(plan)
+	markExecutionPlanPrepared(ctx, plan.PlanID)
 
 	output, err := json.Marshal(plan)
 	if err != nil {
@@ -411,4 +412,3 @@ func (t *GeneratePlanTool) assessRiskLevel(plan *ExecutionPlan) string {
 	}
 	return "low"
 }
-

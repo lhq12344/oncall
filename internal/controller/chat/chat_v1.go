@@ -209,9 +209,10 @@ func (c *ControllerV1) ChatResumeStream(ctx context.Context, req *v1.ChatResumeS
 	if strings.TrimSpace(req.Id) == "" {
 		return nil, fmt.Errorf("id is required")
 	}
+	sessionID := normalizeSessionID(req.Id)
 
 	iter, err := c.resumeAgent(ctx, c.chatStreamRunner, req.CheckpointID, req.InterruptIDs, req.Approved, req.Resolved, req.Comment, map[string]any{
-		"session_id": normalizeSessionID(req.Id),
+		"session_id": sessionID,
 	})
 	if err != nil {
 		return nil, err
@@ -221,6 +222,9 @@ func (c *ControllerV1) ChatResumeStream(ctx context.Context, req *v1.ChatResumeS
 	if err != nil {
 		return nil, err
 	}
+
+	var fullAnswer strings.Builder
+	interrupted := false
 
 	for {
 		event, ok := iter.Next()
@@ -236,6 +240,7 @@ func (c *ControllerV1) ChatResumeStream(ctx context.Context, req *v1.ChatResumeS
 		}
 
 		if event.Action != nil && event.Action.Interrupted != nil {
+			interrupted = true
 			payload := map[string]any{
 				"type":               "interrupt",
 				"checkpoint_id":      req.CheckpointID,
@@ -251,10 +256,41 @@ func (c *ControllerV1) ChatResumeStream(ctx context.Context, req *v1.ChatResumeS
 		if !ok {
 			continue
 		}
+		fullAnswer.WriteString(chunk)
 		writeSSEData(r, chunk)
 	}
 
 	writeSSEData(r, "[DONE]")
+
+	answer := strings.TrimSpace(fullAnswer.String())
+	if answer != "" && !interrupted {
+		approvedValue := "nil"
+		if req.Approved != nil {
+			approvedValue = fmt.Sprintf("%v", *req.Approved)
+		}
+		resolvedValue := "nil"
+		if req.Resolved != nil {
+			resolvedValue = fmt.Sprintf("%v", *req.Resolved)
+		}
+		comment := strings.TrimSpace(req.Comment)
+		if comment == "" {
+			comment = "(empty)"
+		}
+		interruptIDs := normalizeIDList(req.InterruptIDs)
+		if len(interruptIDs) == 0 {
+			interruptIDs = []string{"(all or checkpoint-level resume)"}
+		}
+		resumeInput := fmt.Sprintf(
+			"恢复执行确认：checkpoint_id=%s; interrupt_ids=%s; approved=%s; resolved=%s; comment=%s",
+			strings.TrimSpace(req.CheckpointID),
+			strings.Join(interruptIDs, ","),
+			approvedValue,
+			resolvedValue,
+			comment,
+		)
+		c.sessionMemory.SaveTurn(context.Background(), sessionID, resumeInput, answer, nil)
+	}
+
 	return &v1.ChatResumeStreamRes{}, nil
 }
 
@@ -533,6 +569,12 @@ func (c *ControllerV1) extractAssistantContentFromResolved(event *adk.AgentEvent
 	if ok {
 		return content, true
 	}
+
+	// 对执行类工具增加兜底：若模型未输出二次总结，直接透传工具执行结果。
+	if content, ok := c.extractBashToolResultByMessage(msg); ok {
+		return content, true
+	}
+
 	// 对话流放宽一次：若 AgentName 与 rootName 不一致，仍允许非工具 assistant 消息透出。
 	return c.extractAgentContentByMessage(event.AgentName, msg, "")
 }
@@ -592,6 +634,54 @@ func (c *ControllerV1) extractAgentContentByMessage(agentName string, msg *schem
 		return "", false
 	}
 	return content, true
+}
+
+// extractBashToolResultByMessage 提取 Bash 审批工具的执行结果。
+// 输入：schema.Message（可能为 tool 消息）。
+// 输出：可展示文本与是否成功提取。
+func (c *ControllerV1) extractBashToolResultByMessage(msg *schema.Message) (string, bool) {
+	if msg == nil {
+		return "", false
+	}
+	if msg.Role != schema.Tool {
+		return "", false
+	}
+
+	toolName := strings.TrimSpace(msg.ToolName)
+	content := strings.TrimSpace(msg.Content)
+	if content == "" {
+		return "", false
+	}
+
+	if toolName == "bash_execute_with_approval" {
+		return content, true
+	}
+
+	// 部分模型/网关可能不回填 ToolName，兜底通过内容结构判断。
+	if isBashExecuteResult(content) {
+		return content, true
+	}
+	return "", false
+}
+
+// isBashExecuteResult 判断文本是否为 Bash 工具执行结果 JSON。
+// 输入：文本内容。
+// 输出：是否匹配 BashExecuteResult 结构特征。
+func isBashExecuteResult(content string) bool {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return false
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return false
+	}
+	_, hasCommand := payload["command"]
+	_, hasApproved := payload["approved"]
+	_, hasResolved := payload["resolved"]
+	_, hasExecuted := payload["executed"]
+	return hasCommand && hasApproved && hasResolved && hasExecuted
 }
 
 func setupSSE(ctx context.Context) (*ghttp.Request, error) {

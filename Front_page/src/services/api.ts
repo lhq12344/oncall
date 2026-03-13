@@ -37,7 +37,7 @@ export async function streamChat(
 export async function resumeChat(
   sessionId: string,
   checkpointId: string,
-  data: { approved?: boolean; resolved?: boolean; comment?: string },
+  data: { approved?: boolean; resolved?: boolean; comment?: string; interrupt_ids?: string[] },
   options: StreamOptions
 ) {
   return streamRequest(`${BASE_URL}/chat_resume_stream`, {
@@ -53,7 +53,7 @@ export async function streamOps(options: StreamOptions) {
 
 export async function resumeOps(
   checkpointId: string,
-  data: { approved?: boolean; resolved?: boolean; comment?: string },
+  data: { approved?: boolean; resolved?: boolean; comment?: string; interrupt_ids?: string[] },
   options: StreamOptions
 ) {
   return streamRequest(`${BASE_URL}/ai_ops_resume_stream`, {
