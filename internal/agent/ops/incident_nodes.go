@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/adk"
 	"go.uber.org/zap"
@@ -352,10 +355,18 @@ func (a *finalReportAgent) Run(ctx context.Context, _ *adk.AgentInput, _ ...adk.
 
 	go func() {
 		defer generator.Close()
-		summary := buildFinalOpsSummary(getIncidentState(ctx))
+		state := getIncidentState(ctx)
+		summary := buildFinalOpsSummary(state)
 		if a.logger != nil {
 			a.logger.Info("incident final summary generated",
 				zap.Int("summary_len", len([]rune(summary))))
+		}
+		if path, err := persistFinalOpsReport(ctx, state, summary); err != nil {
+			if a.logger != nil {
+				a.logger.Warn("failed to persist incident final report", zap.Error(err))
+			}
+		} else if a.logger != nil {
+			a.logger.Info("incident final report persisted", zap.String("path", path))
 		}
 		generator.Send(assistantEvent(summary))
 	}()
@@ -383,31 +394,219 @@ func buildFinalOpsSummary(state *IncidentState) string {
 		}
 	}
 
-	lines := []string{
-		"运维处置总结：",
-		fmt.Sprintf("- 最终状态：%s", finalStatus),
+	resolvedText := "待确认"
+	switch strings.ToLower(strings.TrimSpace(finalStatus)) {
+	case "resolved", "success", "fixed", "completed":
+		resolvedText = "是"
+	case "partially_resolved":
+		resolvedText = "部分解决"
+	default:
+		resolvedText = "否"
 	}
 
+	lines := []string{
+		"## 运维技术报告",
+		fmt.Sprintf("- 生成时间：%s", time.Now().Format("2006-01-02 15:04:05")),
+		fmt.Sprintf("- 最终状态：%s", finalStatus),
+		fmt.Sprintf("- 是否已解决：%s", resolvedText),
+	}
+
+	lines = append(lines, "", "### 1) 问题发现")
 	if rootCause := strings.TrimSpace(state.RootCause); rootCause != "" {
 		lines = append(lines, fmt.Sprintf("- 根因判断：%s", rootCause))
 	}
-	if planSummary := strings.TrimSpace(state.PlanSummary); planSummary != "" {
-		lines = append(lines, fmt.Sprintf("- 执行计划：%s", planSummary))
+	if impact := strings.TrimSpace(state.Impact); impact != "" {
+		lines = append(lines, fmt.Sprintf("- 影响范围：%s", impact))
 	}
-	if stepCount := state.ExecutionStepCount; stepCount > 0 {
-		lines = append(lines, fmt.Sprintf("- 实际执行步骤：%d 步", stepCount))
+	if summary := strings.TrimSpace(state.ObservationSummary); summary != "" {
+		lines = append(lines, fmt.Sprintf("- 观测摘要：%s", summary))
 	}
-	if reason := strings.TrimSpace(state.ExecutionReason); reason != "" {
-		lines = append(lines, fmt.Sprintf("- 执行说明：%s", reason))
+	for _, errText := range collectIncidentErrors(state) {
+		lines = append(lines, fmt.Sprintf("- 错误发现：%s", errText))
 	}
+
+	lines = append(lines, "", "### 2) 执行日志汇总")
+	if len(state.ExecutionLogs) == 0 {
+		lines = append(lines, "- 未采集到执行日志。")
+	} else {
+		for idx, logLine := range state.ExecutionLogs {
+			lines = append(lines, fmt.Sprintf("%d. %s", idx+1, strings.TrimSpace(logLine)))
+		}
+		if len(state.ExecutionLogs) >= maxIncidentExecutionLogs {
+			lines = append(lines, fmt.Sprintf("- 注：仅保留最近 %d 条执行日志。", maxIncidentExecutionLogs))
+		}
+	}
+
+	lines = append(lines, "", "### 3) 解决方法")
+	methods := collectIncidentMethods(state)
+	if len(methods) == 0 {
+		lines = append(lines, "- 暂未形成可执行的自动修复方法，请人工介入。")
+	} else {
+		for _, method := range methods {
+			lines = append(lines, fmt.Sprintf("- %s", method))
+		}
+	}
+
+	lines = append(lines, "", "### 4) 结论")
 	if report := strings.TrimSpace(state.FinalReport); report != "" {
 		lines = append(lines, fmt.Sprintf("- 复盘结论：%s", report))
 	}
-	if fallback := strings.TrimSpace(state.ExecutionFallback); fallback != "" && finalStatus != "resolved" {
+	if fallback := strings.TrimSpace(state.ExecutionFallback); fallback != "" && !strings.EqualFold(finalStatus, "resolved") {
 		lines = append(lines, fmt.Sprintf("- 后续建议：%s", fallback))
 	}
 
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+// collectIncidentErrors 汇总错误发现信息。
+// 输入：state（流程状态快照）。
+// 输出：去重后的错误列表。
+func collectIncidentErrors(state *IncidentState) []string {
+	if state == nil {
+		return nil
+	}
+	out := make([]string, 0, 8)
+	seen := make(map[string]struct{}, 8)
+	appendOnce := func(text string) {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		if _, ok := seen[text]; ok {
+			return
+		}
+		seen[text] = struct{}{}
+		out = append(out, text)
+	}
+
+	for _, errText := range state.ObservationErrors {
+		appendOnce(errText)
+	}
+	keywords := []string{"error", "failed", "异常", "失败", "超时", "not found", "panic", "blocked"}
+	for _, logLine := range state.ExecutionLogs {
+		lower := strings.ToLower(logLine)
+		for _, keyword := range keywords {
+			if strings.Contains(lower, keyword) {
+				appendOnce(clipText(logLine, 260))
+				break
+			}
+		}
+	}
+	return out
+}
+
+// collectIncidentMethods 汇总当前处置方法。
+// 输入：state（流程状态快照）。
+// 输出：方法列表（去重）。
+func collectIncidentMethods(state *IncidentState) []string {
+	if state == nil {
+		return nil
+	}
+	methods := make([]string, 0, 6)
+	seen := make(map[string]struct{}, 6)
+	appendMethod := func(text string) {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		if _, ok := seen[text]; ok {
+			return
+		}
+		seen[text] = struct{}{}
+		methods = append(methods, text)
+	}
+
+	if summary := strings.TrimSpace(state.PlanSummary); summary != "" {
+		appendMethod("执行计划：" + summary)
+	}
+	if state.ExecutionStepCount > 0 {
+		appendMethod(fmt.Sprintf("自动执行步骤：%d 步", state.ExecutionStepCount))
+	}
+	if reason := strings.TrimSpace(state.ExecutionReason); reason != "" {
+		appendMethod("执行说明：" + reason)
+	}
+	if report := strings.TrimSpace(state.FinalReport); report != "" {
+		appendMethod("策略复盘：" + report)
+	}
+	if fallback := strings.TrimSpace(state.ExecutionFallback); fallback != "" {
+		appendMethod("人工兜底方案：" + fallback)
+	}
+	return methods
+}
+
+// persistFinalOpsReport 将最终技术报告落盘到 logs/ops_reports。
+// 输入：ctx（工作流上下文）、state（流程状态）、report（报告正文）。
+// 输出：落盘文件路径。
+func persistFinalOpsReport(ctx context.Context, state *IncidentState, report string) (string, error) {
+	report = strings.TrimSpace(report)
+	if report == "" {
+		return "", fmt.Errorf("empty report")
+	}
+
+	sessionID := "aiops"
+	if value, ok := adk.GetSessionValue(ctx, "session_id"); ok {
+		if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+			sessionID = strings.TrimSpace(text)
+		}
+	}
+	status := ""
+	if state != nil {
+		status = strings.TrimSpace(state.FinalStatus)
+	}
+	if status == "" {
+		status = "unknown"
+	}
+
+	dir := filepath.Join("logs", "ops_reports")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create report dir failed: %w", err)
+	}
+
+	now := time.Now()
+	fileName := fmt.Sprintf("%s_%s_%s.md",
+		sanitizeReportFileToken(sessionID),
+		sanitizeReportFileToken(status),
+		now.Format("20060102_150405"))
+	path := filepath.Join(dir, fileName)
+
+	header := []string{
+		"---",
+		fmt.Sprintf("session_id: %s", sessionID),
+		fmt.Sprintf("final_status: %s", status),
+		fmt.Sprintf("generated_at: %s", now.Format(time.RFC3339)),
+		"---",
+		"",
+	}
+	content := strings.Join(header, "\n") + report + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return "", fmt.Errorf("write report failed: %w", err)
+	}
+	return path, nil
+}
+
+// sanitizeReportFileToken 清理文件名中的非法字符。
+// 输入：text（原始文本）。
+// 输出：可用于文件名的安全文本。
+func sanitizeReportFileToken(text string) string {
+	text = strings.TrimSpace(strings.ToLower(text))
+	if text == "" {
+		return "unknown"
+	}
+	replacer := strings.NewReplacer(
+		"/", "_",
+		"\\", "_",
+		":", "_",
+		" ", "_",
+		"\t", "_",
+		"\n", "_",
+	)
+	text = replacer.Replace(text)
+	text = regexp.MustCompile(`[^a-z0-9._-]+`).ReplaceAllString(text, "_")
+	text = strings.Trim(text, "_")
+	if text == "" {
+		return "unknown"
+	}
+	return text
 }
 
 func absoluteForbiddenPatterns() []*regexp.Regexp {

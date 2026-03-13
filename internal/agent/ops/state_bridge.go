@@ -17,6 +17,7 @@ const incidentStateSessionKey = "incident_graph_state"
 const (
 	maxIncidentUserInputRunes = 1600
 	maxIncidentStateRunes     = 2400
+	maxIncidentExecutionLogs  = 200
 )
 
 type IncidentState struct {
@@ -40,11 +41,12 @@ type IncidentState struct {
 	ValidationBlocked bool   `json:"validation_blocked,omitempty"`
 	ValidationRisk    string `json:"validation_risk,omitempty"`
 
-	ExecutionStatus    string `json:"execution_status,omitempty"`
-	ExecutionSuccess   bool   `json:"execution_success,omitempty"`
-	ExecutionStepCount int    `json:"execution_step_count,omitempty"`
-	ExecutionReason    string `json:"execution_reason,omitempty"`
-	ExecutionFallback  string `json:"execution_fallback,omitempty"`
+	ExecutionStatus    string   `json:"execution_status,omitempty"`
+	ExecutionSuccess   bool     `json:"execution_success,omitempty"`
+	ExecutionStepCount int      `json:"execution_step_count,omitempty"`
+	ExecutionReason    string   `json:"execution_reason,omitempty"`
+	ExecutionFallback  string   `json:"execution_fallback,omitempty"`
+	ExecutionLogs      []string `json:"execution_logs,omitempty"`
 
 	FinalStatus string `json:"final_status,omitempty"`
 	FinalReport string `json:"final_report,omitempty"`
@@ -131,10 +133,32 @@ func (a *stateBridgeAgent) captureState(ctx context.Context, event *adk.AgentEve
 		return
 	}
 	state := getIncidentState(ctx)
+	agentName := strings.TrimSpace(event.AgentName)
+	if agentName == "" {
+		agentName = strings.TrimSpace(a.name)
+	}
+
+	if event.Err != nil {
+		appendIncidentExecutionLog(state, fmt.Sprintf("[%s] 事件错误：%s", agentName, clipText(event.Err.Error(), 600)))
+	}
 
 	if event.Output != nil && event.Output.MessageOutput != nil && !event.Output.MessageOutput.IsStreaming && event.Output.MessageOutput.Message != nil {
 		msg := event.Output.MessageOutput.Message
 		if msg != nil {
+			for _, call := range msg.ToolCalls {
+				toolName := strings.TrimSpace(call.Function.Name)
+				if toolName == "" {
+					toolName = "(unknown)"
+				}
+				args := clipText(strings.TrimSpace(call.Function.Arguments), 280)
+				if args == "" {
+					args = "{}"
+				}
+				appendIncidentExecutionLog(state, fmt.Sprintf("[%s] 调用工具：%s args=%s", agentName, toolName, args))
+			}
+			if content := strings.TrimSpace(msg.Content); content != "" {
+				appendIncidentExecutionLog(state, fmt.Sprintf("[%s] 输出：%s", agentName, clipText(content, 600)))
+			}
 			a.updateByStage(state, msg)
 		}
 	}
@@ -145,6 +169,9 @@ func (a *stateBridgeAgent) captureState(ctx context.Context, event *adk.AgentEve
 			if strings.TrimSpace(info.FallbackPlan) != "" {
 				state.ExecutionFallback = clipText(info.FallbackPlan, 800)
 			}
+			appendIncidentExecutionLog(state, fmt.Sprintf("[%s] 中断：type=%s reason=%s", agentName, strings.TrimSpace(info.Type), clipText(info.Reason, 300)))
+		} else if detail := strings.TrimSpace(fmt.Sprintf("%v", event.Action.Interrupted.Data)); detail != "" {
+			appendIncidentExecutionLog(state, fmt.Sprintf("[%s] 中断：%s", agentName, clipText(detail, 300)))
 		}
 	}
 
@@ -289,6 +316,8 @@ func renderIncidentState(state *IncidentState) string {
 		"execution_step_count":  state.ExecutionStepCount,
 		"execution_reason":      state.ExecutionReason,
 		"execution_fallback":    state.ExecutionFallback,
+		"execution_log_count":   len(state.ExecutionLogs),
+		"latest_execution_logs": latestIncidentLogs(state.ExecutionLogs, 5),
 		"final_status":          state.FinalStatus,
 		"final_report":          state.FinalReport,
 		"updated_at":            state.UpdatedAt,
@@ -337,4 +366,34 @@ func setIncidentState(ctx context.Context, state *IncidentState) {
 		return
 	}
 	adk.AddSessionValue(ctx, incidentStateSessionKey, state)
+}
+
+// appendIncidentExecutionLog 追加执行日志并控制总量。
+// 输入：state（流程状态）、entry（日志文本）。
+// 输出：无。
+func appendIncidentExecutionLog(state *IncidentState, entry string) {
+	if state == nil {
+		return
+	}
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return
+	}
+	state.ExecutionLogs = append(state.ExecutionLogs, entry)
+	if len(state.ExecutionLogs) > maxIncidentExecutionLogs {
+		state.ExecutionLogs = append([]string(nil), state.ExecutionLogs[len(state.ExecutionLogs)-maxIncidentExecutionLogs:]...)
+	}
+}
+
+// latestIncidentLogs 返回日志尾部 N 条。
+// 输入：logs（日志列表）、limit（条数上限）。
+// 输出：尾部日志切片。
+func latestIncidentLogs(logs []string, limit int) []string {
+	if len(logs) == 0 {
+		return nil
+	}
+	if limit <= 0 || len(logs) <= limit {
+		return append([]string(nil), logs...)
+	}
+	return append([]string(nil), logs[len(logs)-limit:]...)
 }
