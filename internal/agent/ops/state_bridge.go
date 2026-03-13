@@ -35,10 +35,11 @@ type IncidentState struct {
 	ValidationBlocked bool   `json:"validation_blocked,omitempty"`
 	ValidationRisk    string `json:"validation_risk,omitempty"`
 
-	ExecutionStatus   string `json:"execution_status,omitempty"`
-	ExecutionSuccess  bool   `json:"execution_success,omitempty"`
-	ExecutionReason   string `json:"execution_reason,omitempty"`
-	ExecutionFallback string `json:"execution_fallback,omitempty"`
+	ExecutionStatus    string `json:"execution_status,omitempty"`
+	ExecutionSuccess   bool   `json:"execution_success,omitempty"`
+	ExecutionStepCount int    `json:"execution_step_count,omitempty"`
+	ExecutionReason    string `json:"execution_reason,omitempty"`
+	ExecutionFallback  string `json:"execution_fallback,omitempty"`
 
 	FinalStatus string `json:"final_status,omitempty"`
 	FinalReport string `json:"final_report,omitempty"`
@@ -76,11 +77,19 @@ func (a *stateBridgeAgent) Description(_ context.Context) string {
 }
 
 func (a *stateBridgeAgent) Run(ctx context.Context, input *adk.AgentInput, opts ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
+	agentName := strings.TrimSpace(a.name)
+	if agentName != "" {
+		adk.AddSessionValue(ctx, "current_agent", agentName)
+	}
 	iter := a.inner.Run(ctx, input, opts...)
 	return a.track(ctx, iter)
 }
 
 func (a *stateBridgeAgent) Resume(ctx context.Context, info *adk.ResumeInfo, opts ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
+	agentName := strings.TrimSpace(a.name)
+	if agentName != "" {
+		adk.AddSessionValue(ctx, "current_agent", agentName)
+	}
 	ra, ok := a.inner.(adk.ResumableAgent)
 	if !ok {
 		iterator, generator := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
@@ -186,6 +195,7 @@ func (a *stateBridgeAgent) updateByStage(state *IncidentState, msg *schema.Messa
 					state.ExecutionStatus = strings.TrimSpace(statusText)
 				}
 			}
+			state.ExecutionStepCount = parseExecutedStepCount(result)
 			if value, exists := result["failed_reason"]; exists {
 				if reason, ok := value.(string); ok && strings.TrimSpace(reason) != "" {
 					state.ExecutionReason = clipText(reason, 600)
@@ -255,23 +265,24 @@ func renderIncidentState(state *IncidentState) string {
 		return ""
 	}
 	payload := map[string]any{
-		"root_cause":         state.RootCause,
-		"target_node":        state.TargetNode,
-		"path":               state.Path,
-		"impact":             state.Impact,
-		"confidence":         state.Confidence,
-		"plan_id":            state.PlanID,
-		"plan_summary":       state.PlanSummary,
-		"plan_risk":          state.PlanRisk,
-		"validation_blocked": state.ValidationBlocked,
-		"validation_risk":    state.ValidationRisk,
-		"execution_status":   state.ExecutionStatus,
-		"execution_success":  state.ExecutionSuccess,
-		"execution_reason":   state.ExecutionReason,
-		"execution_fallback": state.ExecutionFallback,
-		"final_status":       state.FinalStatus,
-		"final_report":       state.FinalReport,
-		"updated_at":         state.UpdatedAt,
+		"root_cause":           state.RootCause,
+		"target_node":          state.TargetNode,
+		"path":                 state.Path,
+		"impact":               state.Impact,
+		"confidence":           state.Confidence,
+		"plan_id":              state.PlanID,
+		"plan_summary":         state.PlanSummary,
+		"plan_risk":            state.PlanRisk,
+		"validation_blocked":   state.ValidationBlocked,
+		"validation_risk":      state.ValidationRisk,
+		"execution_status":     state.ExecutionStatus,
+		"execution_success":    state.ExecutionSuccess,
+		"execution_step_count": state.ExecutionStepCount,
+		"execution_reason":     state.ExecutionReason,
+		"execution_fallback":   state.ExecutionFallback,
+		"final_status":         state.FinalStatus,
+		"final_report":         state.FinalReport,
+		"updated_at":           state.UpdatedAt,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

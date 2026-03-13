@@ -3,7 +3,9 @@
 # go_agent Frontend 启动脚本
 
 echo "🚀 启动 SuperBizAgent Frontend..."
-#echo "📁 当前目录: $(pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR" || exit 1
+echo "📁 前端目录: $(pwd)"
 echo "🌐 前端服务将在 http://127.0.0.1:8081 启动"
 echo "🔗 请确保后端服务运行在 http://127.0.0.1:6872"
 echo ""

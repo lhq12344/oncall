@@ -59,7 +59,14 @@ func NewOpsAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 				1. 先收集基础状态（K8s 资源、关键指标）
 				2. 根据初步结果，针对性查询日志或详细指标
 				3. 每个步骤要明确目标和预期输出
-				4. 步骤之间要有逻辑关联`
+				4. 步骤之间要有逻辑关联
+				5. 同一参数工具调用禁止重复（除非上一步明确失败且给出重试理由）
+				6. 避免“全命名空间轮询”，优先单命名空间定位后再扩展
+
+				命名空间策略（必须遵循）：
+				- 优先检查 infra 命名空间（业务核心命名空间）
+				- 如果需要做环境对比，再扩展检查 default/staging/production/kube-system
+				- 未显式指定 namespace 时，优先使用 infra`
 
 			messages := []adk.Message{
 				{
@@ -86,7 +93,7 @@ func NewOpsAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 				Tools: toolsList,
 			},
 		},
-		MaxIterations: 20,
+		MaxIterations: 8,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create executor: %w", err)
@@ -105,7 +112,7 @@ func NewOpsAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 		Planner:       planner,
 		Executor:      executor,
 		Replanner:     replanner,
-		MaxIterations: 10, // 最多执行 10 轮 plan-execute-replan 循环
+		MaxIterations: 4, // 最多执行 4 轮 plan-execute-replan 循环
 	})
 
 	if err != nil {

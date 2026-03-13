@@ -175,9 +175,17 @@ func inferTitle(content string) string {
 }
 
 func toDocuments(in *uploadInput) []*schema.Document {
-	now := time.Now().Unix()
+	// 使用标题+时间戳作为基础 ID，markdown splitter 会为每个分片生成唯一 ID
+	title := strings.TrimSpace(in.Title)
+	if title == "" {
+		title = "knowledge"
+	}
+	// 清理标题中的非法字符
+	title = sanitizeIDTitle(title)
+	baseID := fmt.Sprintf("%s_%d", title, time.Now().UnixNano())
+
 	doc := &schema.Document{
-		ID:      fmt.Sprintf("knowledge_%d_1", now),
+		ID:      baseID,
 		Content: strings.TrimSpace(in.Content),
 		MetaData: map[string]any{
 			"title":      strings.TrimSpace(in.Title),
@@ -194,4 +202,19 @@ func toDocuments(in *uploadInput) []*schema.Document {
 	}
 
 	return []*schema.Document{doc}
+}
+
+// sanitizeIDTitle 清理标题用于 ID 生成
+func sanitizeIDTitle(title string) string {
+	// 只保留字母、数字和短横线
+	var result []rune
+	for _, r := range title {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			result = append(result, r)
+		}
+	}
+	if len(result) == 0 {
+		return "knowledge"
+	}
+	return string(result)
 }

@@ -73,6 +73,15 @@ func (t *KnowledgeRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSO
 
 	docs, err := t.retriever.Retrieve(ctx, in.Query, einoretriever.WithTopK(in.TopK))
 	if err != nil {
+		if strings.Contains(err.Error(), "extra output fields") {
+			if t.logger != nil {
+				t.logger.Warn("knowledge retrieve schema mismatch, fallback to empty result",
+					zap.String("query", in.Query),
+					zap.Int("top_k", in.TopK),
+					zap.Error(err))
+			}
+			return `{"status":"degraded","results":[],"count":0,"message":"knowledge collection schema mismatch, fallback to empty result"}`, nil
+		}
 		if t.logger != nil {
 			t.logger.Error("knowledge retrieve failed",
 				zap.String("query", in.Query),
@@ -95,7 +104,10 @@ func (t *KnowledgeRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSO
 			continue
 		}
 
-		content := strings.TrimSpace(doc.Content)
+		content := extractKnowledgeContent(doc)
+		if content == "" {
+			continue
+		}
 		if len([]rune(content)) > 500 {
 			content = string([]rune(content)[:500]) + "..."
 		}
@@ -128,6 +140,34 @@ func (t *KnowledgeRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSO
 	}
 
 	return string(output), nil
+}
+
+// extractKnowledgeContent 提取知识片段文本内容。
+// 输入：Milvus 检索返回的 Document。
+// 输出：优先使用 doc.Content，不存在时从 metadata 常见字段回退提取。
+func extractKnowledgeContent(doc *schema.Document) string {
+	if doc == nil {
+		return ""
+	}
+	if content := strings.TrimSpace(doc.Content); content != "" {
+		return content
+	}
+	if doc.MetaData == nil {
+		return ""
+	}
+
+	candidateKeys := []string{"content", "text", "chunk", "summary", "description"}
+	for _, key := range candidateKeys {
+		raw, ok := doc.MetaData[key]
+		if !ok {
+			continue
+		}
+		text := strings.TrimSpace(fmt.Sprintf("%v", raw))
+		if text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func escapeJSONString(s string) string {

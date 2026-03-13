@@ -6,8 +6,8 @@ import (
 
 type ChatStreamReq struct {
 	g.Meta   `path:"/chat_stream" method:"post" summary:"流式对话"`
-	Id       string
-	Question string
+	Id       string `json:"id" dc:"会话id"`
+	Question string `json:"question" dc:"用户问题"`
 }
 
 type ChatStreamRes struct{}

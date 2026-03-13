@@ -18,7 +18,7 @@ type BuildDependencyGraphTool struct {
 // ServiceNode 服务节点
 type ServiceNode struct {
 	Name         string   `json:"name"`
-	Type         string   `json:"type"` // service/database/cache/mq
+	Type         string   `json:"type"`         // service/database/cache/mq
 	Dependencies []string `json:"dependencies"` // 依赖的服务
 	Dependents   []string `json:"dependents"`   // 依赖此服务的服务
 	Critical     bool     `json:"critical"`     // 是否关键服务
@@ -26,17 +26,17 @@ type ServiceNode struct {
 
 // DependencyGraph 依赖图
 type DependencyGraph struct {
-	Nodes     map[string]*ServiceNode `json:"nodes"`
-	Edges     []Edge                  `json:"edges"`
-	Layers    [][]string              `json:"layers"` // 分层结构
-	TotalNodes int                    `json:"total_nodes"`
+	Nodes      map[string]*ServiceNode `json:"nodes"`
+	Edges      []Edge                  `json:"edges"`
+	Layers     [][]string              `json:"layers"` // 分层结构
+	TotalNodes int                     `json:"total_nodes"`
 }
 
 // Edge 依赖边
 type Edge struct {
 	From   string `json:"from"`
 	To     string `json:"to"`
-	Type   string `json:"type"` // sync/async/data
+	Type   string `json:"type"`   // sync/async/data
 	Weight int    `json:"weight"` // 调用频率权重
 }
 
@@ -74,8 +74,8 @@ func (t *BuildDependencyGraphTool) InvokableRun(ctx context.Context, argumentsIn
 	}
 
 	type args struct {
-		Services      []serviceInput `json:"services"`
-		AutoDiscover  bool           `json:"auto_discover"`
+		Services     []serviceInput `json:"services"`
+		AutoDiscover bool           `json:"auto_discover"`
 	}
 
 	var in args
@@ -86,6 +86,17 @@ func (t *BuildDependencyGraphTool) InvokableRun(ctx context.Context, argumentsIn
 	// 默认自动发现
 	if len(in.Services) == 0 {
 		in.AutoDiscover = true
+	}
+
+	callCount := increaseRCAToolCallCount(ctx, "build_dependency_graph")
+	cacheKeyRaw, _ := json.Marshal(in)
+	cacheKey := string(cacheKeyRaw)
+	if cached, ok := getRCACachedToolResult(ctx, "build_dependency_graph", cacheKey); ok {
+		if t.logger != nil {
+			t.logger.Info("dependency graph cache hit",
+				zap.Int("call_count", callCount))
+		}
+		return cached, nil
 	}
 
 	var graph *DependencyGraph
@@ -132,9 +143,11 @@ func (t *BuildDependencyGraphTool) InvokableRun(ctx context.Context, argumentsIn
 		t.logger.Info("dependency graph built",
 			zap.Int("nodes", graph.TotalNodes),
 			zap.Int("edges", len(graph.Edges)),
-			zap.Int("layers", len(graph.Layers)))
+			zap.Int("layers", len(graph.Layers)),
+			zap.Int("call_count", callCount))
 	}
 
+	setRCACachedToolResult(ctx, "build_dependency_graph", cacheKey, string(output))
 	return string(output), nil
 }
 

@@ -1,10 +1,10 @@
 // OnCall AI - 前端交互逻辑
-// 支持六类 Agent: Supervisor, Knowledge, Ops, RCA, Strategy, Execution
+// 当前仅支持三类 Agent: Dialogue, Knowledge, Ops
 
 class OnCallAI {
     constructor() {
-        this.API_BASE = 'http://localhost:6872/api/v1';
-        this.currentAgent = 'supervisor';
+        this.API_BASE = 'http://127.0.0.1:6872/api/v1';
+        this.currentAgent = 'dialogue';
         this.sessionId = this.generateSessionId();
         this.messages = [];
         this.isLoading = false;
@@ -25,7 +25,7 @@ class OnCallAI {
         this.chatArea = document.getElementById('chatArea');
         this.messagesContainer = document.getElementById('messagesContainer');
         this.messageInput = document.getElementById('messageInput');
-        this.sendBtn = document.getElementById('sendBtn');
+        this.sendBtn = document.getElementById('sendBtn') || document.getElementById('sendButton');
         this.attachBtn = document.getElementById('attachBtn');
         this.fileInput = document.getElementById('fileInput');
 
@@ -51,19 +51,28 @@ class OnCallAI {
 
     bindEvents() {
         // 发送消息
-        this.sendBtn.addEventListener('click', () => this.sendMessage());
-        this.messageInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                this.sendMessage();
-            }
-        });
+        if (this.sendBtn) {
+            this.sendBtn.addEventListener('click', () => this.sendMessage());
+        }
+        if (this.messageInput) {
+            this.messageInput.addEventListener('keydown', (e) => {
+                if (e.isComposing || e.keyCode === 229) {
+                    return;
+                }
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    this.sendMessage();
+                }
+            });
+        }
 
         // 输入框自动调整高度
-        this.messageInput.addEventListener('input', () => {
-            this.autoResizeTextarea();
-            this.updateCharCount();
-        });
+        if (this.messageInput) {
+            this.messageInput.addEventListener('input', () => {
+                this.autoResizeTextarea();
+                this.updateCharCount();
+            });
+        }
 
         // Agent 切换
         this.agentBtns.forEach(btn => {
@@ -71,22 +80,40 @@ class OnCallAI {
         });
 
         // 侧边栏
-        this.historyBtn.addEventListener('click', () => this.toggleSidebar());
-        this.closeSidebarBtn.addEventListener('click', () => this.toggleSidebar());
-        this.newChatBtn.addEventListener('click', () => this.newChat());
+        if (this.historyBtn) {
+            this.historyBtn.addEventListener('click', () => this.toggleSidebar());
+        }
+        if (this.closeSidebarBtn) {
+            this.closeSidebarBtn.addEventListener('click', () => this.toggleSidebar());
+        }
+        if (this.newChatBtn) {
+            this.newChatBtn.addEventListener('click', () => this.newChat());
+        }
 
         // 文件上传
-        this.attachBtn.addEventListener('click', () => this.fileInput.click());
-        this.fileInput.addEventListener('change', (e) => this.handleFileUpload(e));
+        if (this.attachBtn && this.fileInput) {
+            this.attachBtn.addEventListener('click', () => this.fileInput.click());
+            this.fileInput.addEventListener('change', (e) => this.handleFileUpload(e));
+        }
 
         // 快速操作
         this.quickActionCards.forEach(card => {
             card.addEventListener('click', () => {
                 const prompt = card.dataset.prompt;
+                if (!this.messageInput) {
+                    return;
+                }
                 this.messageInput.value = prompt;
                 this.sendMessage();
             });
         });
+
+        if (!this.sendBtn || !this.messageInput) {
+            console.error('[OnCallAI] 输入框或发送按钮未找到，发送功能不可用', {
+                hasMessageInput: Boolean(this.messageInput),
+                hasSendButton: Boolean(this.sendBtn),
+            });
+        }
     }
 
     setupMarkdown() {
@@ -106,44 +133,23 @@ class OnCallAI {
     // Agent 配置
     getAgentConfig(agent) {
         const configs = {
-            supervisor: {
-                name: '智能助手',
-                icon: '🎯',
-                endpoint: '/chat',
-                description: '综合智能助手，协调所有 Agent'
+            dialogue: {
+                name: '智能对话',
+                icon: '💬',
+                description: '通用对话与问题解答'
             },
             knowledge: {
                 name: '知识库',
                 icon: '📚',
-                endpoint: '/chat',
-                description: '搜索和检索运维知识库'
+                description: '知识检索与知识上传'
             },
             ops: {
                 name: '运维监控',
                 icon: '⚙️',
-                endpoint: '/ai_ops',
                 description: '查询 K8s、Prometheus、ES 数据'
-            },
-            rca: {
-                name: '根因分析',
-                icon: '🔍',
-                endpoint: '/chat',
-                description: '分析故障根本原因'
-            },
-            strategy: {
-                name: '策略优化',
-                icon: '💡',
-                endpoint: '/chat',
-                description: '提供优化策略建议'
-            },
-            execution: {
-                name: '执行引擎',
-                icon: '⚡',
-                endpoint: '/chat',
-                description: '执行运维操作'
             }
         };
-        return configs[agent] || configs.supervisor;
+        return configs[agent] || configs.dialogue;
     }
 
     // 切换 Agent
@@ -167,8 +173,18 @@ class OnCallAI {
 
     // 发送消息
     async sendMessage() {
+        if (!this.messageInput) {
+            this.showToast('输入框未初始化', 'error');
+            return;
+        }
+
         const message = this.messageInput.value.trim();
         if (!message || this.isLoading) return;
+        console.debug('[OnCallAI] sendMessage', {
+            agent: this.currentAgent,
+            sessionId: this.sessionId,
+            length: message.length,
+        });
 
         // 隐藏欢迎屏幕，显示对话区
         if (this.welcomeScreen.style.display !== 'none') {
@@ -193,17 +209,12 @@ class OnCallAI {
             // 根据不同 Agent 调用不同接口
             if (this.currentAgent === 'ops') {
                 assistantEntry = this.addMessage('assistant', '## AI Ops 执行中...\n\n正在建立流式连接...', config);
-                try {
-                    response = await this.callAIOpsStream((state) => {
-                        this.updateMessageContent(
-                            assistantEntry,
-                            this.formatAIOpsStreamOutput(state, true)
-                        );
-                    });
-                } catch (streamError) {
-                    console.warn('AIOps stream failed, fallback to non-streaming:', streamError);
-                    response = await this.callAIOps();
-                }
+                response = await this.callAIOpsStream((state) => {
+                    this.updateMessageContent(
+                        assistantEntry,
+                        this.formatAIOpsStreamOutput(state, true)
+                    );
+                });
                 this.updateMessageContent(assistantEntry, response);
             } else {
                 response = await this.callChat(message);
@@ -225,14 +236,15 @@ class OnCallAI {
 
     // 调用聊天接口
     async callChat(message) {
-        const response = await fetch(`${this.API_BASE}/chat`, {
+        console.debug('[OnCallAI] request', { endpoint: '/chat_stream' });
+        const response = await fetch(`${this.API_BASE}/chat_stream`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                id: this.sessionId,
-                question: message
+                Id: this.sessionId,
+                Question: message
             })
         });
 
@@ -240,40 +252,80 @@ class OnCallAI {
             throw new Error(`HTTP ${response.status}`);
         }
 
-        const data = await response.json();
-        return data.data?.answer || data.answer || '无响应';
+        if (!response.body) {
+            throw new Error('stream response body is empty');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let result = '';
+        let buffer = '';
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) {
+                break;
+            }
+            buffer += decoder.decode(value, { stream: true });
+            const eventBlocks = buffer.split('\n\n');
+            buffer = eventBlocks.pop() || '';
+            for (const eventBlock of eventBlocks) {
+                const data = this.extractSSEData(eventBlock);
+                if (data === null) {
+                    continue;
+                }
+                if (!data || data === '[DONE]') {
+                    continue;
+                }
+                if (data.startsWith('[ERROR]')) {
+                    throw new Error(data.slice(7).trim());
+                }
+                // 过滤 interrupt JSON，避免污染展示
+                if (data.startsWith('{') && data.includes('"type":"interrupt"')) {
+                    continue;
+                }
+                result += data;
+            }
+        }
+
+        const lastData = this.extractSSEData(buffer);
+        if (lastData !== null && lastData !== '[DONE]') {
+            if (lastData.startsWith('[ERROR]')) {
+                throw new Error(lastData.slice(7).trim());
+            }
+            if (!(lastData.startsWith('{') && lastData.includes('"type":"interrupt"'))) {
+                result += lastData;
+            }
+        }
+
+        if (!result.trim()) {
+            return '无响应';
+        }
+        return result;
     }
 
-    // 调用 AI Ops 接口
-    async callAIOps() {
-        const response = await fetch(`${this.API_BASE}/ai_ops`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            }
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
+    extractSSEData(eventBlock) {
+        if (!eventBlock || typeof eventBlock !== 'string') {
+            return null;
         }
 
-        const data = await response.json();
-        const result = data.data || data;
-
-        // 格式化 AI Ops 结果
-        let formatted = `## ${result.result}\n\n`;
-        if (result.detail && result.detail.length > 0) {
-            formatted += '### 详细信息\n\n';
-            result.detail.forEach((item, index) => {
-                formatted += `${index + 1}. ${item}\n`;
+        const dataLines = eventBlock
+            .split('\n')
+            .filter(line => line.startsWith('data:'))
+            .map(line => {
+                const value = line.slice(5);
+                return value.startsWith(' ') ? value.slice(1) : value;
             });
-        }
 
-        return formatted;
+        if (dataLines.length === 0) {
+            return null;
+        }
+        return dataLines.join('\n');
     }
 
     // 调用 AI Ops 流式接口（SSE over fetch）
     async callAIOpsStream(onUpdate) {
+        console.debug('[OnCallAI] request', { endpoint: '/ai_ops_stream' });
         const response = await fetch(`${this.API_BASE}/ai_ops_stream`, {
             method: 'POST',
             headers: {

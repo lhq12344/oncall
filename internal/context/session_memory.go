@@ -2,7 +2,9 @@ package context
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"time"
 
 	"go_agent/utility/mem"
 	"go_agent/utility/tokenizer"
@@ -90,18 +92,31 @@ func (s *SessionMemory) SaveTurn(
 	memory := mem.GetSimpleMemory(sessionID)
 	userMsg := schema.UserMessage(question)
 	assistantMsg := schema.AssistantMessage(answer, nil)
+	saveCtx := ctx
+	if saveCtx == nil || saveCtx.Err() != nil {
+		detachedCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		saveCtx = detachedCtx
+	}
 
 	promptTokens := len(question) / 4
-	if precisePromptTokens, err := tokenizer.CountMessagesTokens(ctx, promptMessages, false); err == nil && precisePromptTokens > 0 {
+	if precisePromptTokens, err := tokenizer.CountMessagesTokens(saveCtx, promptMessages, false); err == nil && precisePromptTokens > 0 {
 		promptTokens = precisePromptTokens
 	}
 
 	completionTokens := len(answer) / 4
-	if preciseCompletionTokens, err := tokenizer.CountMessageTokens(ctx, assistantMsg, false); err == nil && preciseCompletionTokens > 0 {
+	if preciseCompletionTokens, err := tokenizer.CountMessageTokens(saveCtx, assistantMsg, false); err == nil && preciseCompletionTokens > 0 {
 		completionTokens = preciseCompletionTokens
 	}
 
-	if err := memory.SetMessages(ctx, userMsg, assistantMsg, promptMessages, promptTokens, completionTokens); err != nil && s.logger != nil {
+	err := memory.SetMessages(saveCtx, userMsg, assistantMsg, promptMessages, promptTokens, completionTokens)
+	if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		detachedCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		err = memory.SetMessages(detachedCtx, userMsg, assistantMsg, promptMessages, promptTokens, completionTokens)
+	}
+
+	if err != nil && s.logger != nil {
 		s.logger.Warn("failed to save session memory",
 			zap.String("session_id", sessionID),
 			zap.Error(err))

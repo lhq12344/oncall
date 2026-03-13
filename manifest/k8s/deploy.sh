@@ -50,6 +50,7 @@ deploy_prometheus() {
     log_info "部署 Prometheus..."
     kubectl apply -f ${PROMETHEUS_DIR}/configmap.yaml
     kubectl apply -f ${PROMETHEUS_DIR}/deployment.yaml
+    kubectl apply -f ${PROMETHEUS_DIR}/node-exporter.yaml
     log_info "Prometheus 部署完成"
 }
 
@@ -129,6 +130,7 @@ stop_all() {
     check_kubectl
 
     log_info "删除 Prometheus..."
+    kubectl delete -f ${PROMETHEUS_DIR}/node-exporter.yaml --ignore-not-found=true
     kubectl delete -f ${PROMETHEUS_DIR}/deployment.yaml --ignore-not-found=true
     kubectl delete -f ${PROMETHEUS_DIR}/configmap.yaml --ignore-not-found=true
 
@@ -161,10 +163,10 @@ restart_all() {
 show_status() {
     log_info "服务状态:"
     echo ""
-    kubectl get pods -n ${NAMESPACE} -l 'app in (prometheus,milvus,etcd,elasticsearch)' -o wide
+    kubectl get pods -n ${NAMESPACE} -l 'app in (prometheus,node-exporter,milvus,etcd,elasticsearch)' -o wide
     echo ""
     log_info "服务端口:"
-    kubectl get svc -n ${NAMESPACE} -l 'app in (prometheus,milvus,elasticsearch)'
+    kubectl get svc -n ${NAMESPACE} -l 'app in (prometheus,milvus,elasticsearch,node-exporter)'
     echo ""
     log_info "MinIO (复用现有):"
     kubectl get pods -n ${NAMESPACE} -l app=minio

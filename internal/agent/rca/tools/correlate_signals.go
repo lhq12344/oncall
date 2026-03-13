@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -20,31 +22,31 @@ type CorrelateSignalsTool struct {
 
 // Signal 信号
 type Signal struct {
-	Source    string    `json:"source"`     // 来源：alert/log/metric
-	Service   string    `json:"service"`    // 服务名称
-	Type      string    `json:"type"`       // 类型：cpu_high/error_rate/latency
-	Timestamp time.Time `json:"timestamp"`  // 时间戳
-	Value     float64   `json:"value"`      // 数值
-	Message   string    `json:"message"`    // 消息
-	Severity  string    `json:"severity"`   // 严重程度：critical/warning/info
+	Source    string    `json:"source"`    // 来源：alert/log/metric
+	Service   string    `json:"service"`   // 服务名称
+	Type      string    `json:"type"`      // 类型：cpu_high/error_rate/latency
+	Timestamp time.Time `json:"timestamp"` // 时间戳
+	Value     float64   `json:"value"`     // 数值
+	Message   string    `json:"message"`   // 消息
+	Severity  string    `json:"severity"`  // 严重程度：critical/warning/info
 }
 
 // CorrelationResult 关联结果
 type CorrelationResult struct {
-	Signal1      Signal  `json:"signal1"`
-	Signal2      Signal  `json:"signal2"`
-	Correlation  float64 `json:"correlation"`  // 相关系数 [-1, 1]
-	TimeDiff     int64   `json:"time_diff"`    // 时间差（毫秒）
-	CausalType   string  `json:"causal_type"`  // 因果类型：cause/effect/concurrent
-	Confidence   float64 `json:"confidence"`   // 置信度 [0, 1]
+	Signal1     Signal  `json:"signal1"`
+	Signal2     Signal  `json:"signal2"`
+	Correlation float64 `json:"correlation"` // 相关系数 [-1, 1]
+	TimeDiff    int64   `json:"time_diff"`   // 时间差（毫秒）
+	CausalType  string  `json:"causal_type"` // 因果类型：cause/effect/concurrent
+	Confidence  float64 `json:"confidence"`  // 置信度 [0, 1]
 }
 
 // SignalCorrelation 信号关联分析结果
 type SignalCorrelation struct {
-	Signals       []Signal            `json:"signals"`
-	Correlations  []CorrelationResult `json:"correlations"`
-	Timeline      []TimelineEvent     `json:"timeline"`
-	TotalSignals  int                 `json:"total_signals"`
+	Signals      []Signal            `json:"signals"`
+	Correlations []CorrelationResult `json:"correlations"`
+	Timeline     []TimelineEvent     `json:"timeline"`
+	TotalSignals int                 `json:"total_signals"`
 }
 
 // TimelineEvent 时间线事件
@@ -83,8 +85,8 @@ func (t *CorrelateSignalsTool) Info(ctx context.Context) (*schema.ToolInfo, erro
 
 func (t *CorrelateSignalsTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
 	type args struct {
-		Signals    []Signal `json:"signals"`
-		TimeWindow int      `json:"time_window"`
+		Signals    []map[string]any `json:"signals"`
+		TimeWindow int              `json:"time_window"`
 	}
 
 	var in args
@@ -96,13 +98,30 @@ func (t *CorrelateSignalsTool) InvokableRun(ctx context.Context, argumentsInJSON
 		return "", fmt.Errorf("signals is required")
 	}
 
+	parsedSignals := make([]Signal, 0, len(in.Signals))
+	for idx, raw := range in.Signals {
+		signal, parseErr := parseSignal(raw)
+		if parseErr != nil {
+			if t.logger != nil {
+				t.logger.Warn("skip invalid signal argument",
+					zap.Int("index", idx),
+					zap.Error(parseErr))
+			}
+			continue
+		}
+		parsedSignals = append(parsedSignals, signal)
+	}
+	if len(parsedSignals) == 0 {
+		return "", fmt.Errorf("signals is required")
+	}
+
 	// 默认时间窗口 5 分钟
 	if in.TimeWindow <= 0 {
 		in.TimeWindow = 300
 	}
 
 	// 1. 时间窗口对齐
-	alignedSignals := t.alignTimeWindow(in.Signals, in.TimeWindow)
+	alignedSignals := t.alignTimeWindow(parsedSignals, in.TimeWindow)
 
 	// 2. 计算信号之间的相关性
 	correlations := t.calculateCorrelations(alignedSignals, in.TimeWindow)
@@ -129,6 +148,177 @@ func (t *CorrelateSignalsTool) InvokableRun(ctx context.Context, argumentsInJSON
 	}
 
 	return string(output), nil
+}
+
+// parseSignal 解析单条信号输入。
+// 输入：原始信号 map（LLM tool call 参数中的一项）。
+// 输出：解析后的 Signal；若关键字段非法则返回错误。
+func parseSignal(raw map[string]any) (Signal, error) {
+	if len(raw) == 0 {
+		return Signal{}, fmt.Errorf("empty signal")
+	}
+
+	timestamp, err := parseFlexibleTime(raw["timestamp"])
+	if err != nil {
+		return Signal{}, fmt.Errorf("invalid timestamp: %w", err)
+	}
+
+	return Signal{
+		Source:    toString(raw["source"]),
+		Service:   toString(raw["service"]),
+		Type:      toString(raw["type"]),
+		Timestamp: timestamp,
+		Value:     toFloat64(raw["value"]),
+		Message:   toString(raw["message"]),
+		Severity:  toString(raw["severity"]),
+	}, nil
+}
+
+// parseFlexibleTime 宽容解析时间字段。
+// 输入：任意时间表示（RFC3339 字符串、Unix 秒、Unix 毫秒、{seconds,nanos}）。
+// 输出：time.Time；无法解析时返回错误。
+func parseFlexibleTime(value any) (time.Time, error) {
+	switch v := value.(type) {
+	case time.Time:
+		return v, nil
+	case string:
+		text := strings.TrimSpace(v)
+		if text == "" {
+			return time.Time{}, fmt.Errorf("empty time string")
+		}
+		layouts := []string{
+			time.RFC3339Nano,
+			time.RFC3339,
+			"2006-01-02 15:04:05",
+			"2006-01-02 15:04",
+			"2006-01-02",
+		}
+		for _, layout := range layouts {
+			if ts, err := time.Parse(layout, text); err == nil {
+				return ts, nil
+			}
+		}
+		if n, err := strconv.ParseInt(text, 10, 64); err == nil {
+			return unixToTime(n), nil
+		}
+		return time.Time{}, fmt.Errorf("unsupported time string format: %s", text)
+	case float64:
+		return unixToTime(int64(v)), nil
+	case float32:
+		return unixToTime(int64(v)), nil
+	case int64:
+		return unixToTime(v), nil
+	case int:
+		return unixToTime(int64(v)), nil
+	case int32:
+		return unixToTime(int64(v)), nil
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return time.Time{}, fmt.Errorf("invalid json number: %w", err)
+		}
+		return unixToTime(n), nil
+	case map[string]any:
+		if dateValue, ok := v["$date"]; ok {
+			return parseFlexibleTime(dateValue)
+		}
+		seconds := toInt64(v["seconds"])
+		nanos := toInt64(v["nanos"])
+		if seconds == 0 && nanos == 0 {
+			return time.Time{}, fmt.Errorf("unsupported time object")
+		}
+		return time.Unix(seconds, nanos), nil
+	default:
+		return time.Time{}, fmt.Errorf("unsupported time type %T", value)
+	}
+}
+
+// unixToTime 识别 Unix 秒/毫秒并转换。
+// 输入：Unix 时间戳（秒或毫秒）。
+// 输出：time.Time。
+func unixToTime(unix int64) time.Time {
+	if unix > 1_000_000_000_000 {
+		return time.UnixMilli(unix)
+	}
+	return time.Unix(unix, 0)
+}
+
+// toString 将任意值转为字符串。
+// 输入：任意类型值。
+// 输出：去空白后的字符串。
+func toString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case nil:
+		return ""
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
+}
+
+// toFloat64 将任意数值转为 float64。
+// 输入：任意类型值。
+// 输出：float64，无法转换时返回 0。
+func toFloat64(value any) float64 {
+	switch v := value.(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int32:
+		return float64(v)
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return 0
+		}
+		return f
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return 0
+		}
+		return f
+	default:
+		return 0
+	}
+}
+
+// toInt64 将任意数值转为 int64。
+// 输入：任意类型值。
+// 输出：int64，无法转换时返回 0。
+func toInt64(value any) int64 {
+	switch v := value.(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case int32:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case float32:
+		return int64(v)
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return 0
+		}
+		return n
+	case string:
+		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil {
+			return 0
+		}
+		return n
+	default:
+		return 0
+	}
 }
 
 // alignTimeWindow 时间窗口对齐

@@ -16,12 +16,23 @@ type PruneKnowledgeTool struct {
 	logger *zap.Logger
 }
 
+// pruneCase 剪枝计算使用的案例结构。
+type pruneCase struct {
+	CaseID      string    `json:"case_id"`
+	Title       string    `json:"title"`
+	Weight      float64   `json:"weight"`
+	UsageCount  int       `json:"usage_count"`
+	SuccessRate float64   `json:"success_rate"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 // PruneResult 剪枝结果
 type PruneResult struct {
-	TotalCases    int      `json:"total_cases"`
-	DeletedCases  []string `json:"deleted_cases"`
-	MergedCases   []string `json:"merged_cases"`
-	RetainedCases int      `json:"retained_cases"`
+	TotalCases    int               `json:"total_cases"`
+	DeletedCases  []string          `json:"deleted_cases"`
+	MergedCases   []string          `json:"merged_cases"`
+	RetainedCases int               `json:"retained_cases"`
 	Reason        map[string]string `json:"reason"` // case_id -> reason
 }
 
@@ -56,20 +67,10 @@ func (t *PruneKnowledgeTool) Info(ctx context.Context) (*schema.ToolInfo, error)
 }
 
 func (t *PruneKnowledgeTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
-	type knowledgeCase struct {
-		CaseID      string    `json:"case_id"`
-		Title       string    `json:"title"`
-		Weight      float64   `json:"weight"`
-		UsageCount  int       `json:"usage_count"`
-		SuccessRate float64   `json:"success_rate"`
-		CreatedAt   time.Time `json:"created_at"`
-		UpdatedAt   time.Time `json:"updated_at"`
-	}
-
 	type args struct {
-		Cases       []knowledgeCase `json:"cases"`
-		MaxAgeDays  int             `json:"max_age_days"`
-		MinWeight   float64         `json:"min_weight"`
+		Cases      []map[string]any `json:"cases"`
+		MaxAgeDays int              `json:"max_age_days"`
+		MinWeight  float64          `json:"min_weight"`
 	}
 
 	var in args
@@ -85,36 +86,7 @@ func (t *PruneKnowledgeTool) InvokableRun(ctx context.Context, argumentsInJSON s
 		in.MinWeight = 0.3
 	}
 
-	// 转换类型
-	convertedCases := make([]struct {
-		CaseID      string    `json:"case_id"`
-		Title       string    `json:"title"`
-		Weight      float64   `json:"weight"`
-		UsageCount  int       `json:"usage_count"`
-		SuccessRate float64   `json:"success_rate"`
-		CreatedAt   time.Time `json:"created_at"`
-		UpdatedAt   time.Time `json:"updated_at"`
-	}, len(in.Cases))
-
-	for i, c := range in.Cases {
-		convertedCases[i] = struct {
-			CaseID      string    `json:"case_id"`
-			Title       string    `json:"title"`
-			Weight      float64   `json:"weight"`
-			UsageCount  int       `json:"usage_count"`
-			SuccessRate float64   `json:"success_rate"`
-			CreatedAt   time.Time `json:"created_at"`
-			UpdatedAt   time.Time `json:"updated_at"`
-		}{
-			CaseID:      c.CaseID,
-			Title:       c.Title,
-			Weight:      c.Weight,
-			UsageCount:  c.UsageCount,
-			SuccessRate: c.SuccessRate,
-			CreatedAt:   c.CreatedAt,
-			UpdatedAt:   c.UpdatedAt,
-		}
-	}
+	convertedCases := normalizePruneCases(in.Cases)
 
 	// 执行剪枝
 	result := t.pruneKnowledge(convertedCases, in.MaxAgeDays, in.MinWeight)
@@ -126,6 +98,7 @@ func (t *PruneKnowledgeTool) InvokableRun(ctx context.Context, argumentsInJSON s
 
 	if t.logger != nil {
 		t.logger.Info("knowledge pruning completed",
+			zap.String("agent", currentAgentForLog(ctx, "strategy_agent")),
 			zap.Int("total", result.TotalCases),
 			zap.Int("deleted", len(result.DeletedCases)),
 			zap.Int("merged", len(result.MergedCases)),
@@ -135,16 +108,41 @@ func (t *PruneKnowledgeTool) InvokableRun(ctx context.Context, argumentsInJSON s
 	return string(output), nil
 }
 
+// normalizePruneCases 规范化剪枝案例参数。
+// 输入：原始 cases 参数。
+// 输出：可用于剪枝计算的案例列表。
+func normalizePruneCases(rawCases []map[string]any) []pruneCase {
+	if len(rawCases) == 0 {
+		return nil
+	}
+
+	now := time.Now()
+	cases := make([]pruneCase, 0, len(rawCases))
+	for _, raw := range rawCases {
+		updatedAt, ok := parseFlexibleTimeArg(raw["updated_at"])
+		if !ok {
+			updatedAt = now
+		}
+		createdAt, ok := parseFlexibleTimeArg(raw["created_at"])
+		if !ok {
+			createdAt = updatedAt
+		}
+
+		cases = append(cases, pruneCase{
+			CaseID:      anyToString(raw["case_id"]),
+			Title:       anyToString(raw["title"]),
+			Weight:      anyToFloat64(raw["weight"]),
+			UsageCount:  anyToInt(raw["usage_count"]),
+			SuccessRate: anyToFloat64(raw["success_rate"]),
+			CreatedAt:   createdAt,
+			UpdatedAt:   updatedAt,
+		})
+	}
+	return cases
+}
+
 // pruneKnowledge 执行剪枝
-func (t *PruneKnowledgeTool) pruneKnowledge(cases []struct {
-	CaseID      string    `json:"case_id"`
-	Title       string    `json:"title"`
-	Weight      float64   `json:"weight"`
-	UsageCount  int       `json:"usage_count"`
-	SuccessRate float64   `json:"success_rate"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-}, maxAgeDays int, minWeight float64) *PruneResult {
+func (t *PruneKnowledgeTool) pruneKnowledge(cases []pruneCase, maxAgeDays int, minWeight float64) *PruneResult {
 	deletedCases := []string{}
 	mergedCases := []string{}
 	reasons := make(map[string]string)

@@ -83,6 +83,7 @@ func NewRCAAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 约束：
 - confidence 范围必须是 0~1。
 - evidence 至少提供 2 条可审计证据。
+- 相同工具在相同参数下禁止重复调用，除非上一步返回错误且明确给出重试原因。
 - 无法确定时输出低 confidence 并明确缺失信息，不得臆造。`,
 	})
 

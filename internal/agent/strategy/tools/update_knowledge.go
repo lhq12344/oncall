@@ -69,7 +69,7 @@ func (t *UpdateKnowledgeTool) Info(ctx context.Context) (*schema.ToolInfo, error
 
 func (t *UpdateKnowledgeTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
 	type args struct {
-		Case            KnowledgeCase          `json:"case"`
+		Case            map[string]any         `json:"case"`
 		ExecutionResult map[string]interface{} `json:"execution_result"`
 	}
 
@@ -78,8 +78,10 @@ func (t *UpdateKnowledgeTool) InvokableRun(ctx context.Context, argumentsInJSON 
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
+	knowledgeCase := normalizeKnowledgeCase(in.Case)
+
 	// 决定是否更新知识库
-	result := t.decideUpdate(in.Case, in.ExecutionResult)
+	result := t.decideUpdate(knowledgeCase, in.ExecutionResult)
 
 	output, err := json.Marshal(result)
 	if err != nil {
@@ -88,6 +90,7 @@ func (t *UpdateKnowledgeTool) InvokableRun(ctx context.Context, argumentsInJSON 
 
 	if t.logger != nil {
 		t.logger.Info("knowledge update completed",
+			zap.String("agent", currentAgentForLog(ctx, "strategy_agent")),
 			zap.String("action", result.Action),
 			zap.String("case_id", result.CaseID))
 	}
@@ -96,6 +99,7 @@ func (t *UpdateKnowledgeTool) InvokableRun(ctx context.Context, argumentsInJSON 
 		if err := t.archiveCase(ctx, result); err != nil {
 			if t.logger != nil {
 				t.logger.Warn("failed to archive ops case",
+					zap.String("agent", currentAgentForLog(ctx, "strategy_agent")),
 					zap.String("case_id", result.CaseID),
 					zap.Error(err))
 			}
@@ -103,6 +107,33 @@ func (t *UpdateKnowledgeTool) InvokableRun(ctx context.Context, argumentsInJSON 
 	}
 
 	return string(output), nil
+}
+
+// normalizeKnowledgeCase 规范化知识案例参数。
+// 输入：原始 case 参数对象。
+// 输出：字段类型已归一化的 KnowledgeCase。
+func normalizeKnowledgeCase(raw map[string]any) KnowledgeCase {
+	now := time.Now()
+	createdAt, ok := parseFlexibleTimeArg(raw["created_at"])
+	if !ok {
+		createdAt = now
+	}
+	updatedAt, ok := parseFlexibleTimeArg(raw["updated_at"])
+	if !ok {
+		updatedAt = createdAt
+	}
+
+	return KnowledgeCase{
+		CaseID:      anyToString(raw["case_id"]),
+		Title:       anyToString(raw["title"]),
+		Description: anyToString(raw["description"]),
+		Strategy:    anyToString(raw["strategy"]),
+		SuccessRate: anyToFloat64(raw["success_rate"]),
+		UsageCount:  anyToInt(raw["usage_count"]),
+		Weight:      anyToFloat64(raw["weight"]),
+		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
+	}
 }
 
 func (t *UpdateKnowledgeTool) archiveCase(ctx context.Context, result *UpdateResult) error {
@@ -142,15 +173,8 @@ func (t *UpdateKnowledgeTool) archiveCase(ctx context.Context, result *UpdateRes
 // decideUpdate 决定是否更新
 func (t *UpdateKnowledgeTool) decideUpdate(kcase KnowledgeCase, execResult map[string]interface{}) *UpdateResult {
 	// 提取执行结果
-	success := false
-	if s, ok := execResult["success"].(bool); ok {
-		success = s
-	}
-
-	duration := 0.0
-	if d, ok := execResult["duration"].(float64); ok {
-		duration = d
-	}
+	success := anyToBool(execResult["success"])
+	duration := anyToFloat64(execResult["duration"])
 
 	oldWeight := kcase.Weight
 

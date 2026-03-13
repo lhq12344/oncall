@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -21,7 +22,7 @@ type StrategyExecution struct {
 	ExecutionID   string    `json:"execution_id"`
 	StrategyID    string    `json:"strategy_id"`
 	Success       bool      `json:"success"`
-	Duration      int       `json:"duration"`       // 毫秒
+	Duration      int       `json:"duration"` // 毫秒
 	RollbackCount int       `json:"rollback_count"`
 	StepCount     int       `json:"step_count"`
 	ExecutedAt    time.Time `json:"executed_at"`
@@ -29,14 +30,14 @@ type StrategyExecution struct {
 
 // StrategyEvaluation 策略评估结果
 type StrategyEvaluation struct {
-	StrategyID      string  `json:"strategy_id"`
-	TotalExecutions int     `json:"total_executions"`
-	SuccessRate     float64 `json:"success_rate"`
-	AvgDuration     float64 `json:"avg_duration"`      // 毫秒
-	AvgRollbackCount float64 `json:"avg_rollback_count"`
-	Quality         string  `json:"quality"`           // excellent/good/fair/poor
-	Bottlenecks     []string `json:"bottlenecks"`      // 瓶颈步骤
-	Recommendations []string `json:"recommendations"`  // 优化建议
+	StrategyID       string   `json:"strategy_id"`
+	TotalExecutions  int      `json:"total_executions"`
+	SuccessRate      float64  `json:"success_rate"`
+	AvgDuration      float64  `json:"avg_duration"` // 毫秒
+	AvgRollbackCount float64  `json:"avg_rollback_count"`
+	Quality          string   `json:"quality"`         // excellent/good/fair/poor
+	Bottlenecks      []string `json:"bottlenecks"`     // 瓶颈步骤
+	Recommendations  []string `json:"recommendations"` // 优化建议
 }
 
 func NewEvaluateStrategyTool(logger *zap.Logger) tool.BaseTool {
@@ -66,8 +67,8 @@ func (t *EvaluateStrategyTool) Info(ctx context.Context) (*schema.ToolInfo, erro
 
 func (t *EvaluateStrategyTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
 	type args struct {
-		StrategyID string              `json:"strategy_id"`
-		Executions []StrategyExecution `json:"executions"`
+		StrategyID string           `json:"strategy_id"`
+		Executions []map[string]any `json:"executions"`
 	}
 
 	var in args
@@ -82,9 +83,13 @@ func (t *EvaluateStrategyTool) InvokableRun(ctx context.Context, argumentsInJSON
 	if len(in.Executions) == 0 {
 		return "", fmt.Errorf("executions is required")
 	}
+	executions := normalizeStrategyExecutions(in.StrategyID, in.Executions)
+	if len(executions) == 0 {
+		return "", fmt.Errorf("executions is required")
+	}
 
 	// 计算评估指标
-	evaluation := t.evaluateStrategy(in.StrategyID, in.Executions)
+	evaluation := t.evaluateStrategy(in.StrategyID, executions)
 
 	output, err := json.Marshal(evaluation)
 	if err != nil {
@@ -93,13 +98,56 @@ func (t *EvaluateStrategyTool) InvokableRun(ctx context.Context, argumentsInJSON
 
 	if t.logger != nil {
 		t.logger.Info("strategy evaluation completed",
+			zap.String("agent", currentAgentForLog(ctx, "strategy_agent")),
 			zap.String("strategy_id", in.StrategyID),
-			zap.Int("executions", len(in.Executions)),
+			zap.Int("executions", len(executions)),
 			zap.Float64("success_rate", evaluation.SuccessRate),
 			zap.String("quality", evaluation.Quality))
 	}
 
 	return string(output), nil
+}
+
+// normalizeStrategyExecutions 规范化执行记录参数。
+// 输入：strategyID 与原始 executions 参数。
+// 输出：可用于评估计算的执行记录列表。
+func normalizeStrategyExecutions(strategyID string, records []map[string]any) []StrategyExecution {
+	if len(records) == 0 {
+		return nil
+	}
+
+	now := time.Now()
+	normalized := make([]StrategyExecution, 0, len(records))
+	for index, record := range records {
+		if len(record) == 0 {
+			continue
+		}
+
+		execution := StrategyExecution{
+			ExecutionID:   anyToString(record["execution_id"]),
+			StrategyID:    anyToString(record["strategy_id"]),
+			Success:       anyToBool(record["success"]),
+			Duration:      anyToInt(record["duration"]),
+			RollbackCount: anyToInt(record["rollback_count"]),
+			StepCount:     anyToInt(record["step_count"]),
+		}
+		if execution.StrategyID == "" {
+			execution.StrategyID = strings.TrimSpace(strategyID)
+		}
+		if execution.ExecutionID == "" {
+			execution.ExecutionID = fmt.Sprintf("execution_%d", index+1)
+		}
+
+		if executedAt, ok := parseFlexibleTimeArg(record["executed_at"]); ok {
+			execution.ExecutedAt = executedAt
+		} else {
+			execution.ExecutedAt = now
+		}
+
+		normalized = append(normalized, execution)
+	}
+
+	return normalized
 }
 
 // evaluateStrategy 评估策略

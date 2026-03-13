@@ -71,6 +71,15 @@ func (t *OpsCaseRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSON 
 
 	docs, err := t.retriever.Retrieve(ctx, in.Query, einoretriever.WithTopK(in.TopK))
 	if err != nil {
+		if strings.Contains(err.Error(), "extra output fields") {
+			if t.logger != nil {
+				t.logger.Warn("ops case retrieve schema mismatch, fallback to empty result",
+					zap.String("query", in.Query),
+					zap.Int("top_k", in.TopK),
+					zap.Error(err))
+			}
+			return `{"status":"degraded","results":[],"count":0,"message":"ops case collection schema mismatch, fallback to empty result"}`, nil
+		}
 		if t.logger != nil {
 			t.logger.Error("ops case retrieve failed",
 				zap.String("query", in.Query),
@@ -92,7 +101,10 @@ func (t *OpsCaseRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSON 
 		if doc == nil {
 			continue
 		}
-		content := strings.TrimSpace(doc.Content)
+		content := extractOpsCaseContent(doc)
+		if content == "" {
+			continue
+		}
 		if len([]rune(content)) > 500 {
 			content = string([]rune(content)[:500]) + "..."
 		}
@@ -114,4 +126,32 @@ func (t *OpsCaseRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSON 
 		return "", fmt.Errorf("failed to marshal result: %w", err)
 	}
 	return string(out), nil
+}
+
+// extractOpsCaseContent 提取运维案例文本。
+// 输入：Milvus 检索返回的 Document。
+// 输出：优先 doc.Content，其次从 metadata 的常见文本字段回退提取。
+func extractOpsCaseContent(doc *schema.Document) string {
+	if doc == nil {
+		return ""
+	}
+	if content := strings.TrimSpace(doc.Content); content != "" {
+		return content
+	}
+	if doc.MetaData == nil {
+		return ""
+	}
+
+	candidateKeys := []string{"content", "text", "case", "summary", "description"}
+	for _, key := range candidateKeys {
+		raw, ok := doc.MetaData[key]
+		if !ok {
+			continue
+		}
+		text := strings.TrimSpace(fmt.Sprintf("%v", raw))
+		if text != "" {
+			return text
+		}
+	}
+	return ""
 }

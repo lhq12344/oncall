@@ -8,10 +8,11 @@ import (
 	"strings"
 	"time"
 
+	es "go_agent/utility/elasticsearch"
+
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/elastic/go-elasticsearch/v8"
-	es "go_agent/utility/elasticsearch"
 	"go.uber.org/zap"
 )
 
@@ -42,7 +43,7 @@ func NewESLogQueryTool(logger *zap.Logger) (tool.BaseTool, error) {
 func (t *ESLogQueryTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: "es_log_query",
-		Desc: "查询 Elasticsearch 日志。支持关键词搜���、时间范围过滤、日志级别过滤等。",
+		Desc: "查询 Elasticsearch 日志。支持关键词搜索、时间范围过滤、日志级别过滤等。",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"index": {
 				Type:     schema.String,
@@ -309,8 +310,8 @@ func (t *ESLogQueryTool) getTotalHits(response map[string]interface{}) int {
 // fallbackResponse 降级响应
 func (t *ESLogQueryTool) fallbackResponse(index, query, timeRange, level string) string {
 	result := map[string]interface{}{
-		"error":   "elasticsearch_unavailable",
-		"message": fmt.Sprintf("Elasticsearch client not available. Cannot query index: %s", index),
+		"error":      "elasticsearch_unavailable",
+		"message":    fmt.Sprintf("Elasticsearch client not available. Cannot query index: %s", index),
 		"suggestion": "Please check Elasticsearch configuration and ensure the cluster is accessible",
 		"query_params": map[string]interface{}{
 			"index":      index,

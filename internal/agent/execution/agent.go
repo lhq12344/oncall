@@ -75,6 +75,7 @@ func NewExecutionAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 - 仅执行与故障修复相关且通过白名单的命令。
 - 一次执行一个步骤，禁止批量拼接执行。
 - 若工具返回无法执行（白名单拒绝/参数不安全/权限不足），立即停止并输出人工执行建议。
+- 禁止“直接口头宣称成功”：必须基于工具返回结果给出结论。
 
 输出规范（最终必须输出一个 JSON 对象）：
 {
@@ -89,6 +90,7 @@ func NewExecutionAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 
 约束：
 - success=true 时 execution_status 必须为 success。
+- success=true 时 executed_steps 必须至少包含 1 个步骤，且步骤必须来自 execute_step 工具结果。
 - 工具无法完成时 execution_status 必须为 manual_required，并填写 manual_plan。
 - 不要输出多段自然语言，保持 JSON 可解析。`,
 	})

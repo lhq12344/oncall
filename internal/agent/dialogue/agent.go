@@ -112,6 +112,10 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 					常用监控查询示例（按需改写）：
 					- CPU: sum(rate(container_cpu_usage_seconds_total[5m])) by (pod)
 					- Memory: sum(container_memory_working_set_bytes) by (pod)
+					- Node CPU: 100 - (avg by (instance) (rate(node_cpu_seconds_total{{mode="idle"}}[5m])) * 100)
+					- Node Memory: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100
+					- Node Network Receive: sum(rate(node_network_receive_bytes_total[5m])) by (instance)
+					- Node Network Transmit: sum(rate(node_network_transmit_bytes_total[5m])) by (instance)
 					- Pod 重启: increase(kube_pod_container_status_restarts_total[1h])
 
 					回答风格：

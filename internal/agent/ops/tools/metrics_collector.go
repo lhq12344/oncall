@@ -87,10 +87,26 @@ func (t *MetricsCollectorTool) InvokableRun(ctx context.Context, argumentsInJSON
 	if in.Query == "" {
 		return "", fmt.Errorf("query is required")
 	}
+	in.TimeRange = strings.TrimSpace(in.TimeRange)
+
+	callCount := increaseToolCallCount(ctx, "metrics_collector")
+	cacheKey := strings.ToLower(strings.TrimSpace(in.Query)) + "|" + strings.ToLower(in.TimeRange)
+	if cached, ok := getCachedToolResult(ctx, "metrics_collector", cacheKey); ok {
+		if t.logger != nil {
+			t.logger.Info("metrics collector cache hit",
+				zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
+				zap.String("query", in.Query),
+				zap.String("time_range", in.TimeRange),
+				zap.Int("call_count", callCount))
+		}
+		return cached, nil
+	}
 
 	// 如果客户端未初始化，返回降级数据
 	if t.client == nil {
-		return t.fallbackResponse(in.Query), nil
+		output := t.fallbackResponse(in.Query)
+		setCachedToolResult(ctx, "metrics_collector", cacheKey, output)
+		return output, nil
 	}
 
 	// 解析时间范围
@@ -123,6 +139,7 @@ func (t *MetricsCollectorTool) InvokableRun(ctx context.Context, argumentsInJSON
 	if err != nil {
 		if t.logger != nil {
 			t.logger.Error("prometheus query failed",
+				zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
 				zap.String("query", in.Query),
 				zap.Error(err))
 		}
@@ -136,10 +153,13 @@ func (t *MetricsCollectorTool) InvokableRun(ctx context.Context, argumentsInJSON
 
 	if t.logger != nil {
 		t.logger.Info("metrics collection completed",
+			zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
 			zap.String("query", in.Query),
-			zap.Bool("is_range", isRange))
+			zap.Bool("is_range", isRange),
+			zap.Int("call_count", callCount))
 	}
 
+	setCachedToolResult(ctx, "metrics_collector", cacheKey, string(output))
 	return string(output), nil
 }
 
@@ -272,12 +292,11 @@ func (t *MetricsCollectorTool) calculateStats(values []model.SamplePair) map[str
 // fallbackResponse 降级响应
 func (t *MetricsCollectorTool) fallbackResponse(query string) string {
 	result := map[string]interface{}{
-		"error":   "prometheus_client_unavailable",
-		"message": fmt.Sprintf("Prometheus client not available. Cannot execute query: %s", query),
+		"error":      "prometheus_client_unavailable",
+		"message":    fmt.Sprintf("Prometheus client not available. Cannot execute query: %s", query),
 		"suggestion": "Please check Prometheus configuration and ensure it's running",
 	}
 
 	output, _ := json.Marshal(result)
 	return string(output)
 }
-

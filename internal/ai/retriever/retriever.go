@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"go_agent/internal/ai/embedder"
-	"go_agent/utility/client"
+	clientutil "go_agent/utility/client"
 	"go_agent/utility/common"
 	"strings"
 
 	"github.com/cloudwego/eino-ext/components/retriever/milvus"
 	"github.com/cloudwego/eino/components/retriever"
+	milvusclient "github.com/milvus-io/milvus-sdk-go/v2/client"
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
 )
 
@@ -26,7 +27,7 @@ func NewMilvusRetriever(ctx context.Context) (rtr retriever.Retriever, err error
 }
 
 func NewMilvusRetrieverWithCollection(ctx context.Context, collection string) (rtr retriever.Retriever, err error) {
-	cli, err := client.NewMilvusClient(ctx)
+	cli, err := clientutil.NewMilvusClient(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -46,15 +47,26 @@ func NewMilvusRetrieverWithCollection(ctx context.Context, collection string) (r
 		collection = common.MilvusCollectionName
 	}
 
+	if err := cli.LoadCollection(ctx, collection, false); err != nil {
+		return nil, fmt.Errorf("failed to load milvus collection %s: %w", collection, err)
+	}
+
+	outputFields, err := resolveOutputFields(ctx, cli, collection)
+	if err != nil {
+		return nil, err
+	}
+	if collection == common.MilvusOpsCollection {
+		// ops_cases 在当前 Milvus 环境下 Search 不返回字段数据，显式请求字段会报：
+		// extra output fields [content metadata] found and result does not dynamic field
+		// 这里先不请求输出字段，避免检索阶段直接失败。
+		outputFields = []string{}
+	}
+
 	r, err := milvus.NewRetriever(ctx, &milvus.RetrieverConfig{
-		Client:      cli,
-		Collection:  collection,
-		VectorField: "vector",
-		// 必须显式返回 content / metadata，否则默认文档会出现空内容。
-		OutputFields: []string{
-			"content",
-			"metadata",
-		},
+		Client:         cli,
+		Collection:     collection,
+		VectorField:    "vector",
+		OutputFields:   outputFields,
 		MetricType:     entity.COSINE,
 		TopK:           3,
 		ScoreThreshold: 0.8, // 关键：必须为 0（否则可能走 range search）
@@ -77,4 +89,31 @@ func NewMilvusRetrieverWithCollection(ctx context.Context, collection string) (r
 		return nil, err
 	}
 	return r, nil
+}
+
+func resolveOutputFields(ctx context.Context, cli milvusclient.Client, collection string) ([]string, error) {
+	collectionInfo, err := cli.DescribeCollection(ctx, collection)
+	if err != nil {
+		return nil, fmt.Errorf("failed to describe milvus collection %s: %w", collection, err)
+	}
+	if collectionInfo == nil || collectionInfo.Schema == nil {
+		return []string{}, nil
+	}
+
+	exists := make(map[string]struct{}, len(collectionInfo.Schema.Fields))
+	for _, field := range collectionInfo.Schema.Fields {
+		if field == nil {
+			continue
+		}
+		exists[field.Name] = struct{}{}
+	}
+
+	fields := make([]string, 0, 2)
+	if _, ok := exists["content"]; ok {
+		fields = append(fields, "content")
+	}
+	if _, ok := exists["metadata"]; ok {
+		fields = append(fields, "metadata")
+	}
+	return fields, nil
 }

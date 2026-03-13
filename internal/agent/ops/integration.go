@@ -109,7 +109,7 @@ func (e *IntegratedOpsExecutor) QueryAllSources(ctx context.Context, in QueryAll
 		in.SessionID = "default-session"
 	}
 	if in.Namespace == "" {
-		in.Namespace = "default"
+		in.Namespace = "infra"
 	}
 	if in.TimeRange == "" {
 		in.TimeRange = "5m"

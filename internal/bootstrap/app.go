@@ -21,7 +21,7 @@ import (
 // Application 应用实例
 type Application struct {
 	ContextManager *appcontext.ContextManager
-	ChatAgent      adk.ResumableAgent
+	DialogueAgent  adk.ResumableAgent
 	KnowledgeAgent adk.Agent
 	OpsIntegration *ops.IntegratedOpsExecutor
 	OpsAgent       adk.Agent
@@ -91,7 +91,7 @@ func NewApplication(cfg *Config) (*Application, error) {
 	}
 
 	// 7. 初始化 Dialogue Agent（用于前端对话）
-	chatAgent, err := dialogue.NewDialogueAgent(ctx, &dialogue.Config{
+	dialogueAgent, err := dialogue.NewDialogueAgent(ctx, &dialogue.Config{
 		ChatModel:     chatModel,
 		Embedder:      dialogueEmbedder,
 		KubeConfig:    cfg.KubeConfig,
@@ -140,7 +140,7 @@ func NewApplication(cfg *Config) (*Application, error) {
 
 	return &Application{
 		ContextManager: contextManager,
-		ChatAgent:      chatAgent,
+		DialogueAgent:  dialogueAgent,
 		KnowledgeAgent: knowledgeAgent,
 		OpsIntegration: opsIntegration,
 		OpsAgent:       opsAgent,

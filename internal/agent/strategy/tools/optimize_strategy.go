@@ -21,11 +21,11 @@ type OptimizeStrategyTool struct {
 
 // OptimizationResult 优化结果
 type OptimizationResult struct {
-	OriginalStrategy  interface{} `json:"original_strategy"`
-	OptimizedStrategy interface{} `json:"optimized_strategy"`
-	Changes           []string    `json:"changes"`
+	OriginalStrategy    interface{}        `json:"original_strategy"`
+	OptimizedStrategy   interface{}        `json:"optimized_strategy"`
+	Changes             []string           `json:"changes"`
 	ExpectedImprovement map[string]float64 `json:"expected_improvement"`
-	Reasoning         string      `json:"reasoning"`
+	Reasoning           string             `json:"reasoning"`
 }
 
 func NewOptimizeStrategyTool(chatModel *models.ChatModel, logger *zap.Logger) tool.BaseTool {
@@ -87,6 +87,7 @@ func (t *OptimizeStrategyTool) InvokableRun(ctx context.Context, argumentsInJSON
 
 	if t.logger != nil {
 		t.logger.Info("strategy optimization completed",
+			zap.String("agent", currentAgentForLog(ctx, "strategy_agent")),
 			zap.Int("changes", len(result.Changes)))
 	}
 

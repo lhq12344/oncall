@@ -179,6 +179,10 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 		plan, _ := parseOpsExecutionPlan(messages)
 		validation, hasValidation := parseValidationResult(messages)
 		execStatus := detectExecutionStatus(messages)
+		execResult, hasExecResult := parseExecutionResult(messages)
+		executedSteps := parseExecutedStepCount(execResult)
+		executionStatusText := parseExecutionStatusText(execResult)
+		manualPlan := parseExecutionManualPlan(execResult)
 
 		if hasValidation && validation.Blocked {
 			reason := formatReasons(validation.Reasons)
@@ -216,7 +220,39 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 			return
 		}
 
+		if executionStatusText == "manual_required" {
+			fallback := strings.TrimSpace(manualPlan)
+			planID := ""
+			if plan != nil {
+				planID = plan.PlanID
+				if fallback == "" {
+					fallback = plan.FallbackPlan
+				}
+			}
+			if fallback == "" {
+				fallback = "请根据当前告警信息执行人工排查并反馈结果。"
+			}
+			message := fmt.Sprintf("自动工具未能完成修复，请按计划人工执行后回复确认。建议人工方案：%s", fallback)
+			generator.Send(interruptEvent(ctx, &IncidentInterruptInfo{
+				Type:         "manual_required",
+				Reason:       strings.TrimSpace(execStatus.RawMessageHint),
+				PlanID:       planID,
+				FallbackPlan: fallback,
+			}, message))
+			return
+		}
+
 		if execStatus.Found && execStatus.Success {
+			// 防止 execution_agent 在未调用工具时直接输出 success。
+			// 若存在结构化执行结果但 executed_steps 为空，视为未实际执行，回到 ops 重新生成可执行计划。
+			if hasExecResult && executedSteps <= 0 {
+				if a.logger != nil {
+					a.logger.Warn("execution success without executed steps, fallback to replan",
+						zap.String("execution_status", executionStatusText))
+				}
+				generator.Send(assistantEvent("未检测到执行步骤明细（executed_steps 为空），将回到 ops_agent 重新生成可执行计划。"))
+				return
+			}
 			generator.Send(breakLoopEvent(a.name, "执行步骤已成功，停止重规划循环，进入策略复盘。"))
 			return
 		}

@@ -24,14 +24,15 @@ import (
 
 const (
 	defaultSessionID    = "default-session"
-	opsDiagnosticPrompt = "请执行系统健康检查，分析当前系统状态，识别潜在问题并给出分步骤的诊断和解决方案。重点关注：1) Kubernetes Pod状态 2) 关键指标异常 3) 错误日志"
+	opsDiagnosticPrompt = "请执行系统健康检查，分析当前系统状态，识别潜在问题并给出分步骤的诊断和解决方案。重点关注：1) Kubernetes Pod状态 2) 关键指标异常 3) 错误日志。命名空间检查要求：必须优先检查 infra 命名空间；若需要全局对比，再补充 default/staging/production/kube-system。"
 )
 
 type ControllerV1 struct {
-	chatAgent        adk.ResumableAgent
+	dialogueAgent    adk.ResumableAgent
 	chatStreamRunner *adk.Runner
 	opsStreamRunner  *adk.Runner
 	rootAgentName    string
+	opsRootAgentName string
 	sessionMemory    *appcontext.SessionMemory
 	logger           *zap.Logger
 	opsAgent         adk.Agent
@@ -39,19 +40,20 @@ type ControllerV1 struct {
 }
 
 func NewV1(
-	chatAgent adk.ResumableAgent,
+	dialogueAgent adk.ResumableAgent,
 	logger *zap.Logger,
 	redisClient *redis.Client,
 	opsAgent adk.Agent,
 	knowledgeAgent adk.Agent,
 ) *ControllerV1 {
 	ctrl := &ControllerV1{
-		chatAgent:      chatAgent,
-		rootAgentName:  "chat_agent",
-		sessionMemory:  appcontext.NewSessionMemory(nil, logger),
-		logger:         logger,
-		opsAgent:       opsAgent,
-		knowledgeAgent: knowledgeAgent,
+		dialogueAgent:    dialogueAgent,
+		rootAgentName:    "dialogue_agent",
+		opsRootAgentName: "ops_agent",
+		sessionMemory:    appcontext.NewSessionMemory(nil, logger),
+		logger:           logger,
+		opsAgent:         opsAgent,
+		knowledgeAgent:   knowledgeAgent,
 	}
 
 	var checkpointStore compose.CheckPointStore
@@ -61,18 +63,21 @@ func NewV1(
 		checkpointStore = newInMemoryCheckPointStore()
 	}
 
-	if chatAgent != nil {
-		if agentName := strings.TrimSpace(chatAgent.Name(context.Background())); agentName != "" {
+	if dialogueAgent != nil {
+		if agentName := strings.TrimSpace(dialogueAgent.Name(context.Background())); agentName != "" {
 			ctrl.rootAgentName = agentName
 		}
 		ctrl.chatStreamRunner = adk.NewRunner(context.Background(), adk.RunnerConfig{
-			Agent:           chatAgent,
+			Agent:           dialogueAgent,
 			EnableStreaming: true,
 			CheckPointStore: checkpointStore,
 		})
 	}
 
 	if opsAgent != nil {
+		if agentName := strings.TrimSpace(opsAgent.Name(context.Background())); agentName != "" {
+			ctrl.opsRootAgentName = agentName
+		}
 		ctrl.opsStreamRunner = adk.NewRunner(context.Background(), adk.RunnerConfig{
 			Agent:           opsAgent,
 			EnableStreaming: true,
@@ -103,6 +108,12 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 	}
 
 	checkpointID := generateCheckpointID(sessionID)
+	if c.logger != nil {
+		c.logger.Info("chat_stream request received",
+			zap.String("session_id", sessionID),
+			zap.Int("question_len", len([]rune(question))),
+			zap.String("checkpoint_id", checkpointID))
+	}
 	iter := c.chatStreamRunner.Run(ctx, messages,
 		adk.WithCheckPointID(checkpointID),
 		adk.WithSessionValues(map[string]any{
@@ -112,6 +123,12 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 
 	var fullAnswer strings.Builder
 	interrupted := false
+	eventCount := 0
+	contentChunkCount := 0
+	lastEventAgent := ""
+	lastEventRole := ""
+	lastEventContentLen := 0
+	lastEventToolCalls := 0
 
 	for {
 		event, ok := iter.Next()
@@ -121,9 +138,17 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 		if event == nil {
 			continue
 		}
+		eventCount++
 		if event.Err != nil {
 			writeSSEData(r, "[ERROR] "+event.Err.Error())
 			return nil, nil
+		}
+		msg, hasMsg := c.resolveEventMessage(event)
+		if hasMsg && msg != nil {
+			lastEventAgent = event.AgentName
+			lastEventRole = string(msg.Role)
+			lastEventContentLen = len([]rune(strings.TrimSpace(msg.Content)))
+			lastEventToolCalls = len(msg.ToolCalls)
 		}
 
 		if event.Action != nil && event.Action.Interrupted != nil {
@@ -139,19 +164,36 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 			continue
 		}
 
-		chunk, ok := c.extractAssistantContent(event)
+		chunk, ok := c.extractAssistantContentFromResolved(event, msg)
 		if !ok {
 			continue
 		}
 		fullAnswer.WriteString(chunk)
+		contentChunkCount++
 		writeSSEData(r, chunk)
 	}
 
 	writeSSEData(r, "[DONE]")
 
 	answer := strings.TrimSpace(fullAnswer.String())
+	if c.logger != nil {
+		c.logger.Info("chat_stream completed",
+			zap.String("session_id", sessionID),
+			zap.Bool("interrupted", interrupted),
+			zap.Int("event_count", eventCount),
+			zap.Int("content_chunks", contentChunkCount),
+			zap.Int("answer_len", len([]rune(answer))))
+		if !interrupted && strings.TrimSpace(answer) == "" {
+			c.logger.Warn("chat_stream no displayable assistant content",
+				zap.String("session_id", sessionID),
+				zap.String("last_event_agent", strings.TrimSpace(lastEventAgent)),
+				zap.String("last_event_role", strings.TrimSpace(lastEventRole)),
+				zap.Int("last_event_content_len", lastEventContentLen),
+				zap.Int("last_event_tool_calls", lastEventToolCalls))
+		}
+	}
 	if answer != "" && !interrupted {
-		c.sessionMemory.SaveTurn(ctx, sessionID, question, answer, messages)
+		c.sessionMemory.SaveTurn(context.Background(), sessionID, question, answer, messages)
 	}
 
 	return &v1.ChatStreamRes{}, nil
@@ -335,16 +377,18 @@ func (c *ControllerV1) AIOpsStream(ctx context.Context, req *v1.AIOpsStreamReq) 
 			continue
 		}
 
-		if event.Output != nil && event.Output.MessageOutput != nil && event.Output.MessageOutput.Message != nil {
-			msg := event.Output.MessageOutput.Message
+		msg, hasMsg := c.resolveEventMessage(event)
+		if hasMsg && msg != nil {
 			for _, call := range msg.ToolCalls {
 				writeSSEData(r, fmt.Sprintf("{\"type\":\"step\",\"step\":%d,\"content\":%q}", stepNum, "调用工具: "+call.Function.Name))
 				stepNum++
 			}
 
-			content := sanitizeUserFacingContent(msg.Content)
-			if content != "" {
-				writeSSEData(r, fmt.Sprintf("{\"type\":\"content\",\"content\":%q}", content))
+			if content, ok := c.extractAgentContentByMessage(event.AgentName, msg, ""); ok {
+				content = formatAIOpsContent(event.AgentName, c.opsRootAgentName, content)
+				if strings.TrimSpace(content) != "" {
+					writeSSEData(r, fmt.Sprintf("{\"type\":\"content\",\"content\":%q}", content))
+				}
 			}
 		}
 	}
@@ -399,16 +443,18 @@ func (c *ControllerV1) AIOpsResumeStream(ctx context.Context, req *v1.AIOpsResum
 			continue
 		}
 
-		if event.Output != nil && event.Output.MessageOutput != nil && event.Output.MessageOutput.Message != nil {
-			msg := event.Output.MessageOutput.Message
+		msg, hasMsg := c.resolveEventMessage(event)
+		if hasMsg && msg != nil {
 			for _, call := range msg.ToolCalls {
 				writeSSEData(r, fmt.Sprintf("{\"type\":\"step\",\"step\":%d,\"content\":%q}", stepNum, "调用工具: "+call.Function.Name))
 				stepNum++
 			}
 
-			content := sanitizeUserFacingContent(msg.Content)
-			if content != "" {
-				writeSSEData(r, fmt.Sprintf("{\"type\":\"content\",\"content\":%q}", content))
+			if content, ok := c.extractAgentContentByMessage(event.AgentName, msg, ""); ok {
+				content = formatAIOpsContent(event.AgentName, c.opsRootAgentName, content)
+				if strings.TrimSpace(content) != "" {
+					writeSSEData(r, fmt.Sprintf("{\"type\":\"content\",\"content\":%q}", content))
+				}
 			}
 		}
 	}
@@ -472,14 +518,73 @@ func (c *ControllerV1) resumeAgent(
 }
 
 func (c *ControllerV1) extractAssistantContent(event *adk.AgentEvent) (string, bool) {
-	if event == nil || event.Output == nil || event.Output.MessageOutput == nil || event.Output.MessageOutput.Message == nil {
+	msg, ok := c.resolveEventMessage(event)
+	if !ok {
 		return "", false
 	}
-	msg := event.Output.MessageOutput.Message
+	return c.extractAssistantContentFromResolved(event, msg)
+}
+
+func (c *ControllerV1) extractAssistantContentFromResolved(event *adk.AgentEvent, msg *schema.Message) (string, bool) {
+	if event == nil || msg == nil {
+		return "", false
+	}
+	content, ok := c.extractAgentContentByMessage(event.AgentName, msg, c.rootAgentName)
+	if ok {
+		return content, true
+	}
+	// 对话流放宽一次：若 AgentName 与 rootName 不一致，仍允许非工具 assistant 消息透出。
+	return c.extractAgentContentByMessage(event.AgentName, msg, "")
+}
+
+func (c *ControllerV1) resolveEventMessage(event *adk.AgentEvent) (*schema.Message, bool) {
+	if event == nil || event.Output == nil || event.Output.MessageOutput == nil {
+		return nil, false
+	}
+	variant := event.Output.MessageOutput
+	if variant.Message != nil {
+		return variant.Message, true
+	}
+	if variant.MessageStream == nil {
+		return nil, false
+	}
+
+	msg, err := variant.GetMessage()
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Warn("failed to resolve event message stream",
+				zap.String("agent_name", event.AgentName),
+				zap.Error(err))
+		}
+		return nil, false
+	}
+	if msg == nil {
+		return nil, false
+	}
+	return msg, true
+}
+
+func (c *ControllerV1) extractAgentContent(event *adk.AgentEvent, rootName string) (string, bool) {
+	msg, ok := c.resolveEventMessage(event)
+	if !ok {
+		return "", false
+	}
+	return c.extractAgentContentByMessage(event.AgentName, msg, rootName)
+}
+
+func (c *ControllerV1) extractAgentContentByMessage(agentName string, msg *schema.Message, rootName string) (string, bool) {
+	if msg == nil {
+		return "", false
+	}
 	if msg.Role != schema.Assistant {
 		return "", false
 	}
-	if event.AgentName != "" && event.AgentName != c.rootAgentName {
+	if rootName = strings.TrimSpace(rootName); rootName != "" {
+		if agentName != "" && agentName != rootName {
+			return "", false
+		}
+	}
+	if strings.TrimSpace(msg.ToolCallID) != "" {
 		return "", false
 	}
 	content := sanitizeUserFacingContent(msg.Content)
@@ -507,7 +612,13 @@ func writeSSEData(r *ghttp.Request, data string) {
 	if r == nil {
 		return
 	}
-	r.Response.Write(fmt.Sprintf("data: %s\n\n", data))
+	data = strings.ReplaceAll(data, "\r\n", "\n")
+	data = strings.ReplaceAll(data, "\r", "\n")
+	lines := strings.Split(data, "\n")
+	for _, line := range lines {
+		r.Response.Write(fmt.Sprintf("data: %s\n", line))
+	}
+	r.Response.Write("\n")
 	r.Response.Flush()
 }
 
@@ -587,6 +698,22 @@ func sanitizeUserFacingContent(content string) string {
 		return ""
 	}
 	return trimmed
+}
+
+// formatAIOpsContent 格式化 AIOps 流中的可展示内容。
+// 输入：事件 agentName、根 agentName、原始文本内容。
+// 输出：可展示文本；当内容为空时返回空字符串。
+func formatAIOpsContent(agentName, rootName, content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	agentName = strings.TrimSpace(agentName)
+	rootName = strings.TrimSpace(rootName)
+	if agentName == "" || agentName == rootName {
+		return content
+	}
+	return fmt.Sprintf("[%s]\n%s", agentName, content)
 }
 
 func buildInterruptMessage(data any) string {

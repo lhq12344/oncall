@@ -64,6 +64,60 @@ func parseExecutionResult(messages []adk.Message) (map[string]any, bool) {
 	return obj, true
 }
 
+// parseExecutedStepCount 提取执行结果中的已执行步骤数量。
+// 输入：execution_agent 输出的结构化结果对象。
+// 输出：执行步骤数；无法识别时返回 0。
+func parseExecutedStepCount(result map[string]any) int {
+	if result == nil {
+		return 0
+	}
+	value, exists := result["executed_steps"]
+	if !exists || value == nil {
+		return 0
+	}
+	switch typed := value.(type) {
+	case []any:
+		return len(typed)
+	case []map[string]any:
+		return len(typed)
+	}
+	return 0
+}
+
+// parseExecutionStatusText 提取 execution_status 字段文本。
+// 输入：execution_agent 输出的结构化结果对象。
+// 输出：标准化后的状态字符串（小写）；缺失时返回空字符串。
+func parseExecutionStatusText(result map[string]any) string {
+	if result == nil {
+		return ""
+	}
+	value, exists := result["execution_status"]
+	if !exists || value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return strings.ToLower(strings.TrimSpace(text))
+	}
+	return ""
+}
+
+// parseExecutionManualPlan 提取人工兜底执行计划文本。
+// 输入：execution_agent 输出的结构化结果对象。
+// 输出：manual_plan 文本；缺失时返回空字符串。
+func parseExecutionManualPlan(result map[string]any) string {
+	if result == nil {
+		return ""
+	}
+	value, exists := result["manual_plan"]
+	if !exists || value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return ""
+}
+
 func parseStrategyReport(messages []adk.Message) (map[string]any, bool) {
 	obj, _, ok := findLatestJSONObject(messages, "final_status")
 	if !ok {

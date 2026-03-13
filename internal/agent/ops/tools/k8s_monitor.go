@@ -10,6 +10,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -86,16 +87,16 @@ func NewK8sMonitorTool(kubeconfig string, logger *zap.Logger) (tool.BaseTool, er
 func (t *K8sMonitorTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: "k8s_monitor",
-		Desc: "监控 Kubernetes 资源状态。查询 Pod、Node、Deployment 等资源的运行状态和健康情况。",
+		Desc: "监控 Kubernetes 资源状态。查询 Pod、Node、Deployment、StatefulSet、Service 等资源的运行状态和健康情况。",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"namespace": {
 				Type:     schema.String,
-				Desc:     "命名空间（默认 default）",
+				Desc:     "命名空间（默认 infra）",
 				Required: false,
 			},
 			"resource_type": {
 				Type:     schema.String,
-				Desc:     "资源类型：pod/node/deployment/service",
+				Desc:     "资源类型：pod/node/deployment/statefulset/service",
 				Required: true,
 			},
 			"resource_name": {
@@ -119,19 +120,37 @@ func (t *K8sMonitorTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
-	// ���认命名空间
+	// 确认命名空间
 	if in.Namespace == "" {
-		in.Namespace = "default"
+		in.Namespace = "infra"
 	}
+	in.Namespace = strings.TrimSpace(in.Namespace)
 
 	in.ResourceType = strings.ToLower(strings.TrimSpace(in.ResourceType))
 	if in.ResourceType == "" {
 		return "", fmt.Errorf("resource_type is required")
 	}
+	in.ResourceName = strings.TrimSpace(in.ResourceName)
+
+	callCount := increaseToolCallCount(ctx, "k8s_monitor")
+	cacheKey := strings.ToLower(in.Namespace) + "|" + in.ResourceType + "|" + strings.ToLower(in.ResourceName)
+	if cached, ok := getCachedToolResult(ctx, "k8s_monitor", cacheKey); ok {
+		if t.logger != nil {
+			t.logger.Info("k8s monitor cache hit",
+				zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
+				zap.String("resource_type", in.ResourceType),
+				zap.String("namespace", in.Namespace),
+				zap.String("resource_name", in.ResourceName),
+				zap.Int("call_count", callCount))
+		}
+		return cached, nil
+	}
 
 	// 如果客户端未初始化，返回降级数据
 	if t.client == nil {
-		return t.fallbackResponse(in.ResourceType, in.Namespace, in.ResourceName), nil
+		output := t.fallbackResponse(in.ResourceType, in.Namespace, in.ResourceName)
+		setCachedToolResult(ctx, "k8s_monitor", cacheKey, output)
+		return output, nil
 	}
 
 	// 根据资源类型查询
@@ -145,6 +164,8 @@ func (t *K8sMonitorTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 		result, err = t.monitorNodes(ctx, in.ResourceName)
 	case "deployment", "deployments":
 		result, err = t.monitorDeployments(ctx, in.Namespace, in.ResourceName)
+	case "statefulset", "statefulsets":
+		result, err = t.monitorStatefulSets(ctx, in.Namespace, in.ResourceName)
 	case "service", "services":
 		result, err = t.monitorServices(ctx, in.Namespace, in.ResourceName)
 	default:
@@ -154,6 +175,7 @@ func (t *K8sMonitorTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 	if err != nil {
 		if t.logger != nil {
 			t.logger.Error("k8s monitor failed",
+				zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
 				zap.String("resource_type", in.ResourceType),
 				zap.String("namespace", in.Namespace),
 				zap.Error(err))
@@ -168,10 +190,13 @@ func (t *K8sMonitorTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 
 	if t.logger != nil {
 		t.logger.Info("k8s monitor completed",
+			zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
 			zap.String("resource_type", in.ResourceType),
-			zap.String("namespace", in.Namespace))
+			zap.String("namespace", in.Namespace),
+			zap.Int("call_count", callCount))
 	}
 
+	setCachedToolResult(ctx, "k8s_monitor", cacheKey, string(output))
 	return string(output), nil
 }
 
@@ -181,7 +206,32 @@ func (t *K8sMonitorTool) monitorPods(ctx context.Context, namespace, name string
 		// 查询单个 Pod
 		pod, err := t.client.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
-			return nil, err
+			if !k8serrors.IsNotFound(err) {
+				return nil, err
+			}
+
+			// 降级：当精确名称不存在时，返回命名空间内模糊匹配结果，避免工具直接报错中断链路。
+			pods, listErr := t.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+			if listErr != nil {
+				return nil, listErr
+			}
+
+			matched := make([]map[string]interface{}, 0)
+			for _, item := range pods.Items {
+				if !matchPodByHint(&item, name) {
+					continue
+				}
+				matched = append(matched, t.formatPodInfo(&item))
+			}
+
+			return map[string]interface{}{
+				"namespace":      namespace,
+				"requested_name": name,
+				"matched_exact":  false,
+				"count":          len(matched),
+				"pods":           matched,
+				"message":        "指定 Pod 不存在，已返回按名称/标签模糊匹配结果",
+			}, nil
 		}
 		return t.formatPodInfo(pod), nil
 	}
@@ -202,6 +252,38 @@ func (t *K8sMonitorTool) monitorPods(ctx context.Context, namespace, name string
 		"count":     len(result),
 		"pods":      result,
 	}, nil
+}
+
+// matchPodByHint 判断 Pod 是否与用户输入名称提示匹配。
+// 输入：pod 对象、用户输入的资源名提示。
+// 输出：true 表示名称或常见标签命中；false 表示不命中。
+func matchPodByHint(pod *corev1.Pod, hint string) bool {
+	if pod == nil {
+		return false
+	}
+	hint = strings.ToLower(strings.TrimSpace(hint))
+	if hint == "" {
+		return false
+	}
+
+	podName := strings.ToLower(strings.TrimSpace(pod.Name))
+	if podName == hint || strings.Contains(podName, hint) {
+		return true
+	}
+
+	candidateKeys := []string{"app", "app.kubernetes.io/name", "app.kubernetes.io/instance"}
+	for _, key := range candidateKeys {
+		value, ok := pod.Labels[key]
+		if !ok {
+			continue
+		}
+		labelValue := strings.ToLower(strings.TrimSpace(value))
+		if labelValue == hint || strings.Contains(labelValue, hint) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // formatPodInfo 格式化 Pod 信息
@@ -234,15 +316,15 @@ func (t *K8sMonitorTool) formatPodInfo(pod *corev1.Pod) map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"name":               pod.Name,
-		"namespace":          pod.Namespace,
-		"phase":              string(pod.Status.Phase),
-		"node":               pod.Spec.NodeName,
-		"ip":                 pod.Status.PodIP,
-		"containers":         containerStatuses,
-		"created_at":         pod.CreationTimestamp.Time.Format("2006-01-02 15:04:05"),
-		"restart_policy":     string(pod.Spec.RestartPolicy),
-		"service_account":    pod.Spec.ServiceAccountName,
+		"name":            pod.Name,
+		"namespace":       pod.Namespace,
+		"phase":           string(pod.Status.Phase),
+		"node":            pod.Spec.NodeName,
+		"ip":              pod.Status.PodIP,
+		"containers":      containerStatuses,
+		"created_at":      pod.CreationTimestamp.Time.Format("2006-01-02 15:04:05"),
+		"restart_policy":  string(pod.Spec.RestartPolicy),
+		"service_account": pod.Spec.ServiceAccountName,
 	}
 }
 
@@ -303,10 +385,10 @@ func (t *K8sMonitorTool) formatNodeInfo(node *corev1.Node) map[string]interface{
 			"pods":   allocatable.Pods().String(),
 		},
 		"node_info": map[string]interface{}{
-			"os_image":           node.Status.NodeInfo.OSImage,
-			"kernel_version":     node.Status.NodeInfo.KernelVersion,
-			"container_runtime":  node.Status.NodeInfo.ContainerRuntimeVersion,
-			"kubelet_version":    node.Status.NodeInfo.KubeletVersion,
+			"os_image":          node.Status.NodeInfo.OSImage,
+			"kernel_version":    node.Status.NodeInfo.KernelVersion,
+			"container_runtime": node.Status.NodeInfo.ContainerRuntimeVersion,
+			"kubelet_version":   node.Status.NodeInfo.KubeletVersion,
 		},
 	}
 }
@@ -351,6 +433,63 @@ func (t *K8sMonitorTool) monitorDeployments(ctx context.Context, namespace, name
 	}, nil
 }
 
+// monitorStatefulSets 监控 StatefulSet 状态。
+// 输入：ctx、namespace、name（可选；为空时返回列表）。
+// 输出：单个 StatefulSet 详情或列表聚合信息。
+func (t *K8sMonitorTool) monitorStatefulSets(ctx context.Context, namespace, name string) (interface{}, error) {
+	if name != "" {
+		statefulSet, err := t.client.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"name":             statefulSet.Name,
+			"namespace":        statefulSet.Namespace,
+			"replicas":         desiredReplicas(statefulSet.Spec.Replicas),
+			"ready_replicas":   statefulSet.Status.ReadyReplicas,
+			"current_replicas": statefulSet.Status.CurrentReplicas,
+			"updated_replicas": statefulSet.Status.UpdatedReplicas,
+			"current_revision": statefulSet.Status.CurrentRevision,
+			"update_revision":  statefulSet.Status.UpdateRevision,
+			"service_name":     statefulSet.Spec.ServiceName,
+			"pod_management":   string(statefulSet.Spec.PodManagementPolicy),
+			"created_at":       statefulSet.CreationTimestamp.Time.Format("2006-01-02 15:04:05"),
+		}, nil
+	}
+
+	statefulSets, err := t.client.AppsV1().StatefulSets(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]map[string]interface{}, 0, len(statefulSets.Items))
+	for _, statefulSet := range statefulSets.Items {
+		result = append(result, map[string]interface{}{
+			"name":             statefulSet.Name,
+			"replicas":         desiredReplicas(statefulSet.Spec.Replicas),
+			"ready_replicas":   statefulSet.Status.ReadyReplicas,
+			"current_replicas": statefulSet.Status.CurrentReplicas,
+			"service_name":     statefulSet.Spec.ServiceName,
+		})
+	}
+
+	return map[string]interface{}{
+		"namespace":    namespace,
+		"count":        len(result),
+		"statefulsets": result,
+	}, nil
+}
+
+// desiredReplicas 返回期望副本数。
+// 输入：K8s workload 的 replicas 指针。
+// 输出：副本数，空指针时返回 0。
+func desiredReplicas(replicas *int32) int32 {
+	if replicas == nil {
+		return 0
+	}
+	return *replicas
+}
+
 // monitorServices 监控 Service 状态
 func (t *K8sMonitorTool) monitorServices(ctx context.Context, namespace, name string) (interface{}, error) {
 	if name != "" {
@@ -359,13 +498,13 @@ func (t *K8sMonitorTool) monitorServices(ctx context.Context, namespace, name st
 			return nil, err
 		}
 		return map[string]interface{}{
-			"name":        svc.Name,
-			"namespace":   svc.Namespace,
-			"type":        string(svc.Spec.Type),
-			"cluster_ip":  svc.Spec.ClusterIP,
-			"ports":       svc.Spec.Ports,
-			"selector":    svc.Spec.Selector,
-			"created_at":  svc.CreationTimestamp.Time.Format("2006-01-02 15:04:05"),
+			"name":       svc.Name,
+			"namespace":  svc.Namespace,
+			"type":       string(svc.Spec.Type),
+			"cluster_ip": svc.Spec.ClusterIP,
+			"ports":      svc.Spec.Ports,
+			"selector":   svc.Spec.Selector,
+			"created_at": svc.CreationTimestamp.Time.Format("2006-01-02 15:04:05"),
 		}, nil
 	}
 
@@ -398,14 +537,11 @@ func (t *K8sMonitorTool) fallbackResponse(resourceType, namespace, name string) 
 	}
 
 	result := map[string]interface{}{
-		"error":   "k8s_client_unavailable",
-		"message": msg,
+		"error":      "k8s_client_unavailable",
+		"message":    msg,
 		"suggestion": "Please check K8s configuration and ensure the cluster is accessible",
 	}
 
 	output, _ := json.Marshal(result)
 	return string(output)
 }
-
-
-

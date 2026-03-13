@@ -105,7 +105,7 @@ class SuperBizAgentApp {
         
         // 输入区域元素
         this.messageInput = document.getElementById('messageInput');
-        this.sendButton = document.getElementById('sendButton');
+        this.sendButton = document.getElementById('sendButton') || document.getElementById('sendBtn');
         this.toolsBtn = document.getElementById('toolsBtn');
         this.toolsMenu = document.getElementById('toolsMenu');
         this.uploadFileItem = document.getElementById('uploadFileItem');
@@ -172,8 +172,9 @@ class SuperBizAgentApp {
         
         // 点击外部关闭下拉菜单
         document.addEventListener('click', (e) => {
-            if (!this.modeSelectorBtn.contains(e.target) && 
-                !this.modeDropdown.contains(e.target)) {
+            const clickOnModeBtn = this.modeSelectorBtn && this.modeSelectorBtn.contains(e.target);
+            const clickOnModeDropdown = this.modeDropdown && this.modeDropdown.contains(e.target);
+            if (!clickOnModeBtn && !clickOnModeDropdown) {
                 this.closeModeDropdown();
             }
         });
@@ -184,7 +185,11 @@ class SuperBizAgentApp {
         }
         
         if (this.messageInput) {
-            this.messageInput.addEventListener('keypress', (e) => {
+            this.messageInput.addEventListener('keydown', (e) => {
+                // 输入法组合输入期间不触发发送
+                if (e.isComposing || e.keyCode === 229) {
+                    return;
+                }
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     this.sendMessage();
@@ -718,14 +723,14 @@ class SuperBizAgentApp {
                 }
 
                 buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
+                const eventBlocks = buffer.split('\n\n');
+                buffer = eventBlocks.pop() || '';
 
-                for (const line of lines) {
-                    if (!line.trim() || !line.startsWith('data: ')) {
+                for (const eventBlock of eventBlocks) {
+                    const data = this.extractSSEData(eventBlock);
+                    if (data === null) {
                         continue;
                     }
-                    const data = line.substring(6);
                     const result = await onData(data);
                     if (result && result.type && result.type !== 'continue') {
                         streamResult = result;
@@ -734,8 +739,12 @@ class SuperBizAgentApp {
                 }
             }
 
-            if (streamResult.type === 'eof' && buffer.startsWith('data: ')) {
-                const result = await onData(buffer.substring(6));
+            if (streamResult.type === 'eof') {
+                const data = this.extractSSEData(buffer);
+                if (data === null) {
+                    return streamResult;
+                }
+                const result = await onData(data);
                 if (result && result.type && result.type !== 'continue') {
                     streamResult = result;
                 }
@@ -752,6 +761,30 @@ class SuperBizAgentApp {
         }
 
         return streamResult;
+    }
+
+    extractSSEData(eventBlock) {
+        if (!eventBlock || typeof eventBlock !== 'string') {
+            return null;
+        }
+
+        const dataLines = [];
+        const lines = eventBlock.split('\n');
+        for (const line of lines) {
+            if (!line.startsWith('data:')) {
+                continue;
+            }
+            let value = line.slice(5);
+            if (value.startsWith(' ')) {
+                value = value.slice(1);
+            }
+            dataLines.push(value);
+        }
+
+        if (dataLines.length === 0) {
+            return null;
+        }
+        return dataLines.join('\n');
     }
 
     handleChatStreamData(data, streamContext) {
