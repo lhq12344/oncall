@@ -17,8 +17,9 @@ import (
 
 // Config RCA Agent 配置
 type Config struct {
-	ChatModel *models.ChatModel
-	Logger    *zap.Logger
+	ChatModel  *models.ChatModel
+	KubeConfig string
+	Logger     *zap.Logger
 }
 
 // NewRCAAgent 创建 RCA Agent（根因分析）
@@ -35,7 +36,7 @@ func NewRCAAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	var toolsList []tool.BaseTool
 
 	// 依赖图构建工具
-	depGraphTool := tools.NewBuildDependencyGraphTool(cfg.Logger)
+	depGraphTool := tools.NewBuildDependencyGraphTool(cfg.KubeConfig, cfg.Logger)
 	toolsList = append(toolsList, depGraphTool)
 
 	// 信号关联工具
@@ -63,26 +64,30 @@ func NewRCAAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 		},
 		Instruction: `你是 RCA 根因分析代理，负责产出“可被下游 Ops 直接消费”的结构化结果。
 
+输入中会包含 Graph State 的观测快照（observation_summary / observation_errors / observation_namespace），必须先基于这些事实再推理。
+
 你的职责：
 1. 使用 build_dependency_graph 构建依赖拓扑
 2. 使用 correlate_signals 对齐告警/日志/指标信号
 3. 使用 infer_root_cause 推理最可能根因
-4. 使用 analyze_impact 评估影响面
+					4. 使用 analyze_impact 评估影响面
 
-输出规范（必须只输出一个 JSON 对象，不要附加解释）：
-{
-  "root_cause": "根因标签，如 disk_full / downstream_timeout",
-  "target_node": "受影响主机或服务，如 worker-01 / payment-api",
-  "path": "关键路径，如 /var/log 或 serviceA->serviceB",
+					输出规范（必须只输出一个 JSON 对象，不要附加解释）：
+					{
+					"root_cause": "根因标签，如 disk_full / downstream_timeout",
+					"target_node": "受影响主机或服务，如 worker-01 / payment-api",
+					"path": "关键路径，如 /var/log 或 serviceA->serviceB",
   "impact": "影响摘要",
   "confidence": 0.0,
   "evidence": ["证据1", "证据2", "证据3"],
-  "next_verification": ["建议验证动作1", "建议验证动作2"]
+  "next_verification": ["建议验证动作1", "建议验证动作2"],
+  "missing_data": ["缺失数据1", "缺失数据2"]
 }
 
 约束：
 - confidence 范围必须是 0~1。
 - evidence 至少提供 2 条可审计证据。
+- 若 observation_errors 非空或证据不足，confidence 必须小于 0.6，且必须填写 missing_data。
 - 相同工具在相同参数下禁止重复调用，除非上一步返回错误且明确给出重试原因。
 - 无法确定时输出低 confidence 并明确缺失信息，不得臆造。`,
 	})

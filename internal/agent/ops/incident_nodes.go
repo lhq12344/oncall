@@ -325,6 +325,91 @@ func (a *executionGateAgent) Resume(ctx context.Context, info *adk.ResumeInfo, _
 	return iterator
 }
 
+type finalReportAgent struct {
+	name   string
+	desc   string
+	logger *zap.Logger
+}
+
+func newFinalReportAgent(logger *zap.Logger) adk.Agent {
+	return &finalReportAgent{
+		name:   "final_reporter",
+		desc:   "输出面向前端的运维处置总结",
+		logger: logger,
+	}
+}
+
+func (a *finalReportAgent) Name(_ context.Context) string {
+	return a.name
+}
+
+func (a *finalReportAgent) Description(_ context.Context) string {
+	return a.desc
+}
+
+func (a *finalReportAgent) Run(ctx context.Context, _ *adk.AgentInput, _ ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
+	iterator, generator := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+
+	go func() {
+		defer generator.Close()
+		summary := buildFinalOpsSummary(getIncidentState(ctx))
+		if a.logger != nil {
+			a.logger.Info("incident final summary generated",
+				zap.Int("summary_len", len([]rune(summary))))
+		}
+		generator.Send(assistantEvent(summary))
+	}()
+
+	return iterator
+}
+
+// buildFinalOpsSummary 生成最终运维总结文本。
+// 输入：流程状态快照。
+// 输出：可直接返回给前端的总结文本。
+func buildFinalOpsSummary(state *IncidentState) string {
+	if state == nil {
+		return "运维流程已结束，但未读取到结构化状态。请结合工具日志确认最终处理结果。"
+	}
+
+	finalStatus := strings.TrimSpace(state.FinalStatus)
+	if finalStatus == "" {
+		switch {
+		case state.ExecutionSuccess:
+			finalStatus = "resolved"
+		case strings.TrimSpace(state.ExecutionStatus) != "":
+			finalStatus = "partially_resolved"
+		default:
+			finalStatus = "unresolved"
+		}
+	}
+
+	lines := []string{
+		"运维处置总结：",
+		fmt.Sprintf("- 最终状态：%s", finalStatus),
+	}
+
+	if rootCause := strings.TrimSpace(state.RootCause); rootCause != "" {
+		lines = append(lines, fmt.Sprintf("- 根因判断：%s", rootCause))
+	}
+	if planSummary := strings.TrimSpace(state.PlanSummary); planSummary != "" {
+		lines = append(lines, fmt.Sprintf("- 执行计划：%s", planSummary))
+	}
+	if stepCount := state.ExecutionStepCount; stepCount > 0 {
+		lines = append(lines, fmt.Sprintf("- 实际执行步骤：%d 步", stepCount))
+	}
+	if reason := strings.TrimSpace(state.ExecutionReason); reason != "" {
+		lines = append(lines, fmt.Sprintf("- 执行说明：%s", reason))
+	}
+	if report := strings.TrimSpace(state.FinalReport); report != "" {
+		lines = append(lines, fmt.Sprintf("- 复盘结论：%s", report))
+	}
+	if fallback := strings.TrimSpace(state.ExecutionFallback); fallback != "" && finalStatus != "resolved" {
+		lines = append(lines, fmt.Sprintf("- 后续建议：%s", fallback))
+	}
+
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 func absoluteForbiddenPatterns() []*regexp.Regexp {
 	return []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\brm\s+-rf\s+/`),

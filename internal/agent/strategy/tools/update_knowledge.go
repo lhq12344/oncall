@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/indexer"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
@@ -79,6 +81,7 @@ func (t *UpdateKnowledgeTool) InvokableRun(ctx context.Context, argumentsInJSON 
 	}
 
 	knowledgeCase := normalizeKnowledgeCase(in.Case)
+	knowledgeCase = enrichKnowledgeCase(ctx, knowledgeCase, in.ExecutionResult)
 
 	// 决定是否更新知识库
 	result := t.decideUpdate(knowledgeCase, in.ExecutionResult)
@@ -107,6 +110,120 @@ func (t *UpdateKnowledgeTool) InvokableRun(ctx context.Context, argumentsInJSON 
 	}
 
 	return string(output), nil
+}
+
+// enrichKnowledgeCase 根据流程上下文补全知识案例关键字段。
+// 输入：ctx、原始知识案例、执行结果。
+// 输出：补全后的知识案例（不会强制写入 case_id，以保留 save/update 判定语义）。
+func enrichKnowledgeCase(ctx context.Context, kcase KnowledgeCase, execResult map[string]interface{}) KnowledgeCase {
+	state := getIncidentStateAsMap(ctx)
+	now := time.Now()
+	if kcase.CreatedAt.IsZero() {
+		kcase.CreatedAt = now
+	}
+	if kcase.UpdatedAt.IsZero() {
+		kcase.UpdatedAt = now
+	}
+
+	rootCause := strings.TrimSpace(anyToString(state["root_cause"]))
+	targetNode := strings.TrimSpace(anyToString(state["target_node"]))
+	planSummary := strings.TrimSpace(anyToString(state["plan_summary"]))
+	impact := strings.TrimSpace(anyToString(state["impact"]))
+	executionReason := strings.TrimSpace(anyToString(state["execution_reason"]))
+	finalReport := strings.TrimSpace(anyToString(state["final_report"]))
+	fallbackPlan := strings.TrimSpace(anyToString(state["execution_fallback"]))
+
+	if strings.TrimSpace(kcase.Title) == "" {
+		switch {
+		case rootCause != "" && targetNode != "":
+			kcase.Title = fmt.Sprintf("%s_%s_处置记录", rootCause, targetNode)
+		case rootCause != "":
+			kcase.Title = fmt.Sprintf("%s_故障处置记录", rootCause)
+		case planSummary != "":
+			kcase.Title = clipCaseText(planSummary, 96)
+		default:
+			kcase.Title = fmt.Sprintf("ops_case_%s", now.Format("20060102_150405"))
+		}
+	}
+
+	if strings.TrimSpace(kcase.Description) == "" {
+		kcase.Description = firstNonEmptyText(
+			finalReport,
+			executionReason,
+			impact,
+			strings.TrimSpace(anyToString(execResult["failed_reason"])),
+			"自动处置完成，详细信息见执行日志。",
+		)
+	}
+
+	if strings.TrimSpace(kcase.Strategy) == "" {
+		kcase.Strategy = firstNonEmptyText(
+			planSummary,
+			fallbackPlan,
+			strings.TrimSpace(anyToString(execResult["manual_plan"])),
+			"基于 RCA 结论执行分步骤排障。",
+		)
+	}
+
+	if kcase.SuccessRate <= 0 {
+		if anyToBool(execResult["success"]) {
+			kcase.SuccessRate = 1
+		}
+	}
+
+	return kcase
+}
+
+// getIncidentStateAsMap 从 SessionValues 读取 incident_graph_state。
+// 输入：ctx。
+// 输出：状态 map；读取失败时返回空 map。
+func getIncidentStateAsMap(ctx context.Context) map[string]any {
+	value, ok := adk.GetSessionValue(ctx, "incident_graph_state")
+	if !ok || value == nil {
+		return map[string]any{}
+	}
+
+	body, err := json.Marshal(value)
+	if err != nil {
+		return map[string]any{}
+	}
+
+	state := map[string]any{}
+	if err := json.Unmarshal(body, &state); err != nil {
+		return map[string]any{}
+	}
+	return state
+}
+
+// firstNonEmptyText 返回第一个非空文本。
+// 输入：候选文本列表。
+// 输出：第一个非空文本；全部为空时返回空字符串。
+func firstNonEmptyText(values ...string) string {
+	for _, value := range values {
+		text := strings.TrimSpace(value)
+		if text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+// clipCaseText 裁剪文本长度，避免字段过长。
+// 输入：原文本、最大 rune 长度。
+// 输出：裁剪后的文本。
+func clipCaseText(text string, maxRunes int) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	if maxRunes <= 0 {
+		maxRunes = 96
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 // normalizeKnowledgeCase 规范化知识案例参数。
@@ -184,13 +301,15 @@ func (t *UpdateKnowledgeTool) decideUpdate(kcase KnowledgeCase, execResult map[s
 		if success && duration < 60000 {
 			// 成功且执行时间合理，保存
 			newWeight := t.calculateInitialWeight(success, duration)
+			generatedCaseID := fmt.Sprintf("case_%d", time.Now().Unix())
+			kcase.CaseID = generatedCaseID
 			kcase.Weight = newWeight
 			kcase.CreatedAt = time.Now()
 			kcase.UpdatedAt = time.Now()
 
 			return &UpdateResult{
 				Action:      "save",
-				CaseID:      fmt.Sprintf("case_%d", time.Now().Unix()),
+				CaseID:      generatedCaseID,
 				OldWeight:   0,
 				NewWeight:   newWeight,
 				Reason:      "成功案例，值得保存",

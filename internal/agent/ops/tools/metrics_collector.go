@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,16 +58,31 @@ func NewMetricsCollectorTool(prometheusURL string, logger *zap.Logger) (tool.Bas
 func (t *MetricsCollectorTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: "metrics_collector",
-		Desc: "采集 Prometheus 指标数据。支持 PromQL 查询，可以查询 CPU、内存、网络等各类指标。",
+		Desc: "采集 Prometheus 指标数据。支持 PromQL 查询，也支持发现当前可用指标源（scrape targets/label values/关键指标可用性）。",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"action": {
+				Type:     schema.String,
+				Desc:     "执行动作：query（默认，执行 PromQL）或 discover_sources（发现指标源）",
+				Required: false,
+			},
 			"query": {
 				Type:     schema.String,
-				Desc:     "PromQL 查询语句",
-				Required: true,
+				Desc:     "PromQL 查询语句（action=query 时必填）",
+				Required: false,
 			},
 			"time_range": {
 				Type:     schema.String,
-				Desc:     "时间范围（如 5m, 1h, 24h），默认当前时刻",
+				Desc:     "时间范围（如 5m, 1h, 24h），仅 action=query 生效，默认当前时刻",
+				Required: false,
+			},
+			"metric": {
+				Type:     schema.String,
+				Desc:     "action=discover_sources 时可选：按指标名过滤 metadata",
+				Required: false,
+			},
+			"limit": {
+				Type:     schema.Integer,
+				Desc:     "action=discover_sources 时可选：返回源样本上限，默认 20，最大 100",
 				Required: false,
 			},
 		}),
@@ -74,8 +91,11 @@ func (t *MetricsCollectorTool) Info(ctx context.Context) (*schema.ToolInfo, erro
 
 func (t *MetricsCollectorTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
 	type args struct {
+		Action    string `json:"action"`
 		Query     string `json:"query"`
 		TimeRange string `json:"time_range"`
+		Metric    string `json:"metric"`
+		Limit     int    `json:"limit"`
 	}
 
 	var in args
@@ -83,18 +103,39 @@ func (t *MetricsCollectorTool) InvokableRun(ctx context.Context, argumentsInJSON
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
-	in.Query = strings.TrimSpace(in.Query)
-	if in.Query == "" {
-		return "", fmt.Errorf("query is required")
+	in.Action = strings.ToLower(strings.TrimSpace(in.Action))
+	if in.Action == "" {
+		in.Action = "query"
 	}
+	if in.Action != "query" && in.Action != "discover_sources" {
+		return "", fmt.Errorf("unsupported action: %s", in.Action)
+	}
+
+	in.Query = strings.TrimSpace(in.Query)
 	in.TimeRange = strings.TrimSpace(in.TimeRange)
+	in.Metric = strings.TrimSpace(in.Metric)
+	if in.Limit <= 0 {
+		in.Limit = 20
+	}
+	if in.Limit > 100 {
+		in.Limit = 100
+	}
+
+	if in.Action == "query" && in.Query == "" {
+		return "", fmt.Errorf("query is required when action=query")
+	}
 
 	callCount := increaseToolCallCount(ctx, "metrics_collector")
-	cacheKey := strings.ToLower(strings.TrimSpace(in.Query)) + "|" + strings.ToLower(in.TimeRange)
+	cacheKey := strings.ToLower(in.Action) + "|" +
+		strings.ToLower(strings.TrimSpace(in.Query)) + "|" +
+		strings.ToLower(in.TimeRange) + "|" +
+		strings.ToLower(in.Metric) + "|" +
+		strconv.Itoa(in.Limit)
 	if cached, ok := getCachedToolResult(ctx, "metrics_collector", cacheKey); ok {
 		if t.logger != nil {
 			t.logger.Info("metrics collector cache hit",
 				zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
+				zap.String("action", in.Action),
 				zap.String("query", in.Query),
 				zap.String("time_range", in.TimeRange),
 				zap.Int("call_count", callCount))
@@ -104,9 +145,38 @@ func (t *MetricsCollectorTool) InvokableRun(ctx context.Context, argumentsInJSON
 
 	// 如果客户端未初始化，返回降级数据
 	if t.client == nil {
-		output := t.fallbackResponse(in.Query)
+		output := t.fallbackResponse(in.Action, in.Query)
 		setCachedToolResult(ctx, "metrics_collector", cacheKey, output)
 		return output, nil
+	}
+
+	// 指标源发现模式
+	if in.Action == "discover_sources" {
+		result, err := t.discoverMetricSources(ctx, in.Metric, in.Limit)
+		if err != nil {
+			if t.logger != nil {
+				t.logger.Error("prometheus source discovery failed",
+					zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
+					zap.String("metric", in.Metric),
+					zap.Error(err))
+			}
+			return "", fmt.Errorf("failed to discover metric sources: %w", err)
+		}
+
+		output, err := json.Marshal(result)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal discovery result: %w", err)
+		}
+
+		if t.logger != nil {
+			t.logger.Info("metrics source discovery completed",
+				zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
+				zap.String("metric", in.Metric),
+				zap.Int("call_count", callCount))
+		}
+
+		setCachedToolResult(ctx, "metrics_collector", cacheKey, string(output))
+		return string(output), nil
 	}
 
 	// 解析时间范围
@@ -154,6 +224,7 @@ func (t *MetricsCollectorTool) InvokableRun(ctx context.Context, argumentsInJSON
 	if t.logger != nil {
 		t.logger.Info("metrics collection completed",
 			zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
+			zap.String("action", in.Action),
 			zap.String("query", in.Query),
 			zap.Bool("is_range", isRange),
 			zap.Int("call_count", callCount))
@@ -161,6 +232,250 @@ func (t *MetricsCollectorTool) InvokableRun(ctx context.Context, argumentsInJSON
 
 	setCachedToolResult(ctx, "metrics_collector", cacheKey, string(output))
 	return string(output), nil
+}
+
+// discoverMetricSources 发现 Prometheus 当前可用指标源。
+// 输入：ctx、metric（可选过滤指标名）、limit（返回源样本上限）。
+// 输出：包含 targets、scrape pools、label values 与关键指标可用性的结构化结果。
+func (t *MetricsCollectorTool) discoverMetricSources(ctx context.Context, metric string, limit int) (interface{}, error) {
+	targets, err := t.client.Targets(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	active := targets.Active
+	samples := make([]map[string]interface{}, 0, minInt(limit, len(active)))
+	scrapePools := make([]string, 0, len(active))
+	poolSet := make(map[string]struct{}, len(active))
+
+	healthSummary := map[string]int{
+		"up":      0,
+		"down":    0,
+		"unknown": 0,
+	}
+
+	for index, target := range active {
+		health := strings.ToLower(strings.TrimSpace(string(target.Health)))
+		switch health {
+		case "up":
+			healthSummary["up"]++
+		case "down":
+			healthSummary["down"]++
+		default:
+			healthSummary["unknown"]++
+		}
+
+		pool := strings.TrimSpace(target.ScrapePool)
+		if pool != "" {
+			if _, exists := poolSet[pool]; !exists {
+				poolSet[pool] = struct{}{}
+				scrapePools = append(scrapePools, pool)
+			}
+		}
+
+		if index >= limit {
+			continue
+		}
+
+		sample := map[string]interface{}{
+			"scrape_pool": pool,
+			"scrape_url":  strings.TrimSpace(target.ScrapeURL),
+			"health":      health,
+			"last_error":  strings.TrimSpace(target.LastError),
+		}
+		if value, ok := target.Labels["job"]; ok {
+			sample["job"] = string(value)
+		}
+		if value, ok := target.Labels["instance"]; ok {
+			sample["instance"] = string(value)
+		}
+		if value, ok := target.Labels["namespace"]; ok {
+			sample["namespace"] = string(value)
+		}
+		if value, ok := target.Labels["pod"]; ok {
+			sample["pod"] = string(value)
+		}
+		if value, ok := target.Labels["node"]; ok {
+			sample["node"] = string(value)
+		}
+		samples = append(samples, sample)
+	}
+	sort.Strings(scrapePools)
+
+	jobValues, jobWarnings, _ := t.client.LabelValues(ctx, "job", nil, time.Time{}, time.Time{})
+	instanceValues, instanceWarnings, _ := t.client.LabelValues(ctx, "instance", nil, time.Time{}, time.Time{})
+	namespaceValues, namespaceWarnings, _ := t.client.LabelValues(ctx, "namespace", nil, time.Time{}, time.Time{})
+
+	labelWarnings := appendWarnings(jobWarnings, instanceWarnings, namespaceWarnings)
+
+	probeMetrics := []string{
+		"container_cpu_usage_seconds_total",
+		"container_memory_working_set_bytes",
+		"node_cpu_seconds_total",
+		"node_memory_MemAvailable_bytes",
+		"kube_pod_container_status_restarts_total",
+	}
+	metricProbe := t.probeMetricAvailability(ctx, probeMetrics)
+
+	metadata, metaErr := t.client.Metadata(ctx, metric, strconv.Itoa(limit))
+	metadataSummary := summarizeMetricMetadata(metadata, limit)
+
+	result := map[string]interface{}{
+		"type":            "source_discovery",
+		"active_targets":  len(targets.Active),
+		"dropped_targets": len(targets.Dropped),
+		"health_summary":  healthSummary,
+		"scrape_pools":    scrapePools,
+		"target_samples":  samples,
+		"label_values": map[string]interface{}{
+			"job":       labelValuesToStrings(jobValues, limit),
+			"instance":  labelValuesToStrings(instanceValues, limit),
+			"namespace": labelValuesToStrings(namespaceValues, limit),
+		},
+		"label_warnings":  labelWarnings,
+		"metric_probe":    metricProbe,
+		"metric_metadata": metadataSummary,
+	}
+
+	if metaErr != nil {
+		result["metadata_error"] = metaErr.Error()
+	}
+
+	return result, nil
+}
+
+// probeMetricAvailability 探测关键指标在当前 Prometheus 中是否可查询。
+// 输入：ctx、指标名列表。
+// 输出：metric -> 可用性、样本数量、错误信息。
+func (t *MetricsCollectorTool) probeMetricAvailability(ctx context.Context, metrics []string) map[string]interface{} {
+	out := make(map[string]interface{}, len(metrics))
+	now := time.Now()
+	for _, metric := range metrics {
+		metric = strings.TrimSpace(metric)
+		if metric == "" {
+			continue
+		}
+		query := fmt.Sprintf("count(%s)", metric)
+		value, _, err := t.client.Query(ctx, query, now)
+		if err != nil {
+			out[metric] = map[string]interface{}{
+				"available": false,
+				"error":     err.Error(),
+			}
+			continue
+		}
+		sampleCount := extractCountFromPromValue(value)
+		out[metric] = map[string]interface{}{
+			"available":    sampleCount > 0,
+			"sample_count": sampleCount,
+		}
+	}
+	return out
+}
+
+// extractCountFromPromValue 从 Prometheus 查询值中提取 count 数值。
+// 输入：model.Value。
+// 输出：count 数值，无法解析时返回 0。
+func extractCountFromPromValue(value model.Value) float64 {
+	switch typed := value.(type) {
+	case model.Vector:
+		if len(typed) == 0 {
+			return 0
+		}
+		return float64(typed[0].Value)
+	case *model.Scalar:
+		if typed == nil {
+			return 0
+		}
+		return float64(typed.Value)
+	default:
+		return 0
+	}
+}
+
+// labelValuesToStrings 将 LabelValues 转为字符串切片。
+// 输入：model.LabelValues、limit。
+// 输出：截断后的字符串切片。
+func labelValuesToStrings(values model.LabelValues, limit int) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, string(value))
+	}
+	sort.Strings(out)
+	if limit > 0 && len(out) > limit {
+		return out[:limit]
+	}
+	return out
+}
+
+// appendWarnings 合并并去重 Prometheus warnings。
+// 输入：多个 warnings 切片。
+// 输出：合并去重后的字符串切片。
+func appendWarnings(warnings ...v1.Warnings) []string {
+	uniq := make(map[string]struct{})
+	out := make([]string, 0)
+	for _, group := range warnings {
+		for _, warning := range group {
+			text := strings.TrimSpace(string(warning))
+			if text == "" {
+				continue
+			}
+			if _, exists := uniq[text]; exists {
+				continue
+			}
+			uniq[text] = struct{}{}
+			out = append(out, text)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// summarizeMetricMetadata 汇总指标元数据。
+// 输入：metadata 原始映射、limit。
+// 输出：简化后的指标元数据列表。
+func summarizeMetricMetadata(metadata map[string][]v1.Metadata, limit int) []map[string]interface{} {
+	if len(metadata) == 0 {
+		return nil
+	}
+
+	keys := make([]string, 0, len(metadata))
+	for name := range metadata {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	if limit > 0 && len(keys) > limit {
+		keys = keys[:limit]
+	}
+
+	out := make([]map[string]interface{}, 0, len(keys))
+	for _, name := range keys {
+		entries := metadata[name]
+		if len(entries) == 0 {
+			out = append(out, map[string]interface{}{
+				"metric": name,
+			})
+			continue
+		}
+		entry := entries[0]
+		out = append(out, map[string]interface{}{
+			"metric": name,
+			"type":   string(entry.Type),
+			"help":   strings.TrimSpace(entry.Help),
+			"unit":   strings.TrimSpace(entry.Unit),
+		})
+	}
+	return out
+}
+
+// minInt 返回两个整数中的较小值。
+// 输入：a、b。
+// 输出：较小值。
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // queryInstant 即时查询
@@ -290,10 +605,14 @@ func (t *MetricsCollectorTool) calculateStats(values []model.SamplePair) map[str
 }
 
 // fallbackResponse 降级响应
-func (t *MetricsCollectorTool) fallbackResponse(query string) string {
+func (t *MetricsCollectorTool) fallbackResponse(action, query string) string {
+	action = strings.TrimSpace(action)
+	if action == "" {
+		action = "query"
+	}
 	result := map[string]interface{}{
 		"error":      "prometheus_client_unavailable",
-		"message":    fmt.Sprintf("Prometheus client not available. Cannot execute query: %s", query),
+		"message":    fmt.Sprintf("Prometheus client not available. Cannot execute action: %s, query: %s", action, query),
 		"suggestion": "Please check Prometheus configuration and ensure it's running",
 	}
 

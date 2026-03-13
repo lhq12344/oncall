@@ -20,6 +20,11 @@ const (
 )
 
 type IncidentState struct {
+	ObservationCollected bool     `json:"observation_collected,omitempty"`
+	ObservationNamespace string   `json:"observation_namespace,omitempty"`
+	ObservationSummary   string   `json:"observation_summary,omitempty"`
+	ObservationErrors    []string `json:"observation_errors,omitempty"`
+
 	RootCause  string   `json:"root_cause,omitempty"`
 	TargetNode string   `json:"target_node,omitempty"`
 	Path       string   `json:"path,omitempty"`
@@ -265,24 +270,28 @@ func renderIncidentState(state *IncidentState) string {
 		return ""
 	}
 	payload := map[string]any{
-		"root_cause":           state.RootCause,
-		"target_node":          state.TargetNode,
-		"path":                 state.Path,
-		"impact":               state.Impact,
-		"confidence":           state.Confidence,
-		"plan_id":              state.PlanID,
-		"plan_summary":         state.PlanSummary,
-		"plan_risk":            state.PlanRisk,
-		"validation_blocked":   state.ValidationBlocked,
-		"validation_risk":      state.ValidationRisk,
-		"execution_status":     state.ExecutionStatus,
-		"execution_success":    state.ExecutionSuccess,
-		"execution_step_count": state.ExecutionStepCount,
-		"execution_reason":     state.ExecutionReason,
-		"execution_fallback":   state.ExecutionFallback,
-		"final_status":         state.FinalStatus,
-		"final_report":         state.FinalReport,
-		"updated_at":           state.UpdatedAt,
+		"observation_collected": state.ObservationCollected,
+		"observation_namespace": state.ObservationNamespace,
+		"observation_summary":   state.ObservationSummary,
+		"observation_errors":    state.ObservationErrors,
+		"root_cause":            state.RootCause,
+		"target_node":           state.TargetNode,
+		"path":                  state.Path,
+		"impact":                state.Impact,
+		"confidence":            state.Confidence,
+		"plan_id":               state.PlanID,
+		"plan_summary":          state.PlanSummary,
+		"plan_risk":             state.PlanRisk,
+		"validation_blocked":    state.ValidationBlocked,
+		"validation_risk":       state.ValidationRisk,
+		"execution_status":      state.ExecutionStatus,
+		"execution_success":     state.ExecutionSuccess,
+		"execution_step_count":  state.ExecutionStepCount,
+		"execution_reason":      state.ExecutionReason,
+		"execution_fallback":    state.ExecutionFallback,
+		"final_status":          state.FinalStatus,
+		"final_report":          state.FinalReport,
+		"updated_at":            state.UpdatedAt,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

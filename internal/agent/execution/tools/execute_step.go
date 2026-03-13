@@ -28,6 +28,7 @@ type CommandWhitelist struct {
 type ExecutionResult struct {
 	StepID     int    `json:"step_id"`
 	Success    bool   `json:"success"`
+	Skipped    bool   `json:"skipped,omitempty"`
 	Output     string `json:"output"`
 	Error      string `json:"error"`
 	ExitCode   int    `json:"exit_code"`
@@ -121,6 +122,28 @@ func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 	// 默认超时 30 秒
 	if in.Timeout <= 0 {
 		in.Timeout = 30
+	}
+
+	// 若前置步骤已验证通过或连续失败触发收敛，直接跳过后续执行。
+	if shouldSkip, reason := shouldSkipExecutionStep(ctx, in.StepID); shouldSkip {
+		result := &ExecutionResult{
+			StepID:     in.StepID,
+			Success:    false,
+			Skipped:    true,
+			Output:     "",
+			Error:      reason,
+			ExitCode:   -2,
+			Duration:   0,
+			ExecutedAt: time.Now().Format("2006-01-02 15:04:05"),
+		}
+		output, _ := json.Marshal(result)
+		if t.logger != nil {
+			t.logger.Info("step skipped",
+				zap.Int("step_id", in.StepID),
+				zap.String("command", in.Command),
+				zap.String("reason", reason))
+		}
+		return string(output), nil
 	}
 
 	// 1. 白名单验证

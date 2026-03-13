@@ -39,3 +39,7 @@ manifest/docker/volumes/
 #AI file
 .claude/
 CLAUDE.*
+
+# Binary files
+bin/
+go_agent

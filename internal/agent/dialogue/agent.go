@@ -101,7 +101,8 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 					2. 当用户要“看状态/监控/健康度”时，优先调用系统检查工具
 					3. 当用户问历史案例或知识时，调用 knowledge_retrieve 检索相似文本
 					4. 当用户问历史故障处理记录时，优先调用 ops_case_retrieve（该库与通用知识库隔离）
-					5. 当信息不足时先追问，再给建议
+					5. 当用户明确要求执行 Bash 命令时，可调用 bash_execute_with_approval，但必须先等待人工确认再执行
+					6. 当信息不足时先追问，再给建议
 
 					系统检查提示词工程（必须遵循）：
 					- 先查 Kubernetes 资源状态：调用 k8s_monitor
@@ -136,6 +137,7 @@ func buildDialogueTools(cfg *Config, knowledgeRetriever einoretriever.Retriever,
 		tools.NewQuestionPredictionTool(cfg.ChatModel, cfg.Logger, cfg.EnableToolLLM),
 		tools.NewKnowledgeRetrieveTool(knowledgeRetriever, cfg.Logger),
 		tools.NewOpsCaseRetrieveTool(opsCaseRetriever, cfg.Logger),
+		tools.NewBashApprovalTool(cfg.Logger),
 	}
 
 	if k8sTool, err := tools.NewDialogueK8sMonitorTool(cfg.KubeConfig, cfg.Logger); err == nil {

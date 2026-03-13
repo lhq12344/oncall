@@ -62,11 +62,17 @@ func NewOpsAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 				4. 步骤之间要有逻辑关联
 				5. 同一参数工具调用禁止重复（除非上一步明确失败且给出重试理由）
 				6. 避免“全命名空间轮询”，优先单命名空间定位后再扩展
+				7. 必须优先消费上游 RCA 输出（root_cause/target_node/path/impact/confidence）来生成计划，不得忽略
 
 				命名空间策略（必须遵循）：
 				- 优先检查 infra 命名空间（业务核心命名空间）
 				- 如果需要做环境对比，再扩展检查 default/staging/production/kube-system
-				- 未显式指定 namespace 时，优先使用 infra`
+				- 未显式指定 namespace 时，优先使用 infra
+
+				RCA 对齐约束（必须遵循）：
+				- 当 root_cause 置信度 >= 0.6 时，执行计划第一步必须围绕该根因与 target_node。
+				- 当 root_cause 置信度 < 0.6 或 missing_data 非空时，先补观测再给修复动作。
+				- 输出的计划 summary 必须体现“RCA结论 -> 验证动作 -> 修复动作”的顺序。`
 
 			messages := []adk.Message{
 				{

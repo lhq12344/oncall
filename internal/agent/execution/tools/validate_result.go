@@ -19,12 +19,14 @@ type ValidateResultTool struct {
 
 // ValidationResult 验证结果
 type ValidationResult struct {
-	StepID   int    `json:"step_id"`
-	Valid    bool   `json:"valid"`
-	Message  string `json:"message"`
-	Expected string `json:"expected"`
-	Actual   string `json:"actual"`
-	Method   string `json:"method"` // exact/contains/regex/exit_code
+	StepID     int    `json:"step_id"`
+	Valid      bool   `json:"valid"`
+	Message    string `json:"message"`
+	Expected   string `json:"expected"`
+	Actual     string `json:"actual"`
+	Method     string `json:"method"` // exact/contains/regex/exit_code
+	ShouldStop bool   `json:"should_stop,omitempty"`
+	StopReason string `json:"stop_reason,omitempty"`
 }
 
 func NewValidateResultTool(logger *zap.Logger) tool.BaseTool {
@@ -92,6 +94,7 @@ func (t *ValidateResultTool) InvokableRun(ctx context.Context, argumentsInJSON s
 
 	// 执行验证
 	result := t.validate(in.StepID, in.ExpectedResult, in.ActualOutput, in.ExitCode, in.ValidationMethod)
+	result.ShouldStop, result.StopReason = recordValidationProgress(ctx, in.StepID, result.Valid)
 
 	output, err := json.Marshal(result)
 	if err != nil {
@@ -102,7 +105,8 @@ func (t *ValidateResultTool) InvokableRun(ctx context.Context, argumentsInJSON s
 		t.logger.Info("validation completed",
 			zap.Int("step_id", in.StepID),
 			zap.Bool("valid", result.Valid),
-			zap.String("method", result.Method))
+			zap.String("method", result.Method),
+			zap.Bool("should_stop", result.ShouldStop))
 	}
 
 	return string(output), nil

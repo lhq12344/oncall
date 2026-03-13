@@ -26,8 +26,8 @@ type IncidentWorkflowConfig struct {
 	Logger *zap.Logger
 }
 
-// NewIncidentWorkflowAgent 创建一个 RCA -> Ops -> Validator -> Execution -> Strategy 的工作流 Agent。
-// 工作流形态：Sequential(RCA, Loop(Ops, Validator, Execution, Gate), Strategy)。
+// NewIncidentWorkflowAgent 创建一个 Observation -> RCA -> Ops -> Validator -> Execution -> Strategy 的工作流 Agent。
+// 工作流形态：Sequential(Observation, RCA, Loop(Ops, Validator, Execution, Gate), Strategy, FinalReport)。
 func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) (adk.ResumableAgent, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
@@ -44,8 +44,9 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 	}
 
 	rcaAgent, err := rca.NewRCAAgent(ctx, &rca.Config{
-		ChatModel: cfg.ChatModel,
-		Logger:    cfg.Logger,
+		ChatModel:  cfg.ChatModel,
+		KubeConfig: cfg.KubeConfig,
+		Logger:     cfg.Logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create rca agent failed: %w", err)
@@ -73,6 +74,7 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 	}
 
 	// 将结构化结果写入 Graph State（session values），避免把大段日志作为聊天历史反复回灌。
+	observerAgent := newObservationCollectorAgent(ctx, cfg)
 	rcaAgent = wrapWithIncidentState("rca", rcaAgent, cfg.Logger)
 	opsAgent = wrapWithIncidentState("ops", opsAgent, cfg.Logger)
 	executionAgent = wrapWithIncidentState("execution", executionAgent, cfg.Logger)
@@ -80,6 +82,7 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 
 	validator := newPlanValidatorAgent(cfg.Logger)
 	gate := newExecutionGateAgent(cfg.Logger)
+	reporter := newFinalReportAgent(cfg.Logger)
 
 	maxLoops := cfg.MaxExecutionLoops
 	if maxLoops <= 0 {
@@ -98,8 +101,8 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 
 	workflow, err := adk.NewSequentialAgent(ctx, &adk.SequentialAgentConfig{
 		Name:        "incident_workflow_agent",
-		Description: "统一故障处置代理：RCA 分析、Ops 计划、Execution 执行、Strategy 复盘",
-		SubAgents:   []adk.Agent{rcaAgent, executeLoop, strategyAgent},
+		Description: "统一故障处置代理：观测采集、RCA 分析、Ops 计划、Execution 执行、Strategy 复盘",
+		SubAgents:   []adk.Agent{observerAgent, rcaAgent, executeLoop, strategyAgent, reporter},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create incident workflow failed: %w", err)

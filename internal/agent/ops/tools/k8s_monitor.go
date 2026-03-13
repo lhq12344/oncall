@@ -9,6 +9,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -398,12 +399,42 @@ func (t *K8sMonitorTool) monitorDeployments(ctx context.Context, namespace, name
 	if name != "" {
 		deploy, err := t.client.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
-			return nil, err
+			if !k8serrors.IsNotFound(err) {
+				return nil, err
+			}
+
+			// 降级：当精确名称不存在时，返回命名空间内模糊匹配结果，避免直接报错中断链路。
+			deploys, listErr := t.client.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
+			if listErr != nil {
+				return nil, listErr
+			}
+
+			matched := make([]map[string]interface{}, 0)
+			for _, item := range deploys.Items {
+				if !matchDeploymentByHint(&item, name) {
+					continue
+				}
+				matched = append(matched, map[string]interface{}{
+					"name":               item.Name,
+					"replicas":           desiredReplicas(item.Spec.Replicas),
+					"ready_replicas":     item.Status.ReadyReplicas,
+					"available_replicas": item.Status.AvailableReplicas,
+				})
+			}
+
+			return map[string]interface{}{
+				"namespace":      namespace,
+				"requested_name": name,
+				"matched_exact":  false,
+				"count":          len(matched),
+				"deployments":    matched,
+				"message":        "指定 Deployment 不存在，已返回按名称/标签模糊匹配结果",
+			}, nil
 		}
 		return map[string]interface{}{
 			"name":               deploy.Name,
 			"namespace":          deploy.Namespace,
-			"replicas":           *deploy.Spec.Replicas,
+			"replicas":           desiredReplicas(deploy.Spec.Replicas),
 			"ready_replicas":     deploy.Status.ReadyReplicas,
 			"available_replicas": deploy.Status.AvailableReplicas,
 			"updated_replicas":   deploy.Status.UpdatedReplicas,
@@ -420,7 +451,7 @@ func (t *K8sMonitorTool) monitorDeployments(ctx context.Context, namespace, name
 	for _, deploy := range deploys.Items {
 		result = append(result, map[string]interface{}{
 			"name":               deploy.Name,
-			"replicas":           *deploy.Spec.Replicas,
+			"replicas":           desiredReplicas(deploy.Spec.Replicas),
 			"ready_replicas":     deploy.Status.ReadyReplicas,
 			"available_replicas": deploy.Status.AvailableReplicas,
 		})
@@ -440,7 +471,38 @@ func (t *K8sMonitorTool) monitorStatefulSets(ctx context.Context, namespace, nam
 	if name != "" {
 		statefulSet, err := t.client.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
-			return nil, err
+			if !k8serrors.IsNotFound(err) {
+				return nil, err
+			}
+
+			// 降级：当精确名称不存在时，返回命名空间内模糊匹配结果，避免直接报错中断链路。
+			statefulSets, listErr := t.client.AppsV1().StatefulSets(namespace).List(ctx, metav1.ListOptions{})
+			if listErr != nil {
+				return nil, listErr
+			}
+
+			matched := make([]map[string]interface{}, 0)
+			for _, item := range statefulSets.Items {
+				if !matchStatefulSetByHint(&item, name) {
+					continue
+				}
+				matched = append(matched, map[string]interface{}{
+					"name":             item.Name,
+					"replicas":         desiredReplicas(item.Spec.Replicas),
+					"ready_replicas":   item.Status.ReadyReplicas,
+					"current_replicas": item.Status.CurrentReplicas,
+					"service_name":     item.Spec.ServiceName,
+				})
+			}
+
+			return map[string]interface{}{
+				"namespace":      namespace,
+				"requested_name": name,
+				"matched_exact":  false,
+				"count":          len(matched),
+				"statefulsets":   matched,
+				"message":        "指定 StatefulSet 不存在，已返回按名称/ServiceName 模糊匹配结果",
+			}, nil
 		}
 		return map[string]interface{}{
 			"name":             statefulSet.Name,
@@ -495,7 +557,37 @@ func (t *K8sMonitorTool) monitorServices(ctx context.Context, namespace, name st
 	if name != "" {
 		svc, err := t.client.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
-			return nil, err
+			if !k8serrors.IsNotFound(err) {
+				return nil, err
+			}
+
+			// 降级：当精确名称不存在时，返回命名空间内模糊匹配结果，避免直接报错中断链路。
+			svcs, listErr := t.client.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{})
+			if listErr != nil {
+				return nil, listErr
+			}
+
+			matched := make([]map[string]interface{}, 0)
+			for _, item := range svcs.Items {
+				if !matchServiceByHint(&item, name) {
+					continue
+				}
+				matched = append(matched, map[string]interface{}{
+					"name":       item.Name,
+					"type":       string(item.Spec.Type),
+					"cluster_ip": item.Spec.ClusterIP,
+					"selector":   item.Spec.Selector,
+				})
+			}
+
+			return map[string]interface{}{
+				"namespace":      namespace,
+				"requested_name": name,
+				"matched_exact":  false,
+				"count":          len(matched),
+				"services":       matched,
+				"message":        "指定 Service 不存在，已返回按名称/selector 模糊匹配结果",
+			}, nil
 		}
 		return map[string]interface{}{
 			"name":       svc.Name,
@@ -544,4 +636,84 @@ func (t *K8sMonitorTool) fallbackResponse(resourceType, namespace, name string) 
 
 	output, _ := json.Marshal(result)
 	return string(output)
+}
+
+// matchStatefulSetByHint 判断 StatefulSet 是否与用户输入名称提示匹配。
+// 输入：statefulSet 对象、用户输入的资源名提示。
+// 输出：true 表示名称或 ServiceName 命中；false 表示不命中。
+func matchStatefulSetByHint(statefulSet *appsv1.StatefulSet, hint string) bool {
+	if statefulSet == nil {
+		return false
+	}
+	hint = strings.ToLower(strings.TrimSpace(hint))
+	if hint == "" {
+		return false
+	}
+
+	name := strings.ToLower(strings.TrimSpace(statefulSet.Name))
+	if name == hint || strings.Contains(name, hint) {
+		return true
+	}
+
+	serviceName := strings.ToLower(strings.TrimSpace(statefulSet.Spec.ServiceName))
+	return serviceName == hint || strings.Contains(serviceName, hint)
+}
+
+// matchDeploymentByHint 判断 Deployment 是否与用户输入名称提示匹配。
+// 输入：deployment 对象、用户输入的资源名提示。
+// 输出：true 表示名称或常见标签命中；false 表示不命中。
+func matchDeploymentByHint(deployment *appsv1.Deployment, hint string) bool {
+	if deployment == nil {
+		return false
+	}
+	hint = strings.ToLower(strings.TrimSpace(hint))
+	if hint == "" {
+		return false
+	}
+
+	name := strings.ToLower(strings.TrimSpace(deployment.Name))
+	if name == hint || strings.Contains(name, hint) {
+		return true
+	}
+
+	candidateKeys := []string{"app", "app.kubernetes.io/name", "app.kubernetes.io/instance"}
+	for _, key := range candidateKeys {
+		value, ok := deployment.Labels[key]
+		if !ok {
+			continue
+		}
+		labelValue := strings.ToLower(strings.TrimSpace(value))
+		if labelValue == hint || strings.Contains(labelValue, hint) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// matchServiceByHint 判断 Service 是否与用户输入名称提示匹配。
+// 输入：service 对象、用户输入的资源名提示。
+// 输出：true 表示名称或 selector 命中；false 表示不命中。
+func matchServiceByHint(service *corev1.Service, hint string) bool {
+	if service == nil {
+		return false
+	}
+	hint = strings.ToLower(strings.TrimSpace(hint))
+	if hint == "" {
+		return false
+	}
+
+	name := strings.ToLower(strings.TrimSpace(service.Name))
+	if name == hint || strings.Contains(name, hint) {
+		return true
+	}
+
+	for _, value := range service.Spec.Selector {
+		selectorValue := strings.ToLower(strings.TrimSpace(value))
+		if selectorValue == hint || strings.Contains(selectorValue, hint) {
+			return true
+		}
+	}
+
+	return false
 }
