@@ -133,8 +133,12 @@ func parseValidateResultInput(ctx context.Context, argumentsInJSON string) (vali
 
 	var in validateResultArgs
 	if payload != "" && payload != "{}" && !strings.EqualFold(payload, "null") {
-		if err := json.Unmarshal([]byte(payload), &in); err != nil {
-			return validateResultArgs{}, fmt.Errorf("invalid arguments: %w", err)
+		if err := unmarshalArgsLenient(payload, &in); err != nil {
+			if isTruncatedJSONError(err) {
+				in = validateResultArgs{}
+			} else {
+				return validateResultArgs{}, fmt.Errorf("invalid arguments: %w", err)
+			}
 		}
 	}
 

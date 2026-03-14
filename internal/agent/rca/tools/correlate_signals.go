@@ -90,7 +90,7 @@ func (t *CorrelateSignalsTool) InvokableRun(ctx context.Context, argumentsInJSON
 	}
 
 	var in args
-	if err := json.Unmarshal([]byte(argumentsInJSON), &in); err != nil {
+	if err := unmarshalRCAArgsLenient(argumentsInJSON, &in); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 

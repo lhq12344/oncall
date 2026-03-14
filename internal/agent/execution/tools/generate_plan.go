@@ -103,7 +103,7 @@ func (t *GeneratePlanTool) InvokableRun(ctx context.Context, argumentsInJSON str
 	}
 
 	var in args
-	if err := json.Unmarshal([]byte(argumentsInJSON), &in); err != nil {
+	if err := unmarshalArgsLenient(argumentsInJSON, &in); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 

@@ -92,12 +92,19 @@ func parseValidatePlanInput(ctx context.Context, argumentsInJSON string) (*Execu
 	}
 
 	var wrapped wrappedArgs
-	if err := json.Unmarshal([]byte(payload), &wrapped); err == nil && len(wrapped.Plan) > 0 && !isNullJSON(wrapped.Plan) {
-		plan, decodeErr := decodeExecutionPlanJSON(wrapped.Plan)
-		if decodeErr != nil {
-			return nil, fmt.Errorf("invalid arguments: %w", decodeErr)
+	if err := json.Unmarshal([]byte(payload), &wrapped); err == nil {
+		if len(wrapped.Plan) > 0 && !isNullJSON(wrapped.Plan) {
+			plan, decodeErr := decodeExecutionPlanJSON(wrapped.Plan)
+			if decodeErr != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", decodeErr)
+			}
+			return plan, nil
 		}
-		return plan, nil
+	} else if isTruncatedJSONError(err) {
+		// LLM 偶发输出截断 JSON 时，优先复用同轮已缓存计划，避免流程被 ToolNode 直接打断。
+		if plan, ok := getPreparedExecutionPlan(ctx); ok {
+			return plan, nil
+		}
 	}
 
 	plan, err := decodeExecutionPlanJSON([]byte(payload))

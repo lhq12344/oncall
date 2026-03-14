@@ -17,22 +17,22 @@ type AnalyzeImpactTool struct {
 
 // ImpactNode 影响节点
 type ImpactNode struct {
-	Service      string  `json:"service"`
-	ImpactLevel  string  `json:"impact_level"`  // critical/high/medium/low
-	ImpactType   string  `json:"impact_type"`   // direct/indirect
-	Distance     int     `json:"distance"`      // 距离根因的跳数
-	AffectedUsers int    `json:"affected_users"` // 受影响用户数（估算）
-	Probability  float64 `json:"probability"`   // 受影响概率
+	Service       string  `json:"service"`
+	ImpactLevel   string  `json:"impact_level"`   // critical/high/medium/low
+	ImpactType    string  `json:"impact_type"`    // direct/indirect
+	Distance      int     `json:"distance"`       // 距离根因的跳数
+	AffectedUsers int     `json:"affected_users"` // 受影响用户数（估算）
+	Probability   float64 `json:"probability"`    // 受影响概率
 }
 
 // ImpactAnalysis 影响分析结果
 type ImpactAnalysis struct {
-	RootCause      string       `json:"root_cause"`
-	ImpactedNodes  []ImpactNode `json:"impacted_nodes"`
-	TotalImpacted  int          `json:"total_impacted"`
-	CriticalCount  int          `json:"critical_count"`
-	PropagationPath []string    `json:"propagation_path"` // 传播路径
-	EstimatedUsers int          `json:"estimated_users"`  // 估算受影响用户总数
+	RootCause       string       `json:"root_cause"`
+	ImpactedNodes   []ImpactNode `json:"impacted_nodes"`
+	TotalImpacted   int          `json:"total_impacted"`
+	CriticalCount   int          `json:"critical_count"`
+	PropagationPath []string     `json:"propagation_path"` // 传播路径
+	EstimatedUsers  int          `json:"estimated_users"`  // 估算受影响用户总数
 }
 
 func NewAnalyzeImpactTool(logger *zap.Logger) tool.BaseTool {
@@ -67,7 +67,7 @@ func (t *AnalyzeImpactTool) InvokableRun(ctx context.Context, argumentsInJSON st
 	}
 
 	var in args
-	if err := json.Unmarshal([]byte(argumentsInJSON), &in); err != nil {
+	if err := unmarshalRCAArgsLenient(argumentsInJSON, &in); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 

@@ -117,7 +117,7 @@ func (t *K8sMonitorTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 	}
 
 	var in args
-	if err := json.Unmarshal([]byte(argumentsInJSON), &in); err != nil {
+	if err := unmarshalOpsArgsLenient(argumentsInJSON, &in); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
@@ -129,7 +129,7 @@ func (t *K8sMonitorTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 
 	in.ResourceType = strings.ToLower(strings.TrimSpace(in.ResourceType))
 	if in.ResourceType == "" {
-		return "", fmt.Errorf("resource_type is required")
+		in.ResourceType = "pod"
 	}
 	in.ResourceName = strings.TrimSpace(in.ResourceName)
 

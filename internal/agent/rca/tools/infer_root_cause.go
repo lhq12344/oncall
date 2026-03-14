@@ -22,22 +22,22 @@ type InferRootCauseTool struct {
 
 // RootCauseHypothesis 根因假设
 type RootCauseHypothesis struct {
-	Service     string   `json:"service"`
-	Component   string   `json:"component"`
-	Cause       string   `json:"cause"`
-	Evidence    []string `json:"evidence"`
-	Confidence  float64  `json:"confidence"`
-	Reasoning   string   `json:"reasoning"`
-	Verification string  `json:"verification"` // 验证建议
+	Service      string   `json:"service"`
+	Component    string   `json:"component"`
+	Cause        string   `json:"cause"`
+	Evidence     []string `json:"evidence"`
+	Confidence   float64  `json:"confidence"`
+	Reasoning    string   `json:"reasoning"`
+	Verification string   `json:"verification"` // 验证建议
 }
 
 // RootCauseInference 根因推理结果
 type RootCauseInference struct {
-	FaultNode   string                `json:"fault_node"`   // 故障节点
-	Hypotheses  []RootCauseHypothesis `json:"hypotheses"`   // 根因假设列表
-	TopCause    *RootCauseHypothesis  `json:"top_cause"`    // 最可能的根因
-	SearchPath  []string              `json:"search_path"`  // 搜索路径
-	TotalHypotheses int               `json:"total_hypotheses"`
+	FaultNode       string                `json:"fault_node"`  // 故障节点
+	Hypotheses      []RootCauseHypothesis `json:"hypotheses"`  // 根因假设列表
+	TopCause        *RootCauseHypothesis  `json:"top_cause"`   // 最可能的根因
+	SearchPath      []string              `json:"search_path"` // 搜索路径
+	TotalHypotheses int                   `json:"total_hypotheses"`
 }
 
 func NewInferRootCauseTool(chatModel *models.ChatModel, logger *zap.Logger) tool.BaseTool {
@@ -79,7 +79,7 @@ func (t *InferRootCauseTool) InvokableRun(ctx context.Context, argumentsInJSON s
 	}
 
 	var in args
-	if err := json.Unmarshal([]byte(argumentsInJSON), &in); err != nil {
+	if err := unmarshalRCAArgsLenient(argumentsInJSON, &in); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
@@ -205,12 +205,12 @@ func (t *InferRootCauseTool) generateHypotheses(faultNode string, searchPath []s
 
 		// 生成假设
 		hypothesis := RootCauseHypothesis{
-			Service:   service,
-			Component: "unknown",
-			Cause:     t.inferCauseType(evidence),
-			Evidence:  evidence,
-			Confidence: t.calculateHypothesisConfidence(service, faultNode, evidence, searchPath),
-			Reasoning: fmt.Sprintf("Service %s shows abnormal signals that may have caused the fault in %s", service, faultNode),
+			Service:      service,
+			Component:    "unknown",
+			Cause:        t.inferCauseType(evidence),
+			Evidence:     evidence,
+			Confidence:   t.calculateHypothesisConfidence(service, faultNode, evidence, searchPath),
+			Reasoning:    fmt.Sprintf("Service %s shows abnormal signals that may have caused the fault in %s", service, faultNode),
 			Verification: fmt.Sprintf("Check logs and metrics of %s, verify if the issue started here", service),
 		}
 
@@ -370,4 +370,3 @@ func (t *InferRootCauseTool) enhanceWithLLM(ctx context.Context, faultNode strin
 
 	return hypotheses, nil
 }
-

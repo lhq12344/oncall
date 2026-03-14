@@ -129,7 +129,7 @@ func (t *BuildDependencyGraphTool) InvokableRun(ctx context.Context, argumentsIn
 	}
 
 	var in args
-	if err := json.Unmarshal([]byte(argumentsInJSON), &in); err != nil {
+	if err := unmarshalRCAArgsLenient(argumentsInJSON, &in); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 

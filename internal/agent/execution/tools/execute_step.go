@@ -365,7 +365,12 @@ func parseExecuteStepInput(ctx context.Context, argumentsInJSON string) (execute
 	}
 
 	var in executeStepArgs
-	if err := json.Unmarshal([]byte(payload), &in); err != nil {
+	if err := unmarshalArgsLenient(payload, &in); err != nil {
+		if isTruncatedJSONError(err) {
+			if nextStep, ok := getNextPendingExecutionStep(ctx); ok && nextStep != nil {
+				return executeStepArgsFromPlanStep(*nextStep), nil
+			}
+		}
 		return executeStepArgs{}, fmt.Errorf("invalid arguments: %w", err)
 	}
 

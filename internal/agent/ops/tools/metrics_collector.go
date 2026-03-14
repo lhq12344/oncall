@@ -99,7 +99,7 @@ func (t *MetricsCollectorTool) InvokableRun(ctx context.Context, argumentsInJSON
 	}
 
 	var in args
-	if err := json.Unmarshal([]byte(argumentsInJSON), &in); err != nil {
+	if err := unmarshalOpsArgsLenient(argumentsInJSON, &in); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 

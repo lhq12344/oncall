@@ -92,7 +92,7 @@ func (t *ESLogQueryTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 	}
 
 	var in args
-	if err := json.Unmarshal([]byte(argumentsInJSON), &in); err != nil {
+	if err := unmarshalOpsArgsLenient(argumentsInJSON, &in); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
