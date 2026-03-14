@@ -85,6 +85,7 @@ func (t *UpdateKnowledgeTool) InvokableRun(ctx context.Context, argumentsInJSON 
 
 	// 决定是否更新知识库
 	result := t.decideUpdate(knowledgeCase, in.ExecutionResult)
+	t.ensureKnowledgeCaseIntegrity(ctx, result, in.ExecutionResult)
 
 	output, err := json.Marshal(result)
 	if err != nil {
@@ -127,18 +128,30 @@ func enrichKnowledgeCase(ctx context.Context, kcase KnowledgeCase, execResult ma
 
 	rootCause := strings.TrimSpace(anyToString(state["root_cause"]))
 	targetNode := strings.TrimSpace(anyToString(state["target_node"]))
-	planSummary := strings.TrimSpace(anyToString(state["plan_summary"]))
+	planSummary := strings.TrimSpace(firstNonEmptyText(
+		anyToString(state["remediation_proposal_summary"]),
+		anyToString(state["plan_summary"]),
+		anyToString(state["execution_plan_desc"]),
+	))
 	impact := strings.TrimSpace(anyToString(state["impact"]))
 	executionReason := strings.TrimSpace(anyToString(state["execution_reason"]))
 	finalReport := strings.TrimSpace(anyToString(state["final_report"]))
-	fallbackPlan := strings.TrimSpace(anyToString(state["execution_fallback"]))
+	fallbackPlan := strings.TrimSpace(firstNonEmptyText(
+		anyToString(state["remediation_proposal_fallback"]),
+		anyToString(state["execution_fallback"]),
+		anyToString(state["fallback_plan"]),
+	))
 
-	if strings.TrimSpace(kcase.Title) == "" {
+	if !isMeaningfulCaseText(kcase.CaseID) {
+		kcase.CaseID = ""
+	}
+
+	if !isMeaningfulCaseText(kcase.Title) {
 		switch {
 		case rootCause != "" && targetNode != "":
-			kcase.Title = fmt.Sprintf("%s_%s_处置记录", rootCause, targetNode)
+			kcase.Title = clipCaseText(fmt.Sprintf("%s_%s_处置记录", rootCause, targetNode), 96)
 		case rootCause != "":
-			kcase.Title = fmt.Sprintf("%s_故障处置记录", rootCause)
+			kcase.Title = clipCaseText(fmt.Sprintf("%s_故障处置记录", rootCause), 96)
 		case planSummary != "":
 			kcase.Title = clipCaseText(planSummary, 96)
 		default:
@@ -146,7 +159,7 @@ func enrichKnowledgeCase(ctx context.Context, kcase KnowledgeCase, execResult ma
 		}
 	}
 
-	if strings.TrimSpace(kcase.Description) == "" {
+	if !isMeaningfulCaseText(kcase.Description) {
 		kcase.Description = firstNonEmptyText(
 			finalReport,
 			executionReason,
@@ -156,9 +169,11 @@ func enrichKnowledgeCase(ctx context.Context, kcase KnowledgeCase, execResult ma
 		)
 	}
 
-	if strings.TrimSpace(kcase.Strategy) == "" {
+	if !isMeaningfulCaseText(kcase.Strategy) {
 		kcase.Strategy = firstNonEmptyText(
 			planSummary,
+			finalReport,
+			executionReason,
 			fallbackPlan,
 			strings.TrimSpace(anyToString(execResult["manual_plan"])),
 			"基于 RCA 结论执行分步骤排障。",
@@ -166,8 +181,15 @@ func enrichKnowledgeCase(ctx context.Context, kcase KnowledgeCase, execResult ma
 	}
 
 	if kcase.SuccessRate <= 0 {
-		if anyToBool(execResult["success"]) {
+		if inferExecutionSuccess(execResult, state) {
 			kcase.SuccessRate = 1
+		}
+	}
+	if kcase.Weight <= 0 {
+		if kcase.SuccessRate > 0 {
+			kcase.Weight = 0.8
+		} else {
+			kcase.Weight = 0.3
 		}
 	}
 
@@ -301,7 +323,7 @@ func (t *UpdateKnowledgeTool) decideUpdate(kcase KnowledgeCase, execResult map[s
 		if success && duration < 60000 {
 			// 成功且执行时间合理，保存
 			newWeight := t.calculateInitialWeight(success, duration)
-			generatedCaseID := fmt.Sprintf("case_%d", time.Now().Unix())
+			generatedCaseID := fmt.Sprintf("case_%d", time.Now().UnixNano())
 			kcase.CaseID = generatedCaseID
 			kcase.Weight = newWeight
 			kcase.CreatedAt = time.Now()
@@ -336,6 +358,87 @@ func (t *UpdateKnowledgeTool) decideUpdate(kcase KnowledgeCase, execResult map[s
 		Reason:      fmt.Sprintf("根据执行结果更新权重（成功：%v）", success),
 		UpdatedCase: &kcase,
 	}
+}
+
+// ensureKnowledgeCaseIntegrity 在落库前兜底修复关键字段。
+// 输入：ctx、更新结果、执行结果。
+// 输出：无（原地修复 result.UpdatedCase）。
+func (t *UpdateKnowledgeTool) ensureKnowledgeCaseIntegrity(ctx context.Context, result *UpdateResult, execResult map[string]interface{}) {
+	if result == nil || result.UpdatedCase == nil {
+		return
+	}
+	kcase := enrichKnowledgeCase(ctx, *result.UpdatedCase, execResult)
+
+	if !isMeaningfulCaseText(kcase.CaseID) && (result.Action == "save" || result.Action == "update") {
+		kcase.CaseID = fmt.Sprintf("case_%d", time.Now().UnixNano())
+	}
+	if !isMeaningfulCaseText(kcase.Title) {
+		kcase.Title = clipCaseText(firstNonEmptyText(kcase.Description, kcase.CaseID, "ops_case"), 96)
+	}
+	if !isMeaningfulCaseText(kcase.Strategy) {
+		kcase.Strategy = "基于 RCA 结论执行分步骤排障。"
+	}
+	if !isMeaningfulCaseText(kcase.Description) {
+		kcase.Description = "自动处置完成，详细信息见执行日志。"
+	}
+	if kcase.SuccessRate <= 0 {
+		state := getIncidentStateAsMap(ctx)
+		if inferExecutionSuccess(execResult, state) {
+			kcase.SuccessRate = 1
+		}
+	}
+	if kcase.Weight <= 0 {
+		kcase.Weight = 0.3
+	}
+	if kcase.UpdatedAt.IsZero() {
+		kcase.UpdatedAt = time.Now()
+	}
+	if kcase.CreatedAt.IsZero() {
+		kcase.CreatedAt = kcase.UpdatedAt
+	}
+
+	result.UpdatedCase = &kcase
+	if strings.TrimSpace(result.CaseID) == "" {
+		result.CaseID = kcase.CaseID
+	}
+}
+
+// isMeaningfulCaseText 判断文本是否为有效业务值。
+// 输入：文本。
+// 输出：是否有效。
+func isMeaningfulCaseText(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	switch strings.ToLower(text) {
+	case "null", "nil", "none", "n/a", "na", "unknown", "{}", "[]", "-":
+		return false
+	default:
+		return true
+	}
+}
+
+// inferExecutionSuccess 从执行结果和流程状态推断是否成功。
+// 输入：execution_result 与 incident state。
+// 输出：是否成功。
+func inferExecutionSuccess(execResult map[string]interface{}, state map[string]any) bool {
+	if anyToBool(execResult["success"]) {
+		return true
+	}
+	candidates := []string{
+		anyToString(execResult["execution_status"]),
+		anyToString(execResult["final_status"]),
+		anyToString(state["execution_status"]),
+		anyToString(state["final_status"]),
+	}
+	for _, candidate := range candidates {
+		switch strings.ToLower(strings.TrimSpace(candidate)) {
+		case "success", "resolved", "fixed", "completed":
+			return true
+		}
+	}
+	return false
 }
 
 // calculateInitialWeight 计算初始权重

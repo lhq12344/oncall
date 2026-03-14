@@ -19,25 +19,26 @@ type RCAReport struct {
 	Evidence   []string `json:"evidence"`
 }
 
-// OpsCommandStep Ops 输出的执行步骤。
-type OpsCommandStep struct {
-	Step     int    `json:"step"`
-	Goal     string `json:"goal"`
-	Command  string `json:"command"`
-	Expected string `json:"expected"`
-	Rollback string `json:"rollback"`
-	ReadOnly bool   `json:"read_only"`
+// RemediationAction Ops 输出的修复动作提案。
+type RemediationAction struct {
+	Step            int    `json:"step"`
+	Goal            string `json:"goal"`
+	Rationale       string `json:"rationale"`
+	CommandHint     string `json:"command_hint"`
+	SuccessCriteria string `json:"success_criteria"`
+	RollbackHint    string `json:"rollback_hint"`
+	ReadOnly        bool   `json:"read_only"`
 }
 
-// OpsExecutionPlan Ops -> Execution 的结构化契约。
-type OpsExecutionPlan struct {
-	PlanID       string           `json:"plan_id"`
-	Summary      string           `json:"summary"`
-	RootCause    string           `json:"root_cause"`
-	TargetNode   string           `json:"target_node"`
-	RiskLevel    string           `json:"risk_level"`
-	Commands     []OpsCommandStep `json:"commands"`
-	FallbackPlan string           `json:"fallback_plan"`
+// RemediationProposal Ops -> Execution 的结构化修复提案契约。
+type RemediationProposal struct {
+	ProposalID   string              `json:"proposal_id"`
+	Summary      string              `json:"summary"`
+	RootCause    string              `json:"root_cause"`
+	TargetNode   string              `json:"target_node"`
+	RiskLevel    string              `json:"risk_level"`
+	Actions      []RemediationAction `json:"actions"`
+	FallbackPlan string              `json:"fallback_plan"`
 }
 
 // PlanValidationResult Validator 节点输出。
@@ -50,6 +51,46 @@ type PlanValidationResult struct {
 	UnsafeCommands       []string `json:"unsafe_commands,omitempty"`
 	ReviewCommands       []string `json:"review_commands,omitempty"`
 	PlanID               string   `json:"plan_id,omitempty"`
+}
+
+// GeneratedExecutionStep execution_agent 生成的可执行步骤。
+type GeneratedExecutionStep struct {
+	StepID          int      `json:"step_id"`
+	Description     string   `json:"description"`
+	Command         string   `json:"command"`
+	Args            []string `json:"args"`
+	ExpectedResult  string   `json:"expected_result"`
+	RollbackCommand string   `json:"rollback_command"`
+	RollbackArgs    []string `json:"rollback_args"`
+	Timeout         int      `json:"timeout"`
+	Critical        bool     `json:"critical"`
+}
+
+// GeneratedExecutionPlan execution_agent 生成的结构化执行计划。
+type GeneratedExecutionPlan struct {
+	PlanID        string                   `json:"plan_id"`
+	Description   string                   `json:"description"`
+	Steps         []GeneratedExecutionStep `json:"steps"`
+	TotalSteps    int                      `json:"total_steps"`
+	EstimatedTime int                      `json:"estimated_time"`
+	RiskLevel     string                   `json:"risk_level"`
+}
+
+// StepValidationResult validate_result 工具输出。
+type StepValidationResult struct {
+	StepID           int    `json:"step_id"`
+	Valid            bool   `json:"valid"`
+	Message          string `json:"message"`
+	Expected         string `json:"expected"`
+	Actual           string `json:"actual"`
+	Method           string `json:"method"`
+	FailureCategory  string `json:"failure_category,omitempty"`
+	MismatchDetected bool   `json:"mismatch_detected,omitempty"`
+	MismatchReason   string `json:"mismatch_reason,omitempty"`
+	ShouldStop       bool   `json:"should_stop,omitempty"`
+	StopReason       string `json:"stop_reason,omitempty"`
+	StopAction       string `json:"stop_action,omitempty"`
+	RuntimeSummary   string `json:"runtime_summary,omitempty"`
 }
 
 // ExecutionStatus Gate 节点对 execution 输出的归一化判断。

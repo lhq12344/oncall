@@ -1,8 +1,10 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
+	"encoding/gob"
 	"encoding/hex"
 	"strings"
 	"sync"
@@ -11,6 +13,10 @@ import (
 )
 
 const rcaToolCallStateSessionKey = "_rca_tool_call_state_v1"
+
+func init() {
+	gob.Register(&rcaToolCallState{})
+}
 
 // rcaToolCallState 保存单轮 RCA 执行内的工具调用状态。
 // 包括：
@@ -21,6 +27,53 @@ type rcaToolCallState struct {
 
 	resultByKey map[string]string
 	countByTool map[string]int
+}
+
+type rcaToolCallStateSnapshot struct {
+	ResultByKey map[string]string
+	CountByTool map[string]int
+}
+
+// GobEncode 自定义序列化 RCA 工具状态，保证 checkpoint/resume 后缓存与计数不丢失。
+// 输入：无。
+// 输出：gob 编码字节。
+func (s *rcaToolCallState) GobEncode() ([]byte, error) {
+	if s == nil {
+		return nil, nil
+	}
+
+	s.mu.RLock()
+	snapshot := rcaToolCallStateSnapshot{
+		ResultByKey: cloneRCAStringMap(s.resultByKey),
+		CountByTool: cloneRCAIntMap(s.countByTool),
+	}
+	s.mu.RUnlock()
+
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(snapshot); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// GobDecode 自定义反序列化 RCA 工具状态。
+// 输入：gob 编码字节。
+// 输出：错误信息。
+func (s *rcaToolCallState) GobDecode(data []byte) error {
+	if len(data) == 0 {
+		s.resultByKey = make(map[string]string)
+		s.countByTool = make(map[string]int)
+		return nil
+	}
+
+	var snapshot rcaToolCallStateSnapshot
+	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&snapshot); err != nil {
+		return err
+	}
+
+	s.resultByKey = cloneRCAStringMap(snapshot.ResultByKey)
+	s.countByTool = cloneRCAIntMap(snapshot.CountByTool)
+	return nil
 }
 
 // getRCAToolCallState 获取当前执行上下文中的 RCA 工具调用状态。
@@ -103,4 +156,32 @@ func increaseRCAToolCallCount(ctx context.Context, toolName string) int {
 	defer state.mu.Unlock()
 	state.countByTool[toolName]++
 	return state.countByTool[toolName]
+}
+
+// cloneRCAStringMap 复制字符串映射。
+// 输入：源 map。
+// 输出：复制后的 map。
+func cloneRCAStringMap(source map[string]string) map[string]string {
+	if len(source) == 0 {
+		return make(map[string]string)
+	}
+	target := make(map[string]string, len(source))
+	for key, value := range source {
+		target[key] = value
+	}
+	return target
+}
+
+// cloneRCAIntMap 复制整型映射。
+// 输入：源 map。
+// 输出：复制后的 map。
+func cloneRCAIntMap(source map[string]int) map[string]int {
+	if len(source) == 0 {
+		return make(map[string]int)
+	}
+	target := make(map[string]int, len(source))
+	for key, value := range source {
+		target[key] = value
+	}
+	return target
 }

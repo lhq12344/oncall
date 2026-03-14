@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"go_agent/internal/agent/ops/tools"
@@ -115,13 +116,13 @@ func (e *IntegratedOpsExecutor) QueryAllSources(ctx context.Context, in QueryAll
 		in.TimeRange = "5m"
 	}
 	if in.PromQuery == "" {
-		in.PromQuery = `up`
+		in.PromQuery = buildNamespaceCPUHistoryQuery(in.Namespace)
 	}
 	if in.ESIndex == "" {
 		in.ESIndex = "logs-*"
 	}
 	if in.ESQuery == "" {
-		in.ESQuery = "error"
+		in.ESQuery = buildNamespaceESQuery(in.Namespace)
 	}
 	if in.ESSize <= 0 {
 		in.ESSize = 100
@@ -154,6 +155,50 @@ func (e *IntegratedOpsExecutor) QueryAllSources(ctx context.Context, in QueryAll
 		out.Data["prometheus"] = promPayload
 	}
 
+	promSourceArgs, _ := json.Marshal(map[string]interface{}{
+		"action": "discover_sources",
+		"limit":  20,
+	})
+	promSourcePayload, err := e.prometheusTool.InvokableRun(ctx, string(promSourceArgs))
+	if err != nil {
+		out.Errors["prometheus_sources"] = err.Error()
+	} else {
+		out.Data["prometheus_sources"] = promSourcePayload
+	}
+
+	promHistoryQueries := map[string]string{
+		"cpu":      buildNamespaceCPUHistoryQuery(in.Namespace),
+		"memory":   buildNamespaceMemoryHistoryQuery(in.Namespace),
+		"restarts": buildNamespaceRestartHistoryQuery(in.Namespace),
+	}
+	for name, query := range promHistoryQueries {
+		args, _ := json.Marshal(map[string]interface{}{
+			"query":      query,
+			"time_range": in.TimeRange,
+		})
+		payload, err := e.prometheusTool.InvokableRun(ctx, string(args))
+		if err != nil {
+			out.Errors["prometheus_"+name] = err.Error()
+			continue
+		}
+		out.Data["prometheus_"+name] = payload
+	}
+
+	esDiscoverArgs, _ := json.Marshal(map[string]interface{}{
+		"action": "discover_indices",
+		"index":  "*",
+		"size":   20,
+	})
+	esDiscoverPayload, err := e.esLogTool.InvokableRun(ctx, string(esDiscoverArgs))
+	if err != nil {
+		out.Errors["elasticsearch_indices"] = err.Error()
+	} else {
+		out.Data["elasticsearch_indices"] = esDiscoverPayload
+		if resolved := resolveLogIndexPattern(esDiscoverPayload, in.ESIndex); resolved != "" {
+			in.ESIndex = resolved
+		}
+	}
+
 	esArgs, _ := json.Marshal(map[string]interface{}{
 		"index":      in.ESIndex,
 		"query":      in.ESQuery,
@@ -169,4 +214,69 @@ func (e *IntegratedOpsExecutor) QueryAllSources(ctx context.Context, in QueryAll
 	}
 
 	return out, nil
+}
+
+// buildNamespaceCPUHistoryQuery 构建命名空间 CPU 历史指标查询。
+// 输入：namespace。
+// 输出：兼容不同 label 命名的 PromQL。
+func buildNamespaceCPUHistoryQuery(namespace string) string {
+	namespace = firstNonEmptyText(strings.TrimSpace(namespace), "infra")
+	return fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total{namespace="%s",container!="",image!=""}[5m])) by (pod) or sum(rate(container_cpu_usage_seconds_total{kubernetes_namespace="%s"}[5m])) by (kubernetes_pod_name)`, namespace, namespace)
+}
+
+// buildNamespaceMemoryHistoryQuery 构建命名空间内存历史指标查询。
+// 输入：namespace。
+// 输出：兼容不同 label 命名的 PromQL。
+func buildNamespaceMemoryHistoryQuery(namespace string) string {
+	namespace = firstNonEmptyText(strings.TrimSpace(namespace), "infra")
+	return fmt.Sprintf(`sum(container_memory_working_set_bytes{namespace="%s",container!="",image!=""}) by (pod) or sum(container_memory_working_set_bytes{kubernetes_namespace="%s"}) by (kubernetes_pod_name)`, namespace, namespace)
+}
+
+// buildNamespaceRestartHistoryQuery 构建命名空间重启历史指标查询。
+// 输入：namespace。
+// 输出：兼容不同 label 命名的 PromQL。
+func buildNamespaceRestartHistoryQuery(namespace string) string {
+	namespace = firstNonEmptyText(strings.TrimSpace(namespace), "infra")
+	return fmt.Sprintf(`max(kube_pod_container_status_restarts_total{namespace="%s"}) by (pod) or max(kube_pod_container_status_restarts_total{kubernetes_namespace="%s"}) by (kubernetes_pod_name)`, namespace, namespace)
+}
+
+// buildNamespaceESQuery 构建命名空间日志检索语句。
+// 输入：namespace。
+// 输出：兼容不同字段命名的 Lucene 查询语句。
+func buildNamespaceESQuery(namespace string) string {
+	namespace = firstNonEmptyText(strings.TrimSpace(namespace), "infra")
+	return fmt.Sprintf(`(namespace:%[1]s OR kubernetes.namespace:%[1]s OR kubernetes.namespace_name:%[1]s) AND (error OR exception OR failed OR crash OR restart OR oom OR timeout)`, namespace)
+}
+
+// resolveLogIndexPattern 从索引发现结果中选择更合适的日志索引模式。
+// 输入：discoverPayload（discover_indices 输出 JSON）、fallback（兜底索引模式）。
+// 输出：建议使用的索引模式。
+func resolveLogIndexPattern(discoverPayload string, fallback string) string {
+	type indexEntry struct {
+		Index string `json:"index"`
+	}
+	type discoverResult struct {
+		Indices []indexEntry `json:"indices"`
+	}
+
+	fallback = strings.TrimSpace(fallback)
+	result := discoverResult{}
+	if err := json.Unmarshal([]byte(discoverPayload), &result); err != nil {
+		return fallback
+	}
+
+	patterns := []string{"logs-", "filebeat-", "logstash-", "app-", "infra-"}
+	for _, prefix := range patterns {
+		for _, item := range result.Indices {
+			indexName := strings.TrimSpace(item.Index)
+			if strings.HasPrefix(indexName, prefix) {
+				return prefix + "*"
+			}
+		}
+	}
+
+	if len(result.Indices) > 0 {
+		return "*"
+	}
+	return fallback
 }

@@ -3,6 +3,7 @@ package dialogue
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"go_agent/internal/agent/dialogue/tools"
 	"go_agent/internal/ai/models"
@@ -15,6 +16,7 @@ import (
 	einoretriever "github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
+	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
 )
 
@@ -40,7 +42,7 @@ type DialogueState struct {
 	Metadata       map[string]interface{} // 额外元数据
 }
 
-// NewDialogueAgent 创建 Dialogue Agent（意图分析 + 问题预测）
+// NewDialogueAgent 创建 Dialogue Agent（意图分析 + 工具编排）
 func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
@@ -69,7 +71,7 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 	}
 
 	// 创建工具集
-	toolsList := buildDialogueTools(cfg, knowledgeRetriever, opsCaseRetriever)
+	toolsList := buildDialogueTools(ctx, cfg, knowledgeRetriever, opsCaseRetriever)
 
 	// 创建内置 Summarization 中间件（自动压缩对话历史）
 	summaryConfig := &summarization.Config{
@@ -85,43 +87,90 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 	}
 
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
-		Name:        "dialogue_agent",
-		Description: "分析用户意图、预测问题并引导对话的对话代理",
-		Model:       cfg.ChatModel.Client,
+		Name:          "dialogue_agent",
+		Description:   "像终端助手一样主动观测、分析并引导排障的 DevOps/SRE 对话代理",
+		Model:         cfg.ChatModel.Client,
+		GenModelInput: noFormatGenModelInput,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
 				Tools: toolsList,
 			},
 		},
 		Handlers: []adk.ChatModelAgentMiddleware{summaryHandler},
-		Instruction: `你是一个对话助手，负责理解用户意图并引导对话。
+		Instruction: `你是一名资深的 Expert DevOps & SRE 智能体，同时也是一个像 Claude Code / Codex 一样工作的终端式对话代理。
 
-					你的职责：
-					1. 分析用户输入意图（monitor/diagnose/knowledge/execute/general）
-					2. 当用户要“看状态/监控/健康度”时，优先调用系统检查工具
-					3. 当用户问历史案例或知识时，调用 knowledge_retrieve 检索相似文本
-					4. 当用户问历史故障处理记录时，优先调用 ops_case_retrieve（该库与通用知识库隔离）
-					5. 当用户明确要求执行 Bash 命令时，可调用 bash_execute_with_approval，但必须先等待人工确认再执行
-					6. 当信息不足时先追问，再给建议
+					你的目标不仅是回答问题，而是基于现有工具主动观察、分析、检索、执行受控操作，并帮助用户解决 Kubernetes 集群与系统运维中的复杂问题。
 
-					系统检查提示词工程（必须遵循）：
-					- 先查 Kubernetes 资源状态：调用 k8s_monitor
-					- 再查关键指标：调用 metrics_collector（提供明确 PromQL）
-					- 先事实后建议：先返回观测结果，再给出下一步排查建议
-					- 缺少上下文时必须追问：例如命名空间、资源名、时间范围
+					你的角色边界：
+					1. 你负责理解用户意图（monitor/diagnose/knowledge/execute/general）并组织排查路径。
+					2. 当用户要“看状态/监控/健康度/异常原因”时，优先通过工具做事实观察，不要先下结论。
+					3. 当用户问历史案例或历史故障处理记录时，优先调用 ops_case_retrieve，其次才是 knowledge_retrieve。
+					4. 当用户需要最新的外部信息、官方文档、报错关键词、版本差异或互联网搜索结果时，可调用 web_search。
+					5. 当用户明确要求执行 Bash 命令时，可调用 bash_execute_with_approval，但只能先提出命令与影响说明，必须等待人工确认后再执行。
+					6. 当前工具集中没有 generate_plan；若任务复杂，你要先给出多步排查/处理计划，再按步骤调用现有工具推进。
+					7. 若用户只是普通闲聊或通用问答，不要强行调用工具。
 
-					常用监控查询示例（按需改写）：
-					- CPU: sum(rate(container_cpu_usage_seconds_total[5m])) by (pod)
-					- Memory: sum(container_memory_working_set_bytes) by (pod)
-					- Node CPU: 100 - (avg by (instance) (rate(node_cpu_seconds_total{{mode="idle"}}[5m])) * 100)
-					- Node Memory: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100
-					- Node Network Receive: sum(rate(node_network_receive_bytes_total[5m])) by (instance)
-					- Node Network Transmit: sum(rate(node_network_transmit_bytes_total[5m])) by (instance)
-					- Pod 重启: increase(kube_pod_container_status_restarts_total[1h])
+					你在内部必须遵循以下工作流，但不要把完整思维链逐字暴露给用户：
+					1. Thought：分析用户意图、风险、已知上下文和缺失信息。
+					2. Plan：形成 2-5 步的最小可执行排查计划。
+					3. Execution：按计划调用工具；每次调用前要明确该步骤的目的。
+					4. Summary：基于工具返回的事实做结构化总结，严禁凭空猜测。
 
-					回答风格：
-					- 结构化输出：现状 -> 发现 -> 建议
-					- 明确标注工具结果来源，避免猜测`,
+					运维规则（必须遵守）：
+					- 优先观测：默认遵循“先看后动”，先 monitor / retrieve，再考虑 execute。
+					- 自主追问：缺少命名空间、Pod 名称、资源名、时间范围等关键上下文时，直接追问，不做大范围模糊查询。
+					- 事实导向：先展示核心资源状态、指标结果、检索结果，再给诊断结论。
+					- 安全红线：执行 bash_execute_with_approval 前，必须明确说明命令影响范围，例如“该命令会重启某服务 / 删除某资源 / 修改某配置”。
+					- 用户确认：只有用户明确表达“确认 / Proceed / 执行 / 同意”后，才能进入实际 Bash 执行。
+
+					工具链优先级：
+					- 状态检查：k8s_monitor -> metrics_collector
+					- 历史经验：ops_case_retrieve -> knowledge_retrieve
+					- 外部检索：web_search（仅在需要最新外部信息或官方资料时使用）
+					- 执行动作：bash_execute_with_approval（必须最后考虑，且需人工确认）
+
+					网络检索工具说明（必须遵守）：
+					- 工具名：web_search。
+					- 提供方：后端优先使用 Serper.dev；若配置了 SearXNG，也可回退使用 SearXNG。
+					- 适用场景：最新公告、官方文档、版本差异、开源组件报错关键词、外部公开资料检索。
+					- 输入要求：query 必填；time_range 可选，常用值为 d（近一天）、w（近一周）、m（近一月）、y（近一年）。
+					- 使用原则：只有当问题依赖外部互联网信息，且内部观测、历史案例、知识库不足以回答时，才调用该工具。
+					- 禁止误用：不要把 web_search 当作内部知识库替代品；对于集群当前状态、内部流程、历史运维案例，仍优先使用 k8s_monitor、metrics_collector、ops_case_retrieve、knowledge_retrieve。
+					- 结果处理：调用后必须提炼 2-5 条关键信息，明确标注“外部网络检索结果”，不要把搜索结果原文整段堆给用户。
+					- 冲突处理：若外部检索结果与当前集群观测不一致，优先信任当前集群观测，并把外部资料作为参考信息说明。
+
+					系统检查策略（必须遵循）：
+					- 当遇到故障申报、性能问题、服务异常时，默认先查 Kubernetes 资源状态：调用 k8s_monitor。
+					- 再查关键指标：调用 metrics_collector，并给出明确、精准的 PromQL。
+					- 如果监控和资源状态不足以解释问题，再结合历史案例或知识检索。
+					- 若问题依赖外部最新资料（例如 Kubernetes 版本变更、官方参数说明、开源组件报错搜索），再调用 web_search。
+					- 若现有事实已足够支撑结论，应直接总结，不要无意义反复调用工具。
+
+					PromQL 示例（按需改写，不要生搬硬套）：
+					- Pod CPU：sum(rate(container_cpu_usage_seconds_total[5m])) by (pod)
+					- Pod Memory：sum(container_memory_working_set_bytes) by (pod)
+					- Node CPU Saturation：sum(node_cpu_seconds_total{mode!="idle"}) / sum(node_cpu_seconds_total) * 100
+					- Node Memory：(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100
+					- Node Network Receive：sum(rate(node_network_receive_bytes_total[5m])) by (instance)
+					- Node Network Transmit：sum(rate(node_network_transmit_bytes_total[5m])) by (instance)
+					- Pod Restart：increase(kube_pod_container_status_restarts_total[1h])
+					- Pod Working Set：sum(container_memory_working_set_bytes{pod=~"$POD_NAME.*"})
+
+					输出风格：
+					- 风格接近终端助手：简洁、专业、直接、少废话。
+					- 回答开头尽量标注上下文，例如：Context: <cluster or unknown> | Namespace: <namespace or unknown>
+					- 使用 Markdown，必要时使用表格、列表、代码块展示结果。
+					- 明确标注信息来源，例如“Kubernetes 观察结果 / Prometheus 指标结果 / 历史案例结果”。
+
+					默认输出结构：
+					### 🔍 观测结果 (Observation)
+					### 🛠️ 执行操作 (Action Taken)
+					### 💡 诊断建议 (Diagnosis & Suggestions)
+
+					补充要求：
+					- 如果还没有执行任何工具，在 Action Taken 中明确写“尚未执行变更操作”。
+					- 如果用户请求的是知识解释类问题，可简化结构，但仍要保持结论清晰、来源明确。
+					- 如果工具结果不足以支撑确定性判断，必须明确说明“不足以确认”，并给出下一步建议。`,
 	})
 
 	if err != nil {
@@ -131,13 +180,30 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 	return agent, nil
 }
 
-func buildDialogueTools(cfg *Config, knowledgeRetriever einoretriever.Retriever, opsCaseRetriever einoretriever.Retriever) []tool.BaseTool {
+// noFormatGenModelInput 构建模型输入消息，不对 instruction 执行 FString 变量替换。
+// 输入：instruction 系统提示词，input 用户/历史消息。
+// 输出：拼接后的模型消息列表（system + input.Messages）。
+func noFormatGenModelInput(_ context.Context, instruction string, input *adk.AgentInput) ([]adk.Message, error) {
+	msgs := make([]adk.Message, 0, 1)
+	if strings.TrimSpace(instruction) != "" {
+		msgs = append(msgs, schema.SystemMessage(instruction))
+	}
+	if input != nil && len(input.Messages) > 0 {
+		msgs = append(msgs, input.Messages...)
+	}
+	return msgs, nil
+}
+
+// buildDialogueTools 构建 dialogue_agent 可用工具集合。
+// 输入：ctx 运行上下文，cfg 对话代理配置，knowledgeRetriever/opsCaseRetriever 检索器。
+// 输出：可注册到 ToolsNode 的工具列表。
+func buildDialogueTools(ctx context.Context, cfg *Config, knowledgeRetriever einoretriever.Retriever, opsCaseRetriever einoretriever.Retriever) []tool.BaseTool {
 	toolsList := []tool.BaseTool{
 		tools.NewIntentAnalysisTool(cfg.ChatModel, cfg.Embedder, cfg.Logger, cfg.EnableToolLLM),
-		tools.NewQuestionPredictionTool(cfg.ChatModel, cfg.Logger, cfg.EnableToolLLM),
 		tools.NewKnowledgeRetrieveTool(knowledgeRetriever, cfg.Logger),
 		tools.NewOpsCaseRetrieveTool(opsCaseRetriever, cfg.Logger),
 		tools.NewBashApprovalTool(cfg.Logger),
+		tools.NewWebSearchTool(cfg.Logger),
 	}
 
 	if k8sTool, err := tools.NewDialogueK8sMonitorTool(cfg.KubeConfig, cfg.Logger); err == nil {

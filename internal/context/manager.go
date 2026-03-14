@@ -26,13 +26,12 @@ func NewContextManager(storage Storage) *ContextManager {
 // CreateSession 创建新会话
 func (cm *ContextManager) CreateSession(ctx context.Context, userID string) (*SessionContext, error) {
 	session := &SessionContext{
-		SessionID:          uuid.New().String(),
-		UserID:             userID,
-		CreatedAt:          time.Now(),
-		LastActive:         time.Now(),
-		History:            make([]*Message, 0),
-		Metadata:           make(map[string]interface{}),
-		PredictedQuestions: make([]string, 0),
+		SessionID:  uuid.New().String(),
+		UserID:     userID,
+		CreatedAt:  time.Now(),
+		LastActive: time.Now(),
+		History:    make([]*Message, 0),
+		Metadata:   make(map[string]interface{}),
 	}
 
 	// 存入内存（L1）

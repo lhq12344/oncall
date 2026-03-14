@@ -388,6 +388,7 @@ func (c *ControllerV1) AIOpsStream(ctx context.Context, req *v1.AIOpsStreamReq) 
 	}))
 
 	stepNum := 1
+	finalReportStepEmitted := false
 	for {
 		event, ok := iter.Next()
 		if !ok {
@@ -423,6 +424,11 @@ func (c *ControllerV1) AIOpsStream(ctx context.Context, req *v1.AIOpsStreamReq) 
 			if content, ok := c.extractAgentContentByMessage(event.AgentName, msg, ""); ok {
 				content = formatAIOpsContent(event.AgentName, c.opsRootAgentName, content)
 				if strings.TrimSpace(content) != "" {
+					if !finalReportStepEmitted && isFinalReportContent(event.AgentName, content) {
+						writeSSEData(r, fmt.Sprintf("{\"type\":\"step\",\"step\":%d,\"content\":%q}", stepNum, "输出最终技术报告"))
+						stepNum++
+						finalReportStepEmitted = true
+					}
 					writeSSEData(r, fmt.Sprintf("{\"type\":\"content\",\"content\":%q}", content))
 				}
 			}
@@ -454,6 +460,7 @@ func (c *ControllerV1) AIOpsResumeStream(ctx context.Context, req *v1.AIOpsResum
 	}
 
 	stepNum := 1
+	finalReportStepEmitted := false
 	for {
 		event, ok := iter.Next()
 		if !ok {
@@ -489,6 +496,11 @@ func (c *ControllerV1) AIOpsResumeStream(ctx context.Context, req *v1.AIOpsResum
 			if content, ok := c.extractAgentContentByMessage(event.AgentName, msg, ""); ok {
 				content = formatAIOpsContent(event.AgentName, c.opsRootAgentName, content)
 				if strings.TrimSpace(content) != "" {
+					if !finalReportStepEmitted && isFinalReportContent(event.AgentName, content) {
+						writeSSEData(r, fmt.Sprintf("{\"type\":\"step\",\"step\":%d,\"content\":%q}", stepNum, "输出最终技术报告"))
+						stepNum++
+						finalReportStepEmitted = true
+					}
 					writeSSEData(r, fmt.Sprintf("{\"type\":\"content\",\"content\":%q}", content))
 				}
 			}
@@ -804,6 +816,20 @@ func formatAIOpsContent(agentName, rootName, content string) string {
 		return content
 	}
 	return fmt.Sprintf("[%s]\n%s", agentName, content)
+}
+
+// isFinalReportContent 判断是否为最终技术报告内容。
+// 输入：agentName、content。
+// 输出：是否为最终报告。
+func isFinalReportContent(agentName, content string) bool {
+	lowerAgent := strings.ToLower(strings.TrimSpace(agentName))
+	if strings.Contains(lowerAgent, "final_report") {
+		return true
+	}
+	lowerContent := strings.ToLower(strings.TrimSpace(content))
+	return strings.Contains(lowerContent, "运维技术报告") ||
+		strings.Contains(lowerContent, "最终状态") ||
+		strings.Contains(lowerContent, "是否已解决")
 }
 
 func buildInterruptMessage(data any) string {

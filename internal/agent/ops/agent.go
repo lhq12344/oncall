@@ -3,14 +3,11 @@ package ops
 import (
 	"context"
 	"fmt"
+	"strings"
 
-	"go_agent/internal/agent/ops/tools"
 	"go_agent/internal/ai/models"
 
 	"github.com/cloudwego/eino/adk"
-	"github.com/cloudwego/eino/adk/prebuilt/planexecute"
-	"github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
 )
@@ -18,172 +15,99 @@ import (
 // Config Ops Agent 配置
 type Config struct {
 	ChatModel     *models.ChatModel
-	KubeConfig    string // K8s kubeconfig 文件路径
+	KubeConfig    string // 保留配置结构，避免上层初始化联动修改
 	PrometheusURL string
 	Logger        *zap.Logger
 }
 
-// NewOpsAgent 创建 Ops Agent（监控 + 异常检测）
+// NewOpsAgent 创建 Ops Agent（修复策略规划）。
+// 输入：ctx、配置。
+// 输出：仅负责输出结构化 RemediationProposal 的 Agent。
 func NewOpsAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
 	}
-
 	if cfg.ChatModel == nil {
 		return nil, fmt.Errorf("chat model is required")
 	}
 
-	toolsList := buildOpsTools(cfg)
+	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		Name:          "ops_agent",
+		Description:   "基于 RCA 与执行反馈生成修复策略提案的运维代理",
+		Model:         cfg.ChatModel.Client,
+		GenModelInput: noFormatGenModelInput,
+		Instruction: `你是修复策略规划代理，负责根据观测结论、RCA 分析和上一轮执行反馈，输出“给 execution_agent 使用”的结构化修复提案。
 
-	if len(toolsList) == 0 {
-		return nil, fmt.Errorf("no tools available for ops agent")
-	}
+					输入通常包含：
+					- 观测采集结果（observation_summary / observation_errors / observation_namespace）
+					- 观测时效字段（observation_collected_at / observation_time_range / observation_refresh_needed / observation_refresh_reason）
+					- 执行阶段最新现场证据（runtime_observation_summary）
+					- RCA 结构化结论（root_cause / target_node / path / impact / confidence）
+					- 上一轮执行反馈（execution_status / execution_reason / execution_plan_* / validation_risk）
+					- Graph State 中沉淀的失败原因、人工兜底方案与最终状态
 
-	// 创建 Planner - 负责制定诊断计划
-	// 注意：必须明确告知 Planner 可用的工具列表
-	planner, err := planexecute.NewPlanner(ctx, &planexecute.PlannerConfig{
-		ToolCallingChatModel: cfg.ChatModel.Client,
-		GenInputFn: func(ctx context.Context, userInput []adk.Message) ([]adk.Message, error) {
-			// 构建包含工具列表的系统提示
-			systemPrompt := `你是一个运维诊断规划专家。根据用户的运维需求，制定详细的诊断计划。
+					你的职责：
+					1. 只生成修复策略提案，不生成最终命令级执行计划。
+					2. 每条动作都要说明目标、理由、成功判据；仅在你非常确定时填写 command_hint。
+					3. 若上一轮失败来自 validate_result.should_stop、manual_required 或 execution_reason，必须调整策略假设、成功判据或人工兜底方案，禁止机械重复原方案。
+					4. 若 observation_refresh_needed=true 或 runtime_observation_summary 表明“当前现场与旧 RCA 假设不一致”，必须优先相信最新运行时证据，弱化旧假设，并输出“重新验证/低风险确认”型方案。
+					5. 若信息不足或风险过高，可将 command_hint 置空，由 execution_agent 再补全命令级计划。
 
-				可用工具（只能使用以下工具）：
-				1. k8s_monitor - 查看 Kubernetes 资源状态（Pod、Node、Deployment）
-				2. metrics_collector - 采集 Prometheus 指标数据（CPU、内存、网络等）
-				3. es_log_query - 查询 Elasticsearch 日志（支持关键词、时间范围、日志级别过滤）
-				4. log_analyzer - 分析日志模式（备用）
+					明确禁止：
+					- 不输出最终 Bash/命令级执行计划。
+					- 不假装执行或声称“已修复”。
+					- 不负责回滚、命令安全校验或人工审批。
+					- 不调用任何写操作工具。
 
-				重要：不要使用任何其他工具（如 execute_command、shell_exec 等），只使用上述 4 个工具。
+					输出规范（必须只输出一个 JSON 对象，不要附加解释文字）：
+					{
+					"proposal_id": "proposal_xxx",
+					"summary": "修复策略摘要",
+					"root_cause": "根因",
+					"target_node": "目标节点或服务",
+					"risk_level": "low|medium|high",
+					"actions": [
+						{
+						"step": 1,
+						"goal": "本步骤目标",
+						"rationale": "为什么这样做",
+						"command_hint": "可选，若为空表示交给 execution_agent 补全",
+						"success_criteria": "如何判定成功",
+						"rollback_hint": "失败时如何回退",
+						"read_only": false
+						}
+					],
+					"fallback_plan": "当自动执行不可行时的人工方案"
+					}
 
-				规划原则：
-				1. 先收集基础状态（K8s 资源、关键指标）
-				2. 根据初步结果，针对性查询日志或详细指标
-				3. 每个步骤要明确目标和预期输出
-				4. 步骤之间要有逻辑关联
-				5. 同一参数工具调用禁止重复（除非上一步明确失败且给出重试理由）
-				6. 避免“全命名空间轮询”，优先单命名空间定位后再扩展
-				7. 必须优先消费上游 RCA 输出（root_cause/target_node/path/impact/confidence）来生成计划，不得忽略
-
-				命名空间策略（必须遵循）：
-				- 优先检查 infra 命名空间（业务核心命名空间）
-				- 如果需要做环境对比，再扩展检查 default/staging/production/kube-system
-				- 未显式指定 namespace 时，优先使用 infra
-
-				RCA 对齐约束（必须遵循）：
-				- 当 root_cause 置信度 >= 0.6 时，执行计划第一步必须围绕该根因与 target_node。
-				- 当 root_cause 置信度 < 0.6 或 missing_data 非空时，先补观测再给修复动作。
-				- 输出的计划 summary 必须体现“RCA结论 -> 验证动作 -> 修复动作”的顺序。`
-
-			messages := []adk.Message{
-				{
-					Role:    schema.System,
-					Content: systemPrompt,
-				},
-			}
-
-			// 添加用户输入
-			messages = append(messages, userInput...)
-
-			return messages, nil
-		},
+					约束：
+					- 若 confidence < 0.6 或 observation_errors 非空，优先给“补充验证/低风险修复”方案。
+					- 若 observation_refresh_needed=true，risk_level 不得高于 medium，且第一条 action 必须是重新确认当前现场的只读动作。
+					- actions 至少 1 条，step 必须从 1 开始递增。
+					- risk_level 必须与动作风险匹配；存在写操作、重启、扩缩容时不能标为 low。
+					- command_hint 仅是提示，不得把它描述为“已执行的命令”。
+					- 无法安全自动化时，必须给出清晰 fallback_plan。`,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create planner: %w", err)
+		return nil, fmt.Errorf("failed to create ops agent: %w", err)
 	}
 
-	// 创建 Executor - 负责执行计划中的工具调用
-	executor, err := planexecute.NewExecutor(ctx, &planexecute.ExecutorConfig{
-		Model: cfg.ChatModel.Client,
-		ToolsConfig: adk.ToolsConfig{
-			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools: toolsList,
-			},
-		},
-		MaxIterations: 8,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create executor: %w", err)
+	if cfg.Logger != nil {
+		cfg.Logger.Info("ops agent initialized as remediation planner")
 	}
-
-	// 创建 Replanner - 负责根据执行结果决定是否重新规划
-	replanner, err := planexecute.NewReplanner(ctx, &planexecute.ReplannerConfig{
-		ChatModel: cfg.ChatModel.Client,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create replanner: %w", err)
-	}
-
-	// 组装 Plan-Execute-Replan Agent
-	agent, err := planexecute.New(ctx, &planexecute.Config{
-		Planner:       planner,
-		Executor:      executor,
-		Replanner:     replanner,
-		MaxIterations: 4, // 最多执行 4 轮 plan-execute-replan 循环
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to create plan-execute-replan ops agent: %w", err)
-	}
-
-	// 包装成带名称的 Agent（用于 supervisor 识别）
-	namedAgent := &NamedAgent{
-		Agent: agent,
-		name:  "ops_agent",
-		desc:  "监控系统状态、采集指标、分析日志的运维代理",
-	}
-
-	return namedAgent, nil
+	return agent, nil
 }
 
-func buildOpsTools(cfg *Config) []tool.BaseTool {
-	var toolsList []tool.BaseTool
-
-	k8sTool, err := tools.NewK8sMonitorTool(cfg.KubeConfig, cfg.Logger)
-	if err != nil {
-		if cfg.Logger != nil {
-			cfg.Logger.Warn("failed to create k8s monitor tool", zap.Error(err))
-		}
-	} else {
-		toolsList = append(toolsList, k8sTool)
+// noFormatGenModelInput 构建模型输入消息，不对 instruction 执行 FString 变量替换。
+// 输入：instruction 系统提示词，input 用户/历史消息。
+// 输出：拼接后的模型消息列表（system + input.Messages）。
+func noFormatGenModelInput(_ context.Context, instruction string, input *adk.AgentInput) ([]adk.Message, error) {
+	msgs := make([]adk.Message, 0, 1)
+	if strings.TrimSpace(instruction) != "" {
+		msgs = append(msgs, schema.SystemMessage(instruction))
 	}
-
-	metricsTool, err := tools.NewMetricsCollectorTool(cfg.PrometheusURL, cfg.Logger)
-	if err != nil {
-		if cfg.Logger != nil {
-			cfg.Logger.Warn("failed to create metrics collector tool", zap.Error(err))
-		}
-	} else {
-		toolsList = append(toolsList, metricsTool)
+	if input != nil && len(input.Messages) > 0 {
+		msgs = append(msgs, input.Messages...)
 	}
-
-	esLogTool, err := tools.NewESLogQueryTool(cfg.Logger)
-	if err != nil {
-		if cfg.Logger != nil {
-			cfg.Logger.Warn("failed to create es log query tool", zap.Error(err))
-		}
-	} else {
-		toolsList = append(toolsList, esLogTool)
-	}
-
-	logTool := tools.NewLogAnalyzerTool(cfg.Logger)
-	toolsList = append(toolsList, logTool)
-
-	return toolsList
-}
-
-// NamedAgent 包装 Agent 并添加名称和描述
-type NamedAgent struct {
-	adk.Agent
-	name string
-	desc string
-}
-
-// Name 返回 Agent 名称（实现 adk.Agent 接口）
-func (a *NamedAgent) Name(ctx context.Context) string {
-	return a.name
-}
-
-// Description 返回 Agent 描述（实现 adk.Agent 接口）
-func (a *NamedAgent) Description(ctx context.Context) string {
-	return a.desc
+	return msgs, nil
 }

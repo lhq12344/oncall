@@ -37,25 +37,6 @@ func DoubaoEmbedding(ctx context.Context) (embedding.Embedder, error) {
 	return newArkEmbedder(model.String(), apiKey.String(), baseURL.String(), apiType)
 }
 
-// NewCustomDoubaoEmbedder 为兼容旧调用保留，行为同 NewDoubaoMultimodalEmbedder。
-// 输入：模型、鉴权、服务地址、维度（当前 Ark 组件不使用 dimensions 参数）。
-// 输出：Embedder。
-func NewCustomDoubaoEmbedder(model, apiKey, baseURL string, dimensions int) (embedding.Embedder, error) {
-	return NewDoubaoMultimodalEmbedder(model, apiKey, baseURL, dimensions)
-}
-
-// NewDoubaoMultimodalEmbedder 创建 Ark Embedder。
-// 输入：模型、鉴权、服务地址、维度（当前 Ark 组件不使用 dimensions 参数）。
-// 输出：Embedder。
-func NewDoubaoMultimodalEmbedder(model, apiKey, baseURL string, dimensions int) (embedding.Embedder, error) {
-	_ = dimensions
-	apiType, err := resolveAPIType(model, "")
-	if err != nil {
-		return nil, err
-	}
-	return newArkEmbedder(model, apiKey, baseURL, apiType)
-}
-
 func newArkEmbedder(model, apiKey, baseURL string, apiType ark.APIType) (embedding.Embedder, error) {
 	if model == "" {
 		return nil, fmt.Errorf("empty model")

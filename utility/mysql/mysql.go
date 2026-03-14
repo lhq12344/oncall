@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/gogf/gf/v2/frame/g"
@@ -137,10 +136,6 @@ func InitMySQL(ctx context.Context, cfg MySQLConfig) (*gorm.DB, error) {
 	return GlobalMySQL, nil
 }
 
-func GetMySQL() *gorm.DB {
-	return GlobalMySQL
-}
-
 func CloseMySQL() error {
 	if GlobalMySQL == nil {
 		return nil
@@ -150,59 +145,6 @@ func CloseMySQL() error {
 		return err
 	}
 	return sqlDB.Close()
-}
-
-// --- 可选：从环境变量加载配置 ---
-
-func LoadMySQLConfigFromEnv() MySQLConfig {
-	cfg := MySQLConfig{
-		DSN: os.Getenv("MYSQL_DSN"),
-	}
-
-	cfg.MaxOpenConns = envInt("MYSQL_MAX_OPEN_CONNS", 50)
-	cfg.MaxIdleConns = envInt("MYSQL_MAX_IDLE_CONNS", 10)
-	cfg.ConnMaxLifetime = envDuration("MYSQL_CONN_MAX_LIFETIME", 30*time.Minute)
-	cfg.ConnMaxIdleTime = envDuration("MYSQL_CONN_MAX_IDLE_TIME", 5*time.Minute)
-	cfg.PingTimeout = envDuration("MYSQL_PING_TIMEOUT", 3*time.Second)
-
-	// PrepareStmt / LogLevel 可按需从 env 配
-	cfg.PrepareStmt = envBool("MYSQL_PREPARE_STMT", true)
-	cfg.LogLevel = parseGormLogLevel(os.Getenv("MYSQL_LOG_LEVEL"), logger.Warn)
-	cfg.SlowThreshold = envDuration("MYSQL_SLOW_THRESHOLD", 500*time.Millisecond)
-
-	return cfg
-}
-
-func envInt(key string, def int) int {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return def
-	}
-	return n
-}
-
-func envBool(key string, def bool) bool {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
-	}
-	return v == "true" || v == "1" || v == "yes"
-}
-
-func envDuration(key string, def time.Duration) time.Duration {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		return def
-	}
-	return d
 }
 
 func parseGormLogLevel(s string, def logger.LogLevel) logger.LogLevel {

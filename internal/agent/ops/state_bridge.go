@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -20,11 +21,20 @@ const (
 	maxIncidentExecutionLogs  = 200
 )
 
+func init() {
+	gob.Register(&IncidentState{})
+}
+
 type IncidentState struct {
-	ObservationCollected bool     `json:"observation_collected,omitempty"`
-	ObservationNamespace string   `json:"observation_namespace,omitempty"`
-	ObservationSummary   string   `json:"observation_summary,omitempty"`
-	ObservationErrors    []string `json:"observation_errors,omitempty"`
+	ObservationCollected      bool     `json:"observation_collected,omitempty"`
+	ObservationNamespace      string   `json:"observation_namespace,omitempty"`
+	ObservationCollectedAt    string   `json:"observation_collected_at,omitempty"`
+	ObservationTimeRange      string   `json:"observation_time_range,omitempty"`
+	ObservationSummary        string   `json:"observation_summary,omitempty"`
+	ObservationErrors         []string `json:"observation_errors,omitempty"`
+	ObservationRefreshNeeded  bool     `json:"observation_refresh_needed,omitempty"`
+	ObservationRefreshReason  string   `json:"observation_refresh_reason,omitempty"`
+	RuntimeObservationSummary string   `json:"runtime_observation_summary,omitempty"`
 
 	RootCause  string   `json:"root_cause,omitempty"`
 	TargetNode string   `json:"target_node,omitempty"`
@@ -33,10 +43,16 @@ type IncidentState struct {
 	Confidence float64  `json:"confidence,omitempty"`
 	Evidence   []string `json:"evidence,omitempty"`
 
-	PlanID       string `json:"plan_id,omitempty"`
-	PlanSummary  string `json:"plan_summary,omitempty"`
-	PlanRisk     string `json:"plan_risk,omitempty"`
+	PlanID       string `json:"plan_id,omitempty"`      // 兼容旧字段：映射 remediation proposal id
+	PlanSummary  string `json:"plan_summary,omitempty"` // 兼容旧字段：映射 remediation proposal summary
+	PlanRisk     string `json:"plan_risk,omitempty"`    // 兼容旧字段：映射 remediation proposal risk
 	FallbackPlan string `json:"fallback_plan,omitempty"`
+
+	RemediationProposalID       string   `json:"remediation_proposal_id,omitempty"`
+	RemediationProposalSummary  string   `json:"remediation_proposal_summary,omitempty"`
+	RemediationProposalRisk     string   `json:"remediation_proposal_risk,omitempty"`
+	RemediationProposalFallback string   `json:"remediation_proposal_fallback,omitempty"`
+	RemediationProposalActions  []string `json:"remediation_proposal_actions,omitempty"`
 
 	ValidationBlocked bool   `json:"validation_blocked,omitempty"`
 	ValidationRisk    string `json:"validation_risk,omitempty"`
@@ -46,6 +62,10 @@ type IncidentState struct {
 	ExecutionStepCount int      `json:"execution_step_count,omitempty"`
 	ExecutionReason    string   `json:"execution_reason,omitempty"`
 	ExecutionFallback  string   `json:"execution_fallback,omitempty"`
+	ExecutionPlanID    string   `json:"execution_plan_id,omitempty"`
+	ExecutionPlanDesc  string   `json:"execution_plan_desc,omitempty"`
+	ExecutionPlanRisk  string   `json:"execution_plan_risk,omitempty"`
+	ExecutionPlanSteps []string `json:"execution_plan_steps,omitempty"`
 	ExecutionLogs      []string `json:"execution_logs,omitempty"`
 
 	FinalStatus string `json:"final_status,omitempty"`
@@ -165,6 +185,9 @@ func (a *stateBridgeAgent) captureState(ctx context.Context, event *adk.AgentEve
 
 	if event.Action != nil && event.Action.Interrupted != nil {
 		if info, ok := event.Action.Interrupted.Data.(*IncidentInterruptInfo); ok && info != nil {
+			if strings.EqualFold(strings.TrimSpace(info.Type), "manual_required") {
+				state.ExecutionStatus = "manual_required"
+			}
 			state.ExecutionReason = clipText(info.Reason, 600)
 			if strings.TrimSpace(info.FallbackPlan) != "" {
 				state.ExecutionFallback = clipText(info.FallbackPlan, 800)
@@ -197,19 +220,44 @@ func (a *stateBridgeAgent) updateByStage(state *IncidentState, msg *schema.Messa
 		state.Confidence = report.Confidence
 		state.Evidence = report.Evidence
 	case "ops":
-		plan, ok := parseOpsExecutionPlan(messages)
-		if ok && plan != nil {
-			state.PlanID = strings.TrimSpace(plan.PlanID)
-			state.PlanSummary = strings.TrimSpace(plan.Summary)
-			state.PlanRisk = strings.TrimSpace(plan.RiskLevel)
-			state.FallbackPlan = strings.TrimSpace(plan.FallbackPlan)
+		proposal, ok := parseRemediationProposal(messages)
+		if ok && proposal != nil {
+			state.RemediationProposalID = strings.TrimSpace(proposal.ProposalID)
+			state.RemediationProposalSummary = clipText(strings.TrimSpace(proposal.Summary), 600)
+			state.RemediationProposalRisk = strings.TrimSpace(proposal.RiskLevel)
+			state.RemediationProposalFallback = clipText(strings.TrimSpace(proposal.FallbackPlan), 800)
+			state.RemediationProposalActions = summarizeRemediationActions(proposal)
+
+			state.PlanID = state.RemediationProposalID
+			state.PlanSummary = state.RemediationProposalSummary
+			state.PlanRisk = state.RemediationProposalRisk
+			state.FallbackPlan = state.RemediationProposalFallback
 		}
+	case "execution":
 		validation, ok := parseValidationResult(messages)
 		if ok && validation != nil {
 			state.ValidationBlocked = validation.Blocked
 			state.ValidationRisk = strings.TrimSpace(validation.RiskLevel)
 		}
-	case "execution":
+		plan, ok := parseGeneratedExecutionPlan(messages)
+		if ok && plan != nil {
+			state.ExecutionPlanID = strings.TrimSpace(plan.PlanID)
+			state.ExecutionPlanDesc = clipText(strings.TrimSpace(plan.Description), 600)
+			state.ExecutionPlanRisk = strings.TrimSpace(plan.RiskLevel)
+			state.ExecutionPlanSteps = summarizeGeneratedExecutionPlan(plan)
+		}
+		stepValidation, ok := parseStepValidationResult(messages)
+		if ok && stepValidation != nil && stepValidation.ShouldStop {
+			if strings.EqualFold(strings.TrimSpace(stepValidation.StopAction), "replan") {
+				state.ExecutionStatus = "replan_required"
+				state.ObservationRefreshNeeded = true
+				state.ObservationRefreshReason = clipText(firstNonEmptyText(stepValidation.StopReason, stepValidation.MismatchReason, stepValidation.Message), 600)
+				state.RuntimeObservationSummary = clipText(firstNonEmptyText(stepValidation.RuntimeSummary, stepValidation.MismatchReason, stepValidation.Actual), 800)
+			} else {
+				state.ExecutionStatus = "manual_required"
+			}
+			state.ExecutionReason = clipText(firstNonEmptyText(stepValidation.StopReason, stepValidation.Message), 600)
+		}
 		status := detectExecutionStatus(messages)
 		if status.Found {
 			if status.Success {
@@ -224,7 +272,10 @@ func (a *stateBridgeAgent) updateByStage(state *IncidentState, msg *schema.Messa
 		if ok && result != nil {
 			if value, exists := result["execution_status"]; exists {
 				if statusText, ok := value.(string); ok && strings.TrimSpace(statusText) != "" {
-					state.ExecutionStatus = strings.TrimSpace(statusText)
+					nextStatus := strings.TrimSpace(statusText)
+					if !(strings.EqualFold(state.ExecutionStatus, "replan_required") && strings.EqualFold(nextStatus, "manual_required")) {
+						state.ExecutionStatus = nextStatus
+					}
 				}
 			}
 			state.ExecutionStepCount = parseExecutedStepCount(result)
@@ -297,30 +348,45 @@ func renderIncidentState(state *IncidentState) string {
 		return ""
 	}
 	payload := map[string]any{
-		"observation_collected": state.ObservationCollected,
-		"observation_namespace": state.ObservationNamespace,
-		"observation_summary":   state.ObservationSummary,
-		"observation_errors":    state.ObservationErrors,
-		"root_cause":            state.RootCause,
-		"target_node":           state.TargetNode,
-		"path":                  state.Path,
-		"impact":                state.Impact,
-		"confidence":            state.Confidence,
-		"plan_id":               state.PlanID,
-		"plan_summary":          state.PlanSummary,
-		"plan_risk":             state.PlanRisk,
-		"validation_blocked":    state.ValidationBlocked,
-		"validation_risk":       state.ValidationRisk,
-		"execution_status":      state.ExecutionStatus,
-		"execution_success":     state.ExecutionSuccess,
-		"execution_step_count":  state.ExecutionStepCount,
-		"execution_reason":      state.ExecutionReason,
-		"execution_fallback":    state.ExecutionFallback,
-		"execution_log_count":   len(state.ExecutionLogs),
-		"latest_execution_logs": latestIncidentLogs(state.ExecutionLogs, 5),
-		"final_status":          state.FinalStatus,
-		"final_report":          state.FinalReport,
-		"updated_at":            state.UpdatedAt,
+		"observation_collected":         state.ObservationCollected,
+		"observation_namespace":         state.ObservationNamespace,
+		"observation_collected_at":      state.ObservationCollectedAt,
+		"observation_time_range":        state.ObservationTimeRange,
+		"observation_summary":           state.ObservationSummary,
+		"observation_errors":            state.ObservationErrors,
+		"observation_refresh_needed":    state.ObservationRefreshNeeded,
+		"observation_refresh_reason":    state.ObservationRefreshReason,
+		"runtime_observation_summary":   state.RuntimeObservationSummary,
+		"root_cause":                    state.RootCause,
+		"target_node":                   state.TargetNode,
+		"path":                          state.Path,
+		"impact":                        state.Impact,
+		"confidence":                    state.Confidence,
+		"plan_id":                       state.PlanID,
+		"plan_summary":                  state.PlanSummary,
+		"plan_risk":                     state.PlanRisk,
+		"fallback_plan":                 state.FallbackPlan,
+		"remediation_proposal_id":       state.RemediationProposalID,
+		"remediation_proposal_summary":  state.RemediationProposalSummary,
+		"remediation_proposal_risk":     state.RemediationProposalRisk,
+		"remediation_proposal_fallback": state.RemediationProposalFallback,
+		"remediation_proposal_actions":  latestIncidentLogs(state.RemediationProposalActions, 4),
+		"validation_blocked":            state.ValidationBlocked,
+		"validation_risk":               state.ValidationRisk,
+		"execution_status":              state.ExecutionStatus,
+		"execution_success":             state.ExecutionSuccess,
+		"execution_step_count":          state.ExecutionStepCount,
+		"execution_reason":              state.ExecutionReason,
+		"execution_fallback":            state.ExecutionFallback,
+		"execution_plan_id":             state.ExecutionPlanID,
+		"execution_plan_desc":           state.ExecutionPlanDesc,
+		"execution_plan_risk":           state.ExecutionPlanRisk,
+		"execution_plan_steps":          latestIncidentLogs(state.ExecutionPlanSteps, 4),
+		"execution_log_count":           len(state.ExecutionLogs),
+		"latest_execution_logs":         latestIncidentLogs(state.ExecutionLogs, 5),
+		"final_status":                  state.FinalStatus,
+		"final_report":                  state.FinalReport,
+		"updated_at":                    state.UpdatedAt,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -396,4 +462,74 @@ func latestIncidentLogs(logs []string, limit int) []string {
 		return append([]string(nil), logs...)
 	}
 	return append([]string(nil), logs[len(logs)-limit:]...)
+}
+
+// summarizeRemediationActions 将修复提案动作转换为简明文本。
+// 输入：修复提案。
+// 输出：动作摘要列表。
+func summarizeRemediationActions(proposal *RemediationProposal) []string {
+	if proposal == nil || len(proposal.Actions) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(proposal.Actions))
+	for _, action := range proposal.Actions {
+		line := fmt.Sprintf("步骤 %d：%s", action.Step, firstNonEmptyText(action.Goal, "未命名动作"))
+		if rationale := strings.TrimSpace(action.Rationale); rationale != "" {
+			line += fmt.Sprintf("；理由=%s", rationale)
+		}
+		if hint := strings.TrimSpace(action.CommandHint); hint != "" {
+			line += fmt.Sprintf("；命令提示=%s", hint)
+		}
+		if success := strings.TrimSpace(action.SuccessCriteria); success != "" {
+			line += fmt.Sprintf("；成功判据=%s", success)
+		}
+		if rollback := strings.TrimSpace(action.RollbackHint); rollback != "" {
+			line += fmt.Sprintf("；回退=%s", rollback)
+		}
+		out = append(out, clipText(line, 320))
+	}
+	return out
+}
+
+// summarizeGeneratedExecutionPlan 将结构化计划转换为可展示的步骤摘要。
+// 输入：execution_agent 生成的计划。
+// 输出：步骤摘要列表。
+func summarizeGeneratedExecutionPlan(plan *GeneratedExecutionPlan) []string {
+	if plan == nil || len(plan.Steps) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(plan.Steps))
+	for _, step := range plan.Steps {
+		command := strings.TrimSpace(step.Command)
+		if len(step.Args) > 0 {
+			command = strings.TrimSpace(command + " " + strings.Join(step.Args, " "))
+		}
+		line := fmt.Sprintf("步骤 %d：%s", step.StepID, firstNonEmptyText(step.Description, "执行命令"))
+		if command != "" {
+			line += fmt.Sprintf("；命令=%s", command)
+		}
+		if expected := strings.TrimSpace(step.ExpectedResult); expected != "" {
+			line += fmt.Sprintf("；预期=%s", expected)
+		}
+		if rollback := strings.TrimSpace(step.RollbackCommand); rollback != "" {
+			if len(step.RollbackArgs) > 0 {
+				rollback = strings.TrimSpace(rollback + " " + strings.Join(step.RollbackArgs, " "))
+			}
+			line += fmt.Sprintf("；回滚=%s", rollback)
+		}
+		out = append(out, clipText(line, 320))
+	}
+	return out
+}
+
+// firstNonEmptyText 返回第一个非空文本。
+// 输入：候选文本列表。
+// 输出：第一个去空白后非空的文本；若都为空返回空字符串。
+func firstNonEmptyText(values ...string) string {
+	for _, value := range values {
+		if text := strings.TrimSpace(value); text != "" {
+			return text
+		}
+	}
+	return ""
 }

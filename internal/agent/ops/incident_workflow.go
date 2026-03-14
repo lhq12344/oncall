@@ -26,8 +26,8 @@ type IncidentWorkflowConfig struct {
 	Logger *zap.Logger
 }
 
-// NewIncidentWorkflowAgent 创建一个 Observation -> RCA -> Ops -> Validator -> Execution -> Strategy 的工作流 Agent。
-// 工作流形态：Sequential(Observation, RCA, Loop(Ops, Validator, Execution, Gate), Strategy, FinalReport)。
+// NewIncidentWorkflowAgent 创建一个 Observation -> RCA -> Ops -> Execution -> Strategy 的工作流 Agent。
+// 工作流形态：Sequential(Observation, RCA, Loop(Ops, Execution, Gate), Strategy, FinalReport)。
 func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) (adk.ResumableAgent, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
@@ -80,7 +80,6 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 	executionAgent = wrapWithIncidentState("execution", executionAgent, cfg.Logger)
 	strategyAgent = wrapWithIncidentState("strategy", strategyAgent, cfg.Logger)
 
-	validator := newPlanValidatorAgent(cfg.Logger)
 	gate := newExecutionGateAgent(cfg.Logger)
 	reporter := newFinalReportAgent(cfg.Logger)
 
@@ -91,8 +90,8 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 
 	executeLoop, err := adk.NewLoopAgent(ctx, &adk.LoopAgentConfig{
 		Name:          "incident_execute_loop",
-		Description:   "Ops 规划 -> 安全校验 -> 执行 -> 决策 的循环工作流",
-		SubAgents:     []adk.Agent{opsAgent, validator, executionAgent, gate},
+		Description:   "Ops 修复提案 -> Execution 命令计划与执行 -> 决策 的循环工作流",
+		SubAgents:     []adk.Agent{opsAgent, executionAgent, gate},
 		MaxIterations: maxLoops,
 	})
 	if err != nil {

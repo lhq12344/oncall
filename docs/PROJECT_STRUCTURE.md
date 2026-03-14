@@ -371,22 +371,10 @@ data: {data}
 
 **功能**: Milvus 向量数据库索引存储
 
-#### 8.5 loader/ - 文档加载
-**文件**: `ai/loader/file_loader.go`
+#### 8.5 当前职责边界
 
-**功能**: 从文件加载文档内容
-
-#### 8.6 tools/ - Agent 工具集
-**文件**: `ai/tools/`
-
-| 文件 | 工具名 | 功能 |
-|------|--------|------|
-| `web_search.go` | `web_search` | 联网搜索 (Bing API) |
-| `query_internal_docs.go` | `query_internal_docs` | RAG 知识库检索 |
-| `query_log.go` | `query_log` | 腾讯云 CLS 日志查询 (MCP) |
-| `get_current_time.go` | `get_current_time` | 获取当前时间 |
-| `mysql_crud.go` | `mysql_crud` | MySQL CRUD 操作 |
-| `query_metrics_alerts.go` | `query_prometheus_alerts` | Prometheus 告警查询 |
+`internal/ai/` 当前仅保留模型、嵌入、检索、索引这四类 AI 基础设施能力；
+具体业务工具已经迁移到各 Agent 自己的 `tools/` 目录中维护。
 
 ---
 
@@ -461,7 +449,7 @@ data: {data}
 6. **internal/agent/ops/** - 运维 Agent
 7. **internal/agent/execution/** - 执行 Agent
 8. **internal/agent/rca/** - 根因分析
-9. **internal/ai/tools/** - 所有工具实现
+9. **internal/agent/*/tools/** - 各 Agent 的工具实现
 
 ### 路线三: 深入基础设施 (1.5 小时)
 
@@ -478,7 +466,7 @@ data: {data}
 2. 路由到 `controller/chat/chat_v1.go`
 3. 业务逻辑在 `logic/sse/sse.go`
 4. Agent 执行在 `agent/ops/incident_workflow.go`
-5. 工具执行在 `ai/tools/`
+5. 工具执行在各 Agent 自身的 `tools/`
 6. 结果返回并缓存
 
 ---
@@ -496,7 +484,7 @@ data: {data}
 | 知识库 | `internal/agent/knowledge/` |
 | 运维 | `internal/agent/ops/` |
 | 执行 | `internal/agent/execution/` |
-| 工具 | `internal/ai/tools/*.go` |
+| 工具 | `internal/agent/*/tools/` |
 | 缓存 | `internal/cache/cache.go` |
 | 熔断 | `internal/concurrent/circuit_breaker.go` |
 | 会话 | `utility/mem/mem.go` |

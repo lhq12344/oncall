@@ -14,12 +14,18 @@ import (
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/net/ghttp"
 	"github.com/gogf/gf/v2/os/gctx"
+	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 )
 
 func main() {
 	ctx := gctx.New()
 
+	// 启动时优先加载本地 .env，确保网络工具和代理配置可用。
+	err := godotenv.Load()
+	if err != nil {
+		log.Println("Error loading .env file, using system default env")
+	}
 	// 获取文件目录配置
 	fileDir, err := g.Cfg().Get(ctx, "file_dir")
 	if err != nil {

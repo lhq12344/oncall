@@ -73,7 +73,7 @@ func NewExecuteStepTool(logger *zap.Logger) tool.BaseTool {
 func (t *ExecuteStepTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: "execute_step",
-		Desc: "在沙盒环境中执行单个步骤。命令必须通过白名单验证，支持超时控制。",
+		Desc: "执行单个步骤。命令必须通过白名单验证，支持超时控制。",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"step_id": {
 				Type:     schema.Integer,
@@ -157,6 +157,9 @@ func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 	// 强制执行顺序：必须先生成包含 command/args/expected/rollback 的计划，再执行步骤。
 	if ok, _ := hasPreparedExecutionPlan(ctx); !ok {
 		return "", fmt.Errorf("execution plan not prepared: call generate_plan first with intent/context before execute_step")
+	}
+	if ok, _ := hasValidatedExecutionPlan(ctx); !ok {
+		return "", fmt.Errorf("execution plan not validated: call validate_plan after normalize_plan/generate_plan before execute_step")
 	}
 
 	// 若前置步骤已验证通过或连续失败触发收敛，直接跳过后续执行。

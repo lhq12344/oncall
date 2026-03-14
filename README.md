@@ -1360,15 +1360,6 @@ MySQL 已完全集成并投入使用，无需额外的 PostgreSQL。
 - ✅ 慢查询日志（阈值 500ms）
 - ✅ 配置文件加载（支持环境变量覆盖）
 - ✅ 健康检查（Ping with timeout）
-- ✅ MySQL CRUD 工具（`internal/ai/tools/mysql_crud.go`）
-
-**MySQL CRUD 工具特性**:
-
-- 支持 SELECT 查询（带超时和行数限制）
-- 支持 INSERT/UPDATE/DELETE（可配置只读模式）
-- SQL 注入防护（基本校验）
-- 审批机制（危险操作需要确认）
-- 结果 JSON 序列化
 
 **配置示例**:
 

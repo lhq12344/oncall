@@ -22,7 +22,17 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
   isOps = false,
   opsStepId
 }) => {
-  const { theme, currentSessionId, addMessage, updateLastMessage, updateOpsStep, setStreaming, setConnectionStatus } = useStore();
+  const {
+    theme,
+    currentSessionId,
+    addMessage,
+    updateLastMessage,
+    appendStepToLastMessage,
+    setLastMessageStepStatus,
+    updateOpsStep,
+    setStreaming,
+    setConnectionStatus
+  } = useStore();
   const [isHandled, setIsHandled] = useState(Boolean(interrupt.handled));
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorText, setErrorText] = useState('');
@@ -106,7 +116,10 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
           return;
         }
         if (currentSessionId) {
-          updateLastMessage(currentSessionId, '', [step]);
+          appendStepToLastMessage(currentSessionId, {
+            ...step,
+            status: 'pending'
+          });
         }
       },
       onInterrupt,
@@ -117,6 +130,8 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
         setIsHandled(true);
         if (isOps && opsStepId) {
           updateOpsStep(opsStepId, undefined, 'completed');
+        } else if (currentSessionId) {
+          setLastMessageStepStatus(currentSessionId, 'completed');
         }
       },
       onError: (err: string) => {
@@ -129,6 +144,7 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
           return;
         }
         if (currentSessionId) {
+          setLastMessageStepStatus(currentSessionId, 'error');
           updateLastMessage(currentSessionId, `\n\nError: ${err}`);
         }
       }

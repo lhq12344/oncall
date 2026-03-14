@@ -81,17 +81,6 @@ func GetSimpleMemory(id string) *SimpleMemory {
 	return &SimpleMemory{ID: id}
 }
 
-// SetMessages：包级函数（现在必须传 tokens；mem 内部不再估算）
-func SetMessages(ctx context.Context,
-	id string,
-	userMsg *schema.Message,
-	assistantMsg *schema.Message,
-	promptMsgs []*schema.Message,
-	promptTokens int,
-	completionTokens int) error {
-	return GetSimpleMemory(id).SetMessages(ctx, userMsg, assistantMsg, promptMsgs, promptTokens, completionTokens)
-}
-
 // GetMessagesForRequest：包级函数（请求级裁剪在这里做）
 func GetMessagesForRequest(ctx context.Context, id string, userMsg *schema.Message, reserveToolsTokens int) ([]*schema.Message, error) {
 	return GetSimpleMemory(id).GetMessagesForRequest(ctx, userMsg, reserveToolsTokens)
@@ -259,25 +248,6 @@ type storedTurn struct {
 }
 
 // ------------------- system 写入/读取 -------------------
-
-func (m *SimpleMemory) appendSystem(ctx context.Context, msg *schema.Message, tokens int, ttlSec int, now int64) error {
-	item := storedSysItem{T: tokens, Msg: msg}
-	b, err := json.Marshal(item)
-	if err != nil {
-		return err
-	}
-
-	_, err = rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
-		p.RPush(ctx, m.keySys(), string(b))
-		p.HIncrBy(ctx, m.keyMeta(), "sys_tokens", int64(tokens))
-		p.HSet(ctx, m.keyMeta(), "updated_at", now)
-		p.Expire(ctx, m.keySys(), cfg.TTL)
-		p.Expire(ctx, m.keyTurns(), cfg.TTL)
-		p.Expire(ctx, m.keyMeta(), cfg.TTL)
-		return nil
-	})
-	return err
-}
 
 func (m *SimpleMemory) loadSystem(ctx context.Context) ([]*schema.Message, int, error) {
 	sysTokens, _ := rdb.HGet(ctx, m.keyMeta(), "sys_tokens").Int()

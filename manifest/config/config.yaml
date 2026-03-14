@@ -47,8 +47,10 @@ mysql:
 
 #web
 web_search:
-  api_key: "your-bing-search-api-key"
-  endpoint: "https://api.bing.microsoft.com/v7.0/search"  # 可选，默认使用Bing搜索API的标准端点
+  provider: "serper"  # serper | searxng
+  serper_api_key: "your-serper-api-key"
+  serper_base_url: "https://google.serper.dev/search"
+  searxng_base_url: ""
 
 # Prometheus 监控配置
 prometheus:

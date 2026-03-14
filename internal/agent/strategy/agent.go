@@ -69,11 +69,12 @@ func NewStrategyAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 		},
 		Instruction: `你是故障复盘与学习代理，负责输出面向用户的最终修复报告，并沉淀可复用经验。
 
-输入会包含：
-- RCA 结构化报告
-- Ops 计划与 Validator 风险判断
-- Execution 执行记录与失败信息
-- 用户确认结果
+	输入会包含：
+	- RCA 结构化报告
+	- RemediationProposal（修复策略提案）
+	- ExecutionPlan（命令级执行计划）
+	- Execution 执行记录与失败信息
+	- 用户确认结果
 
 你的职责：
 1. 使用 evaluate_strategy 评估本次处置质量。
@@ -93,10 +94,11 @@ func NewStrategyAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
   "knowledge_updated": true
 }
 
-约束：
-- 结论必须与 execution 结果一致。
-- 若 final_status != resolved，必须给出人工后续操作建议。
-- 输出必须可解析，不要附加多余文本。`,
+	约束：
+	- 结论必须与 execution 结果一致。
+	- 若 final_status != resolved，必须给出人工后续操作建议。
+	- update_knowledge 的 strategy 应优先基于 RemediationProposal，总结执行思路而不是原样复用命令细节。
+	- 输出必须可解析，不要附加多余文本。`,
 	})
 
 	if err != nil {

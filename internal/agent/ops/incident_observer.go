@@ -74,10 +74,10 @@ func (a *observationCollectorAgent) Run(ctx context.Context, _ *adk.AgentInput, 
 		if a.executor != nil {
 			out, err := a.executor.QueryAllSources(ctx, QueryAllSourcesInput{
 				Namespace: a.namespace,
-				PromQuery: `sum(rate(container_cpu_usage_seconds_total{namespace="infra",container!="",image!=""}[5m])) by (pod)`,
+				PromQuery: buildNamespaceCPUHistoryQuery(a.namespace),
 				TimeRange: "30m",
 				ESIndex:   "logs-*",
-				ESQuery:   "error OR exception OR failed",
+				ESQuery:   buildNamespaceESQuery(a.namespace),
 				ESLevel:   "error",
 				ESSize:    50,
 			})
@@ -91,8 +91,13 @@ func (a *observationCollectorAgent) Run(ctx context.Context, _ *adk.AgentInput, 
 
 		state.ObservationCollected = true
 		state.ObservationNamespace = a.namespace
+		state.ObservationCollectedAt = time.Now().Format(time.RFC3339)
+		state.ObservationTimeRange = "30m"
 		state.ObservationSummary = clipText(summary, 1000)
 		state.ObservationErrors = errorTexts
+		state.ObservationRefreshNeeded = false
+		state.ObservationRefreshReason = ""
+		state.RuntimeObservationSummary = ""
 		state.UpdatedAt = time.Now().Format(time.RFC3339)
 		setIncidentState(ctx, state)
 
@@ -116,7 +121,7 @@ func summarizeObservationSnapshot(out *QueryAllSourcesOutput) (string, []string)
 		return "观测采集结果为空。", []string{"empty output"}
 	}
 
-	lines := make([]string, 0, 4)
+	lines := make([]string, 0, 8)
 	errors := make([]string, 0, len(out.Errors))
 
 	if k8sRaw, ok := out.Data["k8s"]; ok {
@@ -125,8 +130,15 @@ func summarizeObservationSnapshot(out *QueryAllSourcesOutput) (string, []string)
 	if promRaw, ok := out.Data["prometheus"]; ok {
 		lines = append(lines, summarizePromPayload(promRaw))
 	}
+	if promSourceRaw, ok := out.Data["prometheus_sources"]; ok {
+		lines = append(lines, summarizePromSourcePayload(promSourceRaw))
+	}
+	lines = append(lines, summarizePromHistoryPayloads(out.Data)...)
 	if esRaw, ok := out.Data["elasticsearch"]; ok {
 		lines = append(lines, summarizeESPayload(esRaw))
+	}
+	if esIndicesRaw, ok := out.Data["elasticsearch_indices"]; ok {
+		lines = append(lines, summarizeESIndexPayload(esIndicesRaw))
 	}
 
 	for source, errText := range out.Errors {
@@ -181,6 +193,58 @@ func summarizePromPayload(raw string) string {
 	return fmt.Sprintf("Prometheus：%s 查询返回 %d 条时间序列。", resultType, count)
 }
 
+// summarizePromSourcePayload 汇总 Prometheus 指标源发现结果。
+// 输入：discover_sources 输出 JSON 字符串。
+// 输出：摘要文本。
+func summarizePromSourcePayload(raw string) string {
+	payload := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return "Prometheus 指标源发现：结果解析失败。"
+	}
+
+	active := toInt(payload["active_targets"])
+	dropped := toInt(payload["dropped_targets"])
+	down := 0
+	if health, ok := payload["health_summary"].(map[string]any); ok {
+		down = toInt(health["down"])
+	}
+	return fmt.Sprintf("Prometheus 指标源：active=%d，down=%d，dropped=%d。", active, down, dropped)
+}
+
+// summarizePromHistoryPayloads 汇总 Prometheus 历史指标查询结果。
+// 输入：聚合数据 map。
+// 输出：历史指标摘要列表。
+func summarizePromHistoryPayloads(data map[string]string) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	items := []struct {
+		Key   string
+		Label string
+	}{
+		{Key: "prometheus_cpu", Label: "CPU"},
+		{Key: "prometheus_memory", Label: "内存"},
+		{Key: "prometheus_restarts", Label: "重启"},
+	}
+
+	lines := make([]string, 0, len(items))
+	for _, item := range items {
+		raw, ok := data[item.Key]
+		if !ok {
+			continue
+		}
+		payload := map[string]any{}
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			lines = append(lines, fmt.Sprintf("Prometheus 历史%s：结果解析失败。", item.Label))
+			continue
+		}
+		count := toInt(payload["count"])
+		resultType := firstNonEmptyText(toTrimString(payload["type"]), "unknown")
+		lines = append(lines, fmt.Sprintf("Prometheus 历史%s：%s 查询返回 %d 条时间序列。", item.Label, resultType, count))
+	}
+	return lines
+}
+
 // summarizeESPayload 汇总 Elasticsearch 观测结果。
 // 输入：es_log_query 输出 JSON 字符串。
 // 输出：摘要文本。
@@ -196,6 +260,45 @@ func summarizeESPayload(raw string) string {
 		return fmt.Sprintf("Elasticsearch：命中 %d 条日志。", total)
 	}
 	return fmt.Sprintf("Elasticsearch：索引 %s 命中 %d 条日志。", index, total)
+}
+
+// summarizeESIndexPayload 汇总 Elasticsearch 索引发现结果。
+// 输入：discover_indices 输出 JSON 字符串。
+// 输出：摘要文本。
+func summarizeESIndexPayload(raw string) string {
+	payload := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return "Elasticsearch 索引发现：结果解析失败。"
+	}
+
+	count := toInt(payload["count"])
+	pattern := toTrimString(payload["pattern"])
+	if pattern == "" {
+		pattern = "*"
+	}
+
+	names := make([]string, 0, 3)
+	if indices, ok := payload["indices"].([]any); ok {
+		for _, item := range indices {
+			indexEntry, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			name := toTrimString(indexEntry["index"])
+			if name == "" {
+				continue
+			}
+			names = append(names, name)
+			if len(names) >= 3 {
+				break
+			}
+		}
+	}
+
+	if len(names) == 0 {
+		return fmt.Sprintf("Elasticsearch 索引链路：模式 %s 下发现 %d 个索引。", pattern, count)
+	}
+	return fmt.Sprintf("Elasticsearch 索引链路：模式 %s 下发现 %d 个索引，样例：%s。", pattern, count, strings.Join(names, ", "))
 }
 
 // toTrimString 将任意值转为去空白字符串。

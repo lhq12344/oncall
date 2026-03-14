@@ -1,8 +1,10 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
+	"encoding/gob"
 	"encoding/hex"
 	"strings"
 	"sync"
@@ -11,6 +13,10 @@ import (
 )
 
 const toolCallStateSessionKey = "_ops_tool_call_state_v1"
+
+func init() {
+	gob.Register(&toolCallState{})
+}
 
 // toolCallState 保存单轮 Agent 执行内的工具调用状态。
 // 包括：
@@ -21,6 +27,53 @@ type toolCallState struct {
 
 	resultByKey map[string]string
 	countByTool map[string]int
+}
+
+type toolCallStateSnapshot struct {
+	ResultByKey map[string]string
+	CountByTool map[string]int
+}
+
+// GobEncode 自定义序列化 toolCallState，确保 checkpoint 可保存缓存与计数。
+// 输入：无。
+// 输出：gob 编码后的状态字节。
+func (s *toolCallState) GobEncode() ([]byte, error) {
+	if s == nil {
+		return nil, nil
+	}
+
+	s.mu.RLock()
+	snapshot := toolCallStateSnapshot{
+		ResultByKey: cloneStringMap(s.resultByKey),
+		CountByTool: cloneIntMap(s.countByTool),
+	}
+	s.mu.RUnlock()
+
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(snapshot); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// GobDecode 自定义反序列化 toolCallState，恢复 checkpoint 中的缓存与计数。
+// 输入：gob 编码字节。
+// 输出：错误信息。
+func (s *toolCallState) GobDecode(data []byte) error {
+	if len(data) == 0 {
+		s.resultByKey = make(map[string]string)
+		s.countByTool = make(map[string]int)
+		return nil
+	}
+
+	var snapshot toolCallStateSnapshot
+	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&snapshot); err != nil {
+		return err
+	}
+
+	s.resultByKey = cloneStringMap(snapshot.ResultByKey)
+	s.countByTool = cloneIntMap(snapshot.CountByTool)
+	return nil
 }
 
 // getToolCallState 获取当前执行上下文中的工具调用状态。
@@ -103,4 +156,32 @@ func increaseToolCallCount(ctx context.Context, toolName string) int {
 	defer state.mu.Unlock()
 	state.countByTool[toolName]++
 	return state.countByTool[toolName]
+}
+
+// cloneStringMap 复制字符串映射，避免状态快照共享底层引用。
+// 输入：源 map。
+// 输出：复制后的 map。
+func cloneStringMap(source map[string]string) map[string]string {
+	if len(source) == 0 {
+		return make(map[string]string)
+	}
+	target := make(map[string]string, len(source))
+	for key, value := range source {
+		target[key] = value
+	}
+	return target
+}
+
+// cloneIntMap 复制整型映射，避免状态快照共享底层引用。
+// 输入：源 map。
+// 输出：复制后的 map。
+func cloneIntMap(source map[string]int) map[string]int {
+	if len(source) == 0 {
+		return make(map[string]int)
+	}
+	target := make(map[string]int, len(source))
+	for key, value := range source {
+		target[key] = value
+	}
+	return target
 }

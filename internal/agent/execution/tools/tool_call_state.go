@@ -1,8 +1,11 @@
 package tools
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/cloudwego/eino/adk"
@@ -10,18 +13,105 @@ import (
 
 const executionToolStateSessionKey = "_execution_tool_state_v1"
 
+func init() {
+	gob.Register(&executionToolState{})
+}
+
 // executionToolState 保存单轮 execution_agent 执行内的状态。
 // 用于：
-// 1. 在首个有效验证后提前收敛，避免继续执行无必要步骤。
-// 2. 在连续验证失败时提前停止自动执行，转人工处理。
+// 1. 记录计划是否已准备完成。
+// 2. 记录验证统计信息，用于日志观测与最终报告。
 type executionToolState struct {
 	mu sync.RWMutex
 
-	planPrepared        bool
-	planID              string
-	hasValidStep        bool
-	lastValidStepID     int
-	consecutiveInvalids int
+	planPrepared              bool
+	planID                    string
+	planValidated             bool
+	validatedPlanID           string
+	hasValidStep              bool
+	lastValidStepID           int
+	consecutiveHardInvalids   int
+	consecutivePlanMismatches int
+	stopExecution             bool
+	stopReason                string
+	stopAction                string
+	lastRuntimeSummary        string
+}
+
+type executionToolStateSnapshot struct {
+	PlanPrepared              bool
+	PlanID                    string
+	PlanValidated             bool
+	ValidatedPlanID           string
+	HasValidStep              bool
+	LastValidStepID           int
+	ConsecutiveHardInvalids   int
+	ConsecutivePlanMismatches int
+	StopExecution             bool
+	StopReason                string
+	StopAction                string
+	LastRuntimeSummary        string
+}
+
+// GobEncode 自定义序列化 execution 内部状态，确保 checkpoint/resume 后校验进度不丢失。
+// 输入：无。
+// 输出：gob 编码后的状态字节。
+func (s *executionToolState) GobEncode() ([]byte, error) {
+	if s == nil {
+		return nil, nil
+	}
+
+	s.mu.RLock()
+	snapshot := executionToolStateSnapshot{
+		PlanPrepared:              s.planPrepared,
+		PlanID:                    s.planID,
+		PlanValidated:             s.planValidated,
+		ValidatedPlanID:           s.validatedPlanID,
+		HasValidStep:              s.hasValidStep,
+		LastValidStepID:           s.lastValidStepID,
+		ConsecutiveHardInvalids:   s.consecutiveHardInvalids,
+		ConsecutivePlanMismatches: s.consecutivePlanMismatches,
+		StopExecution:             s.stopExecution,
+		StopReason:                s.stopReason,
+		StopAction:                s.stopAction,
+		LastRuntimeSummary:        s.lastRuntimeSummary,
+	}
+	s.mu.RUnlock()
+
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(snapshot); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// GobDecode 自定义反序列化 execution 内部状态。
+// 输入：gob 编码字节。
+// 输出：错误信息。
+func (s *executionToolState) GobDecode(data []byte) error {
+	if len(data) == 0 {
+		*s = executionToolState{}
+		return nil
+	}
+
+	var snapshot executionToolStateSnapshot
+	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&snapshot); err != nil {
+		return err
+	}
+
+	s.planPrepared = snapshot.PlanPrepared
+	s.planID = snapshot.PlanID
+	s.planValidated = snapshot.PlanValidated
+	s.validatedPlanID = snapshot.ValidatedPlanID
+	s.hasValidStep = snapshot.HasValidStep
+	s.lastValidStepID = snapshot.LastValidStepID
+	s.consecutiveHardInvalids = snapshot.ConsecutiveHardInvalids
+	s.consecutivePlanMismatches = snapshot.ConsecutivePlanMismatches
+	s.stopExecution = snapshot.StopExecution
+	s.stopReason = snapshot.StopReason
+	s.stopAction = snapshot.StopAction
+	s.lastRuntimeSummary = snapshot.LastRuntimeSummary
+	return nil
 }
 
 // getExecutionToolState 获取 execution 工具状态。
@@ -53,6 +143,16 @@ func markExecutionPlanPrepared(ctx context.Context, planID string) {
 	defer state.mu.Unlock()
 	state.planPrepared = true
 	state.planID = planID
+	state.planValidated = false
+	state.validatedPlanID = ""
+	state.hasValidStep = false
+	state.lastValidStepID = 0
+	state.consecutiveHardInvalids = 0
+	state.consecutivePlanMismatches = 0
+	state.stopExecution = false
+	state.stopReason = ""
+	state.stopAction = ""
+	state.lastRuntimeSummary = ""
 }
 
 // hasPreparedExecutionPlan 判断当前执行轮次是否已生成可执行计划。
@@ -68,6 +168,47 @@ func hasPreparedExecutionPlan(ctx context.Context) (bool, string) {
 	return state.planPrepared, state.planID
 }
 
+// markExecutionPlanValidated 标记当前执行轮次的计划已通过 validate_plan。
+// 输入：ctx（Agent 运行上下文）、planID（计划 ID，可为空）。
+// 输出：无。
+func markExecutionPlanValidated(ctx context.Context, planID string) {
+	state := getExecutionToolState(ctx)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.planValidated = true
+	state.validatedPlanID = planID
+}
+
+// clearExecutionPlanValidated 清理计划校验状态。
+// 输入：ctx（Agent 运行上下文）。
+// 输出：无。
+func clearExecutionPlanValidated(ctx context.Context) {
+	state := getExecutionToolState(ctx)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.planValidated = false
+	state.validatedPlanID = ""
+}
+
+// hasValidatedExecutionPlan 判断当前执行轮次是否已通过 validate_plan。
+// 输入：ctx（Agent 运行上下文）。
+// 输出：是否已通过校验、已校验计划 ID。
+func hasValidatedExecutionPlan(ctx context.Context) (bool, string) {
+	state := getExecutionToolState(ctx)
+	if state == nil {
+		return false, ""
+	}
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	return state.planValidated, state.validatedPlanID
+}
+
 // shouldSkipExecutionStep 判断当前步骤是否应被跳过。
 // 输入：ctx、stepID。
 // 输出：是否跳过、跳过原因。
@@ -76,42 +217,95 @@ func shouldSkipExecutionStep(ctx context.Context, stepID int) (bool, string) {
 	if state == nil {
 		return false, ""
 	}
-
+	_ = stepID
 	state.mu.RLock()
 	defer state.mu.RUnlock()
-
-	if state.hasValidStep {
-		return true, fmt.Sprintf("步骤 %d 已验证通过，跳过后续执行步骤并等待汇总输出", state.lastValidStepID)
+	if state.stopExecution {
+		return true, state.stopReason
 	}
-	if state.consecutiveInvalids >= 2 {
-		return true, "连续 2 步验证失败，停止自动执行并建议人工处理"
-	}
-	_ = stepID
 	return false, ""
 }
 
+// validationProgressDecision 描述 validate_result 对当前执行轮次的调度决策。
+// 用于：区分“硬失败需人工处理”和“计划失配需重规划”。
+type validationProgressDecision struct {
+	ShouldStop     bool
+	StopReason     string
+	StopAction     string
+	RuntimeSummary string
+}
+
 // recordValidationProgress 记录验证结果并返回是否应提前收敛。
-// 输入：ctx、stepID、valid。
-// 输出：是否建议停止后续步骤、原因描述。
-func recordValidationProgress(ctx context.Context, stepID int, valid bool) (bool, string) {
+// 输入：ctx、stepID、validation（当前步骤验证结果）。
+// 输出：停止决策（是否停止、原因、动作类型、运行时摘要）。
+func recordValidationProgress(ctx context.Context, stepID int, validation *ValidationResult) validationProgressDecision {
 	state := getExecutionToolState(ctx)
-	if state == nil {
-		return false, ""
+	if state == nil || validation == nil {
+		return validationProgressDecision{}
 	}
 
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
-	if valid {
+	if validation.Valid {
 		state.hasValidStep = true
 		state.lastValidStepID = stepID
-		state.consecutiveInvalids = 0
-		return true, fmt.Sprintf("步骤 %d 验证通过，建议立即结束后续步骤并输出执行结果", stepID)
+		state.consecutiveHardInvalids = 0
+	} else {
+		state.consecutivePlanMismatches = 0
 	}
 
-	state.consecutiveInvalids++
-	if state.consecutiveInvalids >= 2 {
-		return true, "连续 2 步验证失败，建议停止自动执行并输出 manual_required"
+	if validation.MismatchDetected {
+		state.consecutivePlanMismatches++
+		state.lastRuntimeSummary = strings.TrimSpace(firstNonEmptyExecutionText(validation.MismatchReason, validation.Actual))
+		if state.consecutivePlanMismatches >= 2 {
+			state.stopExecution = true
+			state.stopAction = "replan"
+			state.stopReason = fmt.Sprintf(
+				"连续 %d 步观测结果与上游故障假设不一致，当前现场可能已恢复或上游 RCA/观测已过期，建议刷新现场认知后重规划",
+				state.consecutivePlanMismatches,
+			)
+			return validationProgressDecision{
+				ShouldStop:     true,
+				StopReason:     state.stopReason,
+				StopAction:     state.stopAction,
+				RuntimeSummary: state.lastRuntimeSummary,
+			}
+		}
+		return validationProgressDecision{
+			ShouldStop:     false,
+			RuntimeSummary: state.lastRuntimeSummary,
+		}
 	}
-	return false, ""
+
+	if validation.Valid {
+		state.consecutivePlanMismatches = 0
+		state.lastRuntimeSummary = ""
+		return validationProgressDecision{}
+	}
+
+	state.consecutiveHardInvalids++
+	if state.consecutiveHardInvalids >= 2 {
+		state.stopExecution = true
+		state.stopAction = "manual_required"
+		state.stopReason = fmt.Sprintf("连续 %d 步校验失败，判定当前执行计划可能不匹配，停止自动执行并建议人工处理", state.consecutiveHardInvalids)
+		return validationProgressDecision{
+			ShouldStop: true,
+			StopReason: state.stopReason,
+			StopAction: state.stopAction,
+		}
+	}
+	return validationProgressDecision{}
+}
+
+// firstNonEmptyExecutionText 返回第一个非空文本。
+// 输入：候选字符串列表。
+// 输出：首个非空字符串；若均为空则返回空字符串。
+func firstNonEmptyExecutionText(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

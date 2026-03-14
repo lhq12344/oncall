@@ -2,6 +2,36 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { Message, Session, AIOpsStep, InterruptData, OpsStep } from '../types';
 
+// inferOpsStepTitle 依据内容推断步骤标题，避免无 step 事件时内容丢失。
+// 输入：SSE content 文本。
+// 输出：步骤标题。
+function inferOpsStepTitle(content: string): string {
+  const text = (content || '').trim();
+  if (!text) {
+    return '流程输出';
+  }
+  if (text.includes('运维技术报告') || text.includes('最终状态') || text.includes('是否已解决')) {
+    return '输出最终技术报告';
+  }
+  return '流程输出';
+}
+
+// mergeMessageSteps 合并消息步骤，优先按 step 编号更新已有项，避免恢复执行时覆盖历史步骤。
+// 输入：existing 现有步骤、incoming 新步骤。
+// 输出：合并后的步骤列表。
+function mergeMessageSteps(existing: AIOpsStep[] = [], incoming: AIOpsStep[] = []): AIOpsStep[] {
+  const merged = [...existing];
+  for (const step of incoming) {
+    const index = merged.findIndex((item) => item.step === step.step);
+    if (index >= 0) {
+      merged[index] = { ...merged[index], ...step };
+      continue;
+    }
+    merged.push(step);
+  }
+  return merged.sort((left, right) => left.step - right.step);
+}
+
 interface AppState {
   theme: 'dark' | 'light';
   sessions: Session[];
@@ -26,6 +56,8 @@ interface AppState {
   setCurrentSession: (id: string) => void;
   addMessage: (sessionId: string, message: Omit<Message, 'id' | 'timestamp'>) => string;
   updateLastMessage: (sessionId: string, content: string, steps?: AIOpsStep[], interrupt?: InterruptData) => void;
+  appendStepToLastMessage: (sessionId: string, step: AIOpsStep) => void;
+  setLastMessageStepStatus: (sessionId: string, status: AIOpsStep['status']) => void;
   setStreaming: (isStreaming: boolean) => void;
   setConnectionStatus: (status: AppState['connectionStatus']) => void;
   sendMessage: (sessionId: string, content: string) => Promise<void>;
@@ -111,9 +143,64 @@ export const useStore = create<AppState>()(
           updatedMessages[updatedMessages.length - 1] = {
             ...lastMessage,
             content: content !== undefined ? lastMessage.content + content : lastMessage.content,
-            steps: steps || lastMessage.steps,
+            steps: steps ? mergeMessageSteps(lastMessage.steps, steps) : lastMessage.steps,
             interrupt: interrupt || lastMessage.interrupt,
           };
+          return { ...s, messages: updatedMessages, updatedAt: Date.now() };
+        }),
+      })),
+
+      appendStepToLastMessage: (sessionId, step) => set((state) => ({
+        sessions: state.sessions.map((s) => {
+          if (s.id !== sessionId || s.messages.length === 0) return s;
+          const updatedMessages = [...s.messages];
+          const lastIndex = updatedMessages.length - 1;
+          const lastMessage = updatedMessages[lastIndex];
+          const existingSteps = [...(lastMessage.steps || [])];
+
+          if (existingSteps.length > 0) {
+            const previousIndex = existingSteps.length - 1;
+            if (existingSteps[previousIndex].status === 'pending') {
+              existingSteps[previousIndex] = {
+                ...existingSteps[previousIndex],
+                status: 'completed'
+              };
+            }
+          }
+
+          updatedMessages[lastIndex] = {
+            ...lastMessage,
+            steps: mergeMessageSteps(existingSteps, [{
+              ...step,
+              status: step.status || 'pending'
+            }])
+          };
+
+          return { ...s, messages: updatedMessages, updatedAt: Date.now() };
+        }),
+      })),
+
+      setLastMessageStepStatus: (sessionId, status) => set((state) => ({
+        sessions: state.sessions.map((s) => {
+          if (s.id !== sessionId || s.messages.length === 0) return s;
+          const updatedMessages = [...s.messages];
+          const lastIndex = updatedMessages.length - 1;
+          const lastMessage = updatedMessages[lastIndex];
+          const existingSteps = [...(lastMessage.steps || [])];
+          if (existingSteps.length === 0) {
+            return s;
+          }
+
+          existingSteps[existingSteps.length - 1] = {
+            ...existingSteps[existingSteps.length - 1],
+            status
+          };
+
+          updatedMessages[lastIndex] = {
+            ...lastMessage,
+            steps: existingSteps
+          };
+
           return { ...s, messages: updatedMessages, updatedAt: Date.now() };
         }),
       })),
@@ -145,6 +232,19 @@ export const useStore = create<AppState>()(
         const { streamOps } = await import('../services/api');
 
         let currentStepId = '';
+        const createOpsStep = (toolName: string): string => {
+          const id = crypto.randomUUID();
+          currentStepId = id;
+          set((state) => ({
+            opsSteps: [...state.opsSteps, {
+              id,
+              toolName,
+              content: '',
+              status: 'pending'
+            }]
+          }));
+          return id;
+        };
 
         await streamOps({
           onStep: (step) => {
@@ -152,27 +252,24 @@ export const useStore = create<AppState>()(
             if (currentStepId) {
               updateOpsStep(currentStepId, undefined, 'completed');
             }
-            
-            const id = crypto.randomUUID();
-            currentStepId = id;
-            set((state) => ({
-              opsSteps: [...state.opsSteps, {
-                id,
-                toolName: step.content, // backend sends tool name in content for type: step
-                content: '',
-                status: 'pending'
-              }]
-            }));
+
+            createOpsStep(step.content); // backend sends tool name in content for type: step
           },
           onContent: (content) => {
-            if (currentStepId) {
-              updateOpsStep(currentStepId, content);
+            const normalized = (content || '').trim();
+            if (!normalized) {
+              return;
             }
+            if (!currentStepId) {
+              createOpsStep(inferOpsStepTitle(normalized));
+            }
+            updateOpsStep(currentStepId, content);
           },
           onInterrupt: (interrupt) => {
-            if (currentStepId) {
-              updateOpsStep(currentStepId, undefined, undefined, interrupt);
+            if (!currentStepId) {
+              createOpsStep('等待人工确认');
             }
+            updateOpsStep(currentStepId, undefined, undefined, interrupt);
           },
           onDone: () => {
             if (currentStepId) {
@@ -181,16 +278,24 @@ export const useStore = create<AppState>()(
             set({ isOpsRunning: false });
           },
           onError: (err) => {
-            if (currentStepId) {
-              updateOpsStep(currentStepId, `\n\nError: ${err}`, 'error');
+            if (!currentStepId) {
+              createOpsStep('流程异常');
             }
+            updateOpsStep(currentStepId, `\n\nError: ${err}`, 'error');
             set({ isOpsRunning: false });
           }
         });
       },
 
       sendMessage: async (sessionId, content) => {
-        const { addMessage, updateLastMessage, setStreaming, setConnectionStatus } = get();
+        const {
+          addMessage,
+          updateLastMessage,
+          appendStepToLastMessage,
+          setLastMessageStepStatus,
+          setStreaming,
+          setConnectionStatus
+        } = get();
         
         addMessage(sessionId, {
           role: 'user',
@@ -211,12 +316,20 @@ export const useStore = create<AppState>()(
 
         await streamChat(sessionId, content, {
           onContent: (chunk) => updateLastMessage(sessionId, chunk),
+          onStep: (step) => {
+            appendStepToLastMessage(sessionId, {
+              ...step,
+              status: 'pending'
+            });
+          },
           onInterrupt: (interrupt) => updateLastMessage(sessionId, '', undefined, interrupt),
           onDone: () => {
+            setLastMessageStepStatus(sessionId, 'completed');
             setStreaming(false);
             setConnectionStatus('idle');
           },
           onError: (err) => {
+            setLastMessageStepStatus(sessionId, 'error');
             setStreaming(false);
             setConnectionStatus('error');
             updateLastMessage(sessionId, `\n\nError: ${err}`);
