@@ -153,12 +153,7 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 
 		if event.Action != nil && event.Action.Interrupted != nil {
 			interrupted = true
-			payload := map[string]any{
-				"type":               "interrupt",
-				"checkpoint_id":      checkpointID,
-				"interrupt_contexts": convertInterruptContexts(event.Action.Interrupted.InterruptContexts),
-				"message":            buildInterruptMessage(event.Action.Interrupted.Data),
-			}
+			payload := buildInterruptPayload(checkpointID, event.Action.Interrupted)
 			payloadBytes, _ := json.Marshal(payload)
 			writeSSEData(r, string(payloadBytes))
 			continue
@@ -241,12 +236,7 @@ func (c *ControllerV1) ChatResumeStream(ctx context.Context, req *v1.ChatResumeS
 
 		if event.Action != nil && event.Action.Interrupted != nil {
 			interrupted = true
-			payload := map[string]any{
-				"type":               "interrupt",
-				"checkpoint_id":      req.CheckpointID,
-				"interrupt_contexts": convertInterruptContexts(event.Action.Interrupted.InterruptContexts),
-				"message":            buildInterruptMessage(event.Action.Interrupted.Data),
-			}
+			payload := buildInterruptPayload(req.CheckpointID, event.Action.Interrupted)
 			b, _ := json.Marshal(payload)
 			writeSSEData(r, string(b))
 			continue
@@ -403,12 +393,7 @@ func (c *ControllerV1) AIOpsStream(ctx context.Context, req *v1.AIOpsStreamReq) 
 		}
 
 		if event.Action != nil && event.Action.Interrupted != nil {
-			payload := map[string]any{
-				"type":               "interrupt",
-				"checkpoint_id":      checkpointID,
-				"interrupt_contexts": convertInterruptContexts(event.Action.Interrupted.InterruptContexts),
-				"message":            buildInterruptMessage(event.Action.Interrupted.Data),
-			}
+			payload := buildInterruptPayload(checkpointID, event.Action.Interrupted)
 			payloadBytes, _ := json.Marshal(payload)
 			writeSSEData(r, string(payloadBytes))
 			continue
@@ -421,7 +406,11 @@ func (c *ControllerV1) AIOpsStream(ctx context.Context, req *v1.AIOpsStreamReq) 
 				stepNum++
 			}
 
-			if content, ok := c.extractAgentContentByMessage(event.AgentName, msg, ""); ok {
+			content, ok := c.extractAgentContentByMessage(event.AgentName, msg, "")
+			if !ok {
+				content, ok = c.extractBashToolResultByMessage(msg)
+			}
+			if ok {
 				content = formatAIOpsContent(event.AgentName, c.opsRootAgentName, content)
 				if strings.TrimSpace(content) != "" {
 					if !finalReportStepEmitted && isFinalReportContent(event.AgentName, content) {
@@ -475,12 +464,7 @@ func (c *ControllerV1) AIOpsResumeStream(ctx context.Context, req *v1.AIOpsResum
 		}
 
 		if event.Action != nil && event.Action.Interrupted != nil {
-			payload := map[string]any{
-				"type":               "interrupt",
-				"checkpoint_id":      req.CheckpointID,
-				"interrupt_contexts": convertInterruptContexts(event.Action.Interrupted.InterruptContexts),
-				"message":            buildInterruptMessage(event.Action.Interrupted.Data),
-			}
+			payload := buildInterruptPayload(req.CheckpointID, event.Action.Interrupted)
 			payloadBytes, _ := json.Marshal(payload)
 			writeSSEData(r, string(payloadBytes))
 			continue
@@ -493,7 +477,11 @@ func (c *ControllerV1) AIOpsResumeStream(ctx context.Context, req *v1.AIOpsResum
 				stepNum++
 			}
 
-			if content, ok := c.extractAgentContentByMessage(event.AgentName, msg, ""); ok {
+			content, ok := c.extractAgentContentByMessage(event.AgentName, msg, "")
+			if !ok {
+				content, ok = c.extractBashToolResultByMessage(msg)
+			}
+			if ok {
 				content = formatAIOpsContent(event.AgentName, c.opsRootAgentName, content)
 				if strings.TrimSpace(content) != "" {
 					if !finalReportStepEmitted && isFinalReportContent(event.AgentName, content) {
@@ -762,6 +750,83 @@ func convertInterruptContexts(contexts []*adk.InterruptCtx) []v1.InterruptContex
 		})
 	}
 	return result
+}
+
+// buildInterruptPayload 构造统一的 SSE 中断载荷。
+// 输入：checkpointID、中断信息。
+// 输出：可直接序列化的中断 payload。
+func buildInterruptPayload(checkpointID string, info *adk.InterruptInfo) map[string]any {
+	payload := map[string]any{
+		"type":          "interrupt",
+		"checkpoint_id": strings.TrimSpace(checkpointID),
+	}
+	if info == nil {
+		payload["interrupt_contexts"] = []v1.InterruptContext{}
+		payload["message"] = buildInterruptMessage(nil)
+		return payload
+	}
+
+	payload["interrupt_contexts"] = convertInterruptContexts(info.InterruptContexts)
+	payload["message"] = buildInterruptMessage(info.Data)
+
+	if structured := normalizeInterruptData(info.Data); structured != nil {
+		payload["interrupt_data"] = structured
+		if bashRequest := extractBashApprovalPayload(structured); bashRequest != nil {
+			payload["bash_request"] = bashRequest
+		}
+	}
+	return payload
+}
+
+// normalizeInterruptData 将中断数据归一化为可 JSON 传输的对象。
+// 输入：任意中断数据。
+// 输出：归一化后的 JSON 兼容对象。
+func normalizeInterruptData(data any) any {
+	if data == nil {
+		return nil
+	}
+
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return nil
+	}
+
+	var normalized any
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return nil
+	}
+	return normalized
+}
+
+// extractBashApprovalPayload 从结构化中断数据中提取 Bash 审批信息。
+// 输入：归一化后的中断数据。
+// 输出：审批卡片需要的结构；非 Bash 审批时返回 nil。
+func extractBashApprovalPayload(data any) map[string]any {
+	value, ok := data.(map[string]any)
+	if !ok || value == nil {
+		return nil
+	}
+
+	command, _ := value["command"].(string)
+	timeout, hasTimeout := value["timeout"]
+	if strings.TrimSpace(command) == "" || !hasTimeout {
+		return nil
+	}
+
+	payload := map[string]any{
+		"command": strings.TrimSpace(command),
+		"timeout": timeout,
+	}
+	if args, exists := value["args"]; exists {
+		payload["args"] = args
+	}
+	if reason, ok := value["reason"].(string); ok && strings.TrimSpace(reason) != "" {
+		payload["reason"] = strings.TrimSpace(reason)
+	}
+	if rawCommand, ok := value["raw_command"].(string); ok && strings.TrimSpace(rawCommand) != "" {
+		payload["raw_command"] = strings.TrimSpace(rawCommand)
+	}
+	return payload
 }
 
 func normalizeIDList(ids []string) []string {

@@ -107,8 +107,9 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 					3. 当用户问历史案例或历史故障处理记录时，优先调用 ops_case_retrieve，其次才是 knowledge_retrieve。
 					4. 当用户需要最新的外部信息、官方文档、报错关键词、版本差异或互联网搜索结果时，可调用 web_search。
 					5. 当用户明确要求执行 Bash 命令时，可调用 bash_execute_with_approval，但只能先提出命令与影响说明，必须等待人工确认后再执行。
-					6. 当前工具集中没有 generate_plan；若任务复杂，你要先给出多步排查/处理计划，再按步骤调用现有工具推进。
-					7. 若用户只是普通闲聊或通用问答，不要强行调用工具。
+					6. 当用户意图不清、同时涉及多类任务、或缺少关键上下文时，优先调用 intent_analysis，识别意图类型、置信度和缺失信息，再决定后续工具路径。
+					7. 当前工具集中没有 generate_plan；若任务复杂，你要先给出多步排查/处理计划，再按步骤调用现有工具推进。
+					8. 若用户只是普通闲聊或通用问答，不要强行调用工具。
 
 					你在内部必须遵循以下工作流，但不要把完整思维链逐字暴露给用户：
 					1. Thought：分析用户意图、风险、已知上下文和缺失信息。
@@ -124,6 +125,7 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 					- 用户确认：只有用户明确表达“确认 / Proceed / 执行 / 同意”后，才能进入实际 Bash 执行。
 
 					工具链优先级：
+					- 意图澄清：intent_analysis（仅在意图模糊、跨多类任务、或你无法确定下一步工具时使用；意图明确时可直接跳过）
 					- 状态检查：k8s_monitor -> metrics_collector
 					- 历史经验：ops_case_retrieve -> knowledge_retrieve
 					- 外部检索：web_search（仅在需要最新外部信息或官方资料时使用）

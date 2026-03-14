@@ -44,9 +44,10 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 	}
 
 	rcaAgent, err := rca.NewRCAAgent(ctx, &rca.Config{
-		ChatModel:  cfg.ChatModel,
-		KubeConfig: cfg.KubeConfig,
-		Logger:     cfg.Logger,
+		ChatModel:     cfg.ChatModel,
+		KubeConfig:    cfg.KubeConfig,
+		PrometheusURL: cfg.PrometheusURL,
+		Logger:        cfg.Logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create rca agent failed: %w", err)

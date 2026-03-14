@@ -57,16 +57,25 @@ type IncidentState struct {
 	ValidationBlocked bool   `json:"validation_blocked,omitempty"`
 	ValidationRisk    string `json:"validation_risk,omitempty"`
 
-	ExecutionStatus    string   `json:"execution_status,omitempty"`
-	ExecutionSuccess   bool     `json:"execution_success,omitempty"`
-	ExecutionStepCount int      `json:"execution_step_count,omitempty"`
-	ExecutionReason    string   `json:"execution_reason,omitempty"`
-	ExecutionFallback  string   `json:"execution_fallback,omitempty"`
-	ExecutionPlanID    string   `json:"execution_plan_id,omitempty"`
-	ExecutionPlanDesc  string   `json:"execution_plan_desc,omitempty"`
-	ExecutionPlanRisk  string   `json:"execution_plan_risk,omitempty"`
-	ExecutionPlanSteps []string `json:"execution_plan_steps,omitempty"`
-	ExecutionLogs      []string `json:"execution_logs,omitempty"`
+	ExecutionStatus          string   `json:"execution_status,omitempty"`
+	ExecutionSuccess         bool     `json:"execution_success,omitempty"`
+	ExecutionStepCount       int      `json:"execution_step_count,omitempty"`
+	ExecutionReason          string   `json:"execution_reason,omitempty"`
+	ExecutionFallback        string   `json:"execution_fallback,omitempty"`
+	ExecutionOverallHealth   string   `json:"execution_overall_health,omitempty"`
+	ExecutionFindings        []string `json:"execution_findings,omitempty"`
+	ExecutionIssues          []string `json:"execution_issues,omitempty"`
+	ExecutionRecommendations []string `json:"execution_recommendations,omitempty"`
+	ExecutionPlanID          string   `json:"execution_plan_id,omitempty"`
+	ExecutionPlanDesc        string   `json:"execution_plan_desc,omitempty"`
+	ExecutionPlanRisk        string   `json:"execution_plan_risk,omitempty"`
+	ExecutionPlanSteps       []string `json:"execution_plan_steps,omitempty"`
+	ExecutionLogs            []string `json:"execution_logs,omitempty"`
+	RepeatedIssueKey         string   `json:"repeated_issue_key,omitempty"`
+	RepeatedIssueReason      string   `json:"repeated_issue_reason,omitempty"`
+	RepeatedIssueRetryCount  int      `json:"repeated_issue_retry_count,omitempty"`
+	RepeatedIssueRetryLimit  int      `json:"repeated_issue_retry_limit,omitempty"`
+	RepeatedIssueEscalated   bool     `json:"repeated_issue_escalated,omitempty"`
 
 	FinalStatus string `json:"final_status,omitempty"`
 	FinalReport string `json:"final_report,omitempty"`
@@ -289,6 +298,28 @@ func (a *stateBridgeAgent) updateByStage(state *IncidentState, msg *schema.Messa
 					state.ExecutionFallback = clipText(manualPlan, 800)
 				}
 			}
+			diagnostic := parseExecutionDiagnosticInsight(result)
+			if health := strings.TrimSpace(diagnostic.OverallHealth); health != "" {
+				state.ExecutionOverallHealth = clipText(health, 120)
+			}
+			if len(diagnostic.Findings) > 0 {
+				state.ExecutionFindings = latestIncidentLogs(diagnostic.Findings, 5)
+			}
+			if len(diagnostic.Issues) > 0 {
+				state.ExecutionIssues = latestIncidentLogs(diagnostic.Issues, 5)
+			}
+			if len(diagnostic.Recommendations) > 0 {
+				state.ExecutionRecommendations = latestIncidentLogs(diagnostic.Recommendations, 5)
+			}
+			if diagnostic.ActionableIssueCount > 0 && strings.EqualFold(strings.TrimSpace(state.ExecutionStatus), "success") {
+				state.ExecutionStatus = "replan_required"
+				state.ExecutionSuccess = false
+				state.ExecutionReason = clipText(firstNonEmptyText(
+					joinExecutionIssueSummaries(diagnostic.Issues, 2),
+					diagnostic.Summary,
+					state.ExecutionReason,
+				), 600)
+			}
 		}
 	case "strategy":
 		report, ok := parseStrategyReport(messages)
@@ -378,12 +409,20 @@ func renderIncidentState(state *IncidentState) string {
 		"execution_step_count":          state.ExecutionStepCount,
 		"execution_reason":              state.ExecutionReason,
 		"execution_fallback":            state.ExecutionFallback,
+		"execution_overall_health":      state.ExecutionOverallHealth,
+		"execution_findings":            latestIncidentLogs(state.ExecutionFindings, 4),
+		"execution_issues":              latestIncidentLogs(state.ExecutionIssues, 4),
+		"execution_recommendations":     latestIncidentLogs(state.ExecutionRecommendations, 4),
 		"execution_plan_id":             state.ExecutionPlanID,
 		"execution_plan_desc":           state.ExecutionPlanDesc,
 		"execution_plan_risk":           state.ExecutionPlanRisk,
 		"execution_plan_steps":          latestIncidentLogs(state.ExecutionPlanSteps, 4),
 		"execution_log_count":           len(state.ExecutionLogs),
 		"latest_execution_logs":         latestIncidentLogs(state.ExecutionLogs, 5),
+		"repeated_issue_reason":         state.RepeatedIssueReason,
+		"repeated_issue_retry_count":    state.RepeatedIssueRetryCount,
+		"repeated_issue_retry_limit":    state.RepeatedIssueRetryLimit,
+		"repeated_issue_escalated":      state.RepeatedIssueEscalated,
 		"final_status":                  state.FinalStatus,
 		"final_report":                  state.FinalReport,
 		"updated_at":                    state.UpdatedAt,

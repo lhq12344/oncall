@@ -35,6 +35,14 @@ type ValidationResult struct {
 	RuntimeSummary   string `json:"runtime_summary,omitempty"`
 }
 
+type validateResultArgs struct {
+	StepID           int    `json:"step_id"`
+	ExpectedResult   string `json:"expected_result"`
+	ActualOutput     string `json:"actual_output"`
+	ExitCode         int    `json:"exit_code"`
+	ValidationMethod string `json:"validation_method"`
+}
+
 func NewValidateResultTool(logger *zap.Logger) tool.BaseTool {
 	return &ValidateResultTool{
 		logger: logger,
@@ -76,17 +84,9 @@ func (t *ValidateResultTool) Info(ctx context.Context) (*schema.ToolInfo, error)
 }
 
 func (t *ValidateResultTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
-	type args struct {
-		StepID           int    `json:"step_id"`
-		ExpectedResult   string `json:"expected_result"`
-		ActualOutput     string `json:"actual_output"`
-		ExitCode         int    `json:"exit_code"`
-		ValidationMethod string `json:"validation_method"`
-	}
-
-	var in args
-	if err := json.Unmarshal([]byte(argumentsInJSON), &in); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
+	in, err := parseValidateResultInput(ctx, argumentsInJSON)
+	if err != nil {
+		return "", err
 	}
 
 	if in.ExpectedResult == "" {
@@ -123,6 +123,39 @@ func (t *ValidateResultTool) InvokableRun(ctx context.Context, argumentsInJSON s
 	}
 
 	return string(output), nil
+}
+
+// parseValidateResultInput 解析 validate_result 参数，兼容空参和基于最近执行结果自动补全。
+// 输入：ctx、argumentsInJSON。
+// 输出：可用于验证的参数。
+func parseValidateResultInput(ctx context.Context, argumentsInJSON string) (validateResultArgs, error) {
+	payload := strings.TrimSpace(argumentsInJSON)
+
+	var in validateResultArgs
+	if payload != "" && payload != "{}" && !strings.EqualFold(payload, "null") {
+		if err := json.Unmarshal([]byte(payload), &in); err != nil {
+			return validateResultArgs{}, fmt.Errorf("invalid arguments: %w", err)
+		}
+	}
+
+	lastResult, hasLastResult := getLastExecutionResult(ctx)
+	if in.StepID <= 0 && hasLastResult && lastResult != nil {
+		in.StepID = lastResult.StepID
+	}
+	if in.ActualOutput == "" && hasLastResult && lastResult != nil {
+		in.ActualOutput = lastResult.Output
+		in.ExitCode = lastResult.ExitCode
+	}
+	if in.ExpectedResult == "" && in.StepID > 0 {
+		if step, ok := getExecutionPlanStepByID(ctx, in.StepID); ok && step != nil {
+			in.ExpectedResult = strings.TrimSpace(step.ExpectedResult)
+		}
+	}
+
+	if in.ExpectedResult == "" {
+		return validateResultArgs{}, fmt.Errorf("expected_result is required")
+	}
+	return in, nil
 }
 
 // validate 执行验证

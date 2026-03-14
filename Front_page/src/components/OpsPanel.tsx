@@ -2,15 +2,13 @@ import React, { useEffect, useRef } from 'react';
 import { useStore } from '../store/useStore';
 import { 
   X, Minus, Terminal, CheckCircle2, AlertCircle, 
-  Loader2, Play, RotateCcw, MessageCircle, ChevronRight,
-  Activity, Cpu, Shield, HardDrive
+  Loader2, RotateCcw, Activity
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { resumeOps } from '../services/api';
 import { InterruptCard } from './InterruptCard';
 
 function cn(...inputs: ClassValue[]) {
@@ -20,7 +18,7 @@ function cn(...inputs: ClassValue[]) {
 export const OpsPanel: React.FC = () => {
   const { 
     theme, isOpsPanelOpen, setOpsPanelOpen, opsSteps, 
-    currentOpsTask, isOpsRunning, updateOpsStep, runOps 
+    currentOpsTask, isOpsRunning, runOps 
   } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -155,69 +153,17 @@ export const OpsPanel: React.FC = () => {
               <div className="p-4">
                 <div className="prose prose-sm dark:prose-invert max-w-none font-mono text-xs leading-relaxed opacity-90">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {step.content || (step.status === 'pending' ? '正在执行分析...' : '')}
+                    {formatOpsStepContent(step.content || (step.status === 'pending' ? '正在执行分析...' : ''))}
                   </ReactMarkdown>
                 </div>
 
-                {/* Error Actions */}
-                {step.status === 'error' && (
-                  <div className="mt-4 flex gap-2">
-                    <button 
-                      onClick={() => runOps(currentOpsTask)}
-                      className="px-4 py-1.5 rounded-lg bg-red-500/20 border border-red-500/40 text-red-400 text-[10px] font-bold uppercase tracking-widest hover:bg-red-500/30 transition-all flex items-center gap-2"
-                    >
-                      <RotateCcw className="w-3 h-3" />
-                      重试任务
-                    </button>
-                  </div>
-                )}
-
                 {/* Interrupt UI */}
                 {step.interrupt && (
-                  step.interrupt.bash_request ? (
-                    <InterruptCard
-                      interrupt={step.interrupt}
-                      isOps
-                      opsStepId={step.id}
-                    />
-                  ) : (
-                    <div className="mt-4 p-4 rounded-xl bg-black/40 border border-cyber-orange/30 animate-in fade-in zoom-in-95 duration-500">
-                      <div className="flex items-start gap-3 mb-4">
-                        <RotateCcw className="w-5 h-5 text-cyber-orange mt-1" />
-                        <div>
-                          <div className="text-xs font-bold text-cyber-orange uppercase tracking-widest mb-1">需要人工确认 // INTERRUPT</div>
-                          <p className="text-xs opacity-80">{step.interrupt.message}</p>
-                        </div>
-                      </div>
-                      
-                      <div className="flex gap-2">
-                        <button 
-                          onClick={() => handleResume(
-                            step.id,
-                            step.interrupt!.checkpoint_id,
-                            true,
-                            false,
-                            (step.interrupt?.interrupt_contexts || []).map((item) => item.id).filter(Boolean)
-                          )}
-                          className="flex-1 py-2 rounded-lg bg-green-500/20 border border-green-500/40 text-green-400 text-[10px] font-bold uppercase tracking-widest hover:bg-green-500/30 transition-all"
-                        >
-                          继续执行
-                        </button>
-                        <button 
-                          onClick={() => handleResume(
-                            step.id,
-                            step.interrupt!.checkpoint_id,
-                            true,
-                            true,
-                            (step.interrupt?.interrupt_contexts || []).map((item) => item.id).filter(Boolean)
-                          )}
-                          className="flex-1 py-2 rounded-lg bg-blue-600 text-white text-[10px] font-bold uppercase tracking-widest hover:bg-blue-500 transition-all shadow-[0_0_15px_rgba(37,99,235,0.3)]"
-                        >
-                          已修复完成
-                        </button>
-                      </div>
-                    </div>
-                  )
+                  <InterruptCard
+                    interrupt={step.interrupt}
+                    isOps
+                    opsStepId={step.id}
+                  />
                 )}
               </div>
             </motion.div>
@@ -242,29 +188,57 @@ export const OpsPanel: React.FC = () => {
   );
 };
 
-async function handleResume(stepId: string, checkpointId: string, approved: boolean, resolved: boolean, interruptIDs: string[]) {
-  const { updateOpsStep, setStreaming, setConnectionStatus } = useStore.getState();
-  
-  setStreaming(true);
-  setConnectionStatus('streaming');
+// formatOpsStepContent 将审批/执行结果 JSON 转成更可读的 Markdown。
+// 输入：原始步骤文本。
+// 输出：适合 ReactMarkdown 渲染的 Markdown 文本。
+function formatOpsStepContent(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return content;
+  }
 
-  const options = {
-    onContent: (content: string) => updateOpsStep(stepId, content),
-    onStep: (step: any) => {
-      // Handle nested steps if needed, but for now we just append content
-    },
-    onInterrupt: (interrupt: any) => updateOpsStep(stepId, undefined, undefined, interrupt),
-    onDone: () => {
-      setStreaming(false);
-      setConnectionStatus('idle');
-      updateOpsStep(stepId, undefined, 'completed');
-    },
-    onError: (err: string) => {
-      setStreaming(false);
-      setConnectionStatus('error');
-      updateOpsStep(stepId, `\n\nError: ${err}`, 'error');
+  try {
+    const json = JSON.parse(trimmed);
+    const looksLikeExecutionResult =
+      typeof json?.command === 'string' &&
+      typeof json?.success === 'boolean' &&
+      ('executed' in json || 'output' in json || 'error' in json);
+    if (!looksLikeExecutionResult) {
+      return content;
     }
-  };
 
-  await resumeOps(checkpointId, { approved, resolved, interrupt_ids: interruptIDs }, options);
+    const executedLabel =
+      json.executed === true ? '已执行' :
+      json.resolved === true ? '已跳过（用户标记已解决）' :
+      json.approved === false ? '已拒绝' :
+      '未执行';
+
+    const statusLabel = json.success ? '成功' : '失败';
+    const timeout = Number.isFinite(json.timeout) ? `${json.timeout}s` : '-';
+    const exitCode = Number.isFinite(json.exit_code) ? String(json.exit_code) : '-';
+    const output = typeof json.output === 'string' ? json.output.trim() : '';
+    const error = typeof json.error === 'string' ? json.error.trim() : '';
+    const comment = typeof json.comment === 'string' ? json.comment.trim() : '';
+
+    const lines = [
+      '### 执行结果',
+      `- 状态：${executedLabel} / ${statusLabel}`,
+      `- 命令：\`${json.command}\``,
+      `- 超时：${timeout}`,
+      `- 退出码：${exitCode}`
+    ];
+
+    if (comment) {
+      lines.push(`- 备注：${comment}`);
+    }
+    if (output) {
+      lines.push('', '#### 输出', '```bash', output, '```');
+    }
+    if (error) {
+      lines.push('', '#### 错误', '```text', error, '```');
+    }
+    return lines.join('\n');
+  } catch (_) {
+    return content;
+  }
 }

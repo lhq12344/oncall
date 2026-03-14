@@ -29,7 +29,10 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
     updateLastMessage,
     appendStepToLastMessage,
     setLastMessageStepStatus,
+    addOpsStep,
+    markOpsInterruptHandled,
     updateOpsStep,
+    setOpsRunning,
     setStreaming,
     setConnectionStatus
   } = useStore();
@@ -42,6 +45,11 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
   const checkpointId = interrupt.checkpoint_id;
   const contexts = interrupt.interrupt_contexts || [];
   const fullCommand = bashRequest?.raw_command || [bashRequest?.command, ...(bashRequest?.args || [])].filter(Boolean).join(' ');
+  const isCommandApproval = Boolean(bashRequest);
+  const cardTitle = isCommandApproval ? '💡 动作请求：执行系统命令' : '⚠️ 流程中断：等待人工确认';
+  const cardDescription = isCommandApproval
+    ? '请确认是否执行以下命令。'
+    : (interrupt.message?.trim() || '当前流程需要人工确认后继续。');
 
   useEffect(() => {
     setIsHandled(Boolean(interrupt.handled));
@@ -67,8 +75,8 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
     setCopySuccess(false);
     setLastAction(actionName);
     setIsSubmitting(true);
-    setStreaming(true);
-    setConnectionStatus('streaming');
+    let pausedByInterrupt = false;
+    let resumedStepId = '';
     const interruptIDs = contexts
       .map((item) => item?.id)
       .filter((id): id is string => Boolean(id));
@@ -78,6 +86,16 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
       setConnectionStatus('error');
       setErrorText('缺少 interrupt_ids，无法恢复到具体中断点');
       return;
+    }
+
+    setStreaming(true);
+    setConnectionStatus('streaming');
+    if (isOps) {
+      setOpsRunning(true);
+      if (opsStepId) {
+        markOpsInterruptHandled(opsStepId, true);
+        updateOpsStep(opsStepId, undefined, 'completed');
+      }
     }
 
     if (!isOps && currentSessionId) {
@@ -90,7 +108,14 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
 
     const onContent = (content: string) => {
       if (isOps && opsStepId) {
-        updateOpsStep(opsStepId, content);
+        const normalized = (content || '').trim();
+        if (!normalized) {
+          return;
+        }
+        if (!resumedStepId) {
+          resumedStepId = addOpsStep(inferOpsResumeStepTitle(normalized, actionName));
+        }
+        updateOpsStep(resumedStepId, content);
         return;
       }
       if (currentSessionId) {
@@ -100,7 +125,11 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
 
     const onInterrupt = (nextInterrupt: InterruptData) => {
       if (isOps && opsStepId) {
-        updateOpsStep(opsStepId, undefined, undefined, nextInterrupt);
+        pausedByInterrupt = true;
+        if (resumedStepId) {
+          updateOpsStep(resumedStepId, undefined, 'completed');
+        }
+        resumedStepId = addOpsStep('等待人工确认', '', 'pending', nextInterrupt);
         return;
       }
       if (currentSessionId) {
@@ -112,7 +141,10 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
       onContent,
       onStep: (step: any) => {
         if (isOps && opsStepId) {
-          updateOpsStep(opsStepId, `\n${step?.content || ''}`);
+          if (resumedStepId) {
+            updateOpsStep(resumedStepId, undefined, 'completed');
+          }
+          resumedStepId = addOpsStep(step?.content || inferOpsResumeStepTitle('', actionName));
           return;
         }
         if (currentSessionId) {
@@ -129,7 +161,10 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
         setIsSubmitting(false);
         setIsHandled(true);
         if (isOps && opsStepId) {
-          updateOpsStep(opsStepId, undefined, 'completed');
+          if (resumedStepId) {
+            updateOpsStep(resumedStepId, undefined, 'completed');
+          }
+          setOpsRunning(pausedByInterrupt);
         } else if (currentSessionId) {
           setLastMessageStepStatus(currentSessionId, 'completed');
         }
@@ -138,9 +173,13 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
         setStreaming(false);
         setConnectionStatus('error');
         setIsSubmitting(false);
+        if (isOps) {
+          setOpsRunning(false);
+        }
         setErrorText(err || '恢复执行失败');
         if (isOps && opsStepId) {
-          updateOpsStep(opsStepId, `\n\nError: ${err}`, 'error');
+          const targetStepId = resumedStepId || addOpsStep('流程异常');
+          updateOpsStep(targetStepId, `\n\nError: ${err}`, 'error');
           return;
         }
         if (currentSessionId) {
@@ -182,11 +221,17 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
     }
   };
 
-  const actionButtons = [
-    { key: 'approved', label: '准许执行', approved: true, resolved: false },
-    { key: 'resolved', label: '标记为已解决', approved: true, resolved: true },
-    { key: 'reject', label: '拒绝请求', approved: false, resolved: false },
-  ];
+  const actionButtons = isCommandApproval
+    ? [
+        { key: 'approved', label: '准许执行', approved: true, resolved: false },
+        { key: 'resolved', label: '标记为已解决', approved: true, resolved: true },
+        { key: 'reject', label: '拒绝请求', approved: false, resolved: false },
+      ]
+    : [
+        { key: 'approved', label: '继续执行', approved: true, resolved: false },
+        { key: 'resolved', label: '已修复完成', approved: true, resolved: true },
+        { key: 'reject', label: '停止处理', approved: false, resolved: false },
+      ];
 
   return (
     <div className={cn(
@@ -207,10 +252,10 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
         </div>
         <div>
           <h3 className="font-display font-black text-base mb-1 tracking-tight">
-            💡 动作请求：执行系统命令
+            {cardTitle}
           </h3>
           <p className="text-xs opacity-80 whitespace-pre-wrap break-words">
-            请确认是否执行以下命令。
+            {cardDescription}
           </p>
         </div>
       </div>
@@ -246,8 +291,13 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
         </div>
       )}
 
-      {!bashRequest && contexts.length > 0 && (
+      {!bashRequest && (
         <div className="mb-4 space-y-2">
+          {interrupt.message && (
+            <div className="text-xs rounded-lg border border-white/10 bg-black/50 p-3 whitespace-pre-wrap break-words">
+              {interrupt.message}
+            </div>
+          )}
           {contexts.map((ctx, i) => (
             <div key={i} className="text-xs font-mono p-2 bg-black/20 rounded border border-white/5">
               <span className="text-cyber-neon">[{ctx.address}]</span> {ctx.info}
@@ -318,3 +368,17 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
     </div>
   );
 };
+
+function inferOpsResumeStepTitle(content: string, actionName: string): string {
+  const text = (content || '').trim();
+  if (text.includes('运维技术报告') || text.includes('最终状态') || text.includes('是否已解决')) {
+    return '输出最终技术报告';
+  }
+  if (text.includes('调用工具:')) {
+    return text;
+  }
+  if (actionName) {
+    return `审批后继续：${actionName}`;
+  }
+  return '继续执行';
+}

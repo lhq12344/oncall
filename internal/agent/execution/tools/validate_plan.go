@@ -36,7 +36,7 @@ func NewValidatePlanTool(logger *zap.Logger) tool.BaseTool {
 func (t *ValidatePlanTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: "validate_plan",
-		Desc: "对 ExecutionPlan 做命令风险校验，输出 blocked/requires_confirmation/risk_level。",
+		Desc: "对 ExecutionPlan 做命令风险校验，输出 blocked/risk_level。变更类命令会记录风险并在 execute_step 阶段逐步触发审批。优先传入 {\"plan\": <ExecutionPlan>}；若同轮已通过 normalize_plan/generate_plan 生成计划，也支持空参复用。",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"plan": {
 				Type:     schema.Object,
@@ -48,18 +48,14 @@ func (t *ValidatePlanTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 }
 
 func (t *ValidatePlanTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
-	type args struct {
-		Plan ExecutionPlan `json:"plan"`
+	plan, err := parseValidatePlanInput(ctx, argumentsInJSON)
+	if err != nil {
+		return "", err
 	}
 
-	var in args
-	if err := json.Unmarshal([]byte(argumentsInJSON), &in); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-
-	result := t.validate(&in.Plan)
+	result := t.validate(plan)
 	if result.Valid && !result.Blocked && !result.RequiresConfirmation {
-		markExecutionPlanValidated(ctx, in.Plan.PlanID)
+		markExecutionPlanValidated(ctx, plan.PlanID)
 	} else {
 		clearExecutionPlanValidated(ctx)
 	}
@@ -77,6 +73,74 @@ func (t *ValidatePlanTool) InvokableRun(ctx context.Context, argumentsInJSON str
 			zap.String("risk_level", result.RiskLevel))
 	}
 	return string(output), nil
+}
+
+// parseValidatePlanInput 解析 validate_plan 入参，兼容包装对象、原始计划对象与空参复用三种形态。
+// 输入：ctx、argumentsInJSON。
+// 输出：可校验的 ExecutionPlan。
+func parseValidatePlanInput(ctx context.Context, argumentsInJSON string) (*ExecutionPlan, error) {
+	payload := strings.TrimSpace(argumentsInJSON)
+	if payload == "" || payload == "{}" || strings.EqualFold(payload, "null") {
+		if plan, ok := getPreparedExecutionPlan(ctx); ok {
+			return plan, nil
+		}
+		return nil, fmt.Errorf("invalid arguments: missing plan, call validate_plan with {\"plan\": <ExecutionPlan>} after normalize_plan/generate_plan")
+	}
+
+	type wrappedArgs struct {
+		Plan json.RawMessage `json:"plan"`
+	}
+
+	var wrapped wrappedArgs
+	if err := json.Unmarshal([]byte(payload), &wrapped); err == nil && len(wrapped.Plan) > 0 && !isNullJSON(wrapped.Plan) {
+		plan, decodeErr := decodeExecutionPlanJSON(wrapped.Plan)
+		if decodeErr != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", decodeErr)
+		}
+		return plan, nil
+	}
+
+	plan, err := decodeExecutionPlanJSON([]byte(payload))
+	if err == nil {
+		return plan, nil
+	}
+
+	if plan, ok := getPreparedExecutionPlan(ctx); ok {
+		return plan, nil
+	}
+
+	return nil, fmt.Errorf("invalid arguments: %w", err)
+}
+
+// decodeExecutionPlanJSON 解析 ExecutionPlan，兼容对象本体与字符串化 JSON。
+// 输入：原始 JSON 字节。
+// 输出：ExecutionPlan。
+func decodeExecutionPlanJSON(raw []byte) (*ExecutionPlan, error) {
+	payload := strings.TrimSpace(string(raw))
+	if payload == "" {
+		return nil, fmt.Errorf("empty execution plan payload")
+	}
+
+	if strings.HasPrefix(payload, "\"") {
+		var embedded string
+		if err := json.Unmarshal([]byte(payload), &embedded); err != nil {
+			return nil, fmt.Errorf("decode embedded plan string failed: %w", err)
+		}
+		payload = strings.TrimSpace(embedded)
+	}
+
+	var plan ExecutionPlan
+	if err := json.Unmarshal([]byte(payload), &plan); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(plan.PlanID) == "" && len(plan.Steps) == 0 {
+		return nil, fmt.Errorf("execution plan is empty")
+	}
+	return &plan, nil
+}
+
+func isNullJSON(raw []byte) bool {
+	return strings.EqualFold(strings.TrimSpace(string(raw)), "null")
 }
 
 // validate 执行命令级计划风险校验。
@@ -107,7 +171,6 @@ func (t *ValidatePlanTool) validate(plan *ExecutionPlan) *PlanValidationResult {
 	var (
 		riskScore int
 		blocked   bool
-		confirm   bool
 	)
 
 	for _, step := range plan.Steps {
@@ -125,9 +188,8 @@ func (t *ValidatePlanTool) validate(plan *ExecutionPlan) *PlanValidationResult {
 			result.Reasons = append(result.Reasons, fmt.Sprintf("步骤 %d 命中禁止命令", step.StepID))
 			riskScore += 4
 		case matchCommandPattern(commandText, highRiskPatterns()...):
-			confirm = true
 			result.ReviewCommands = append(result.ReviewCommands, commandText)
-			result.Reasons = append(result.Reasons, fmt.Sprintf("步骤 %d 为高风险命令，需人工确认", step.StepID))
+			result.Reasons = append(result.Reasons, fmt.Sprintf("步骤 %d 为变更类命令，执行到该步骤时会触发人工审批", step.StepID))
 			riskScore += 2
 		default:
 			if !matchCommandPattern(commandText, readOnlyPatterns()...) {
@@ -141,7 +203,7 @@ func (t *ValidatePlanTool) validate(plan *ExecutionPlan) *PlanValidationResult {
 	}
 
 	result.Blocked = blocked
-	result.RequiresConfirmation = !blocked && confirm
+	result.RequiresConfirmation = false
 	result.Valid = !blocked
 	switch {
 	case blocked || riskScore >= 4:

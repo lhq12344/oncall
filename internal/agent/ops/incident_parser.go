@@ -2,6 +2,7 @@ package ops
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/cloudwego/eino/adk"
@@ -196,6 +197,191 @@ func parseExecutionManualPlan(result map[string]any) string {
 		return strings.TrimSpace(text)
 	}
 	return ""
+}
+
+type executionDiagnosticInsight struct {
+	OverallHealth        string
+	Findings             []string
+	Issues               []string
+	Recommendations      []string
+	ActionableIssueCount int
+	Summary              string
+}
+
+// parseExecutionDiagnosticInsight 解析 execution_agent 产出的诊断摘要与新增问题。
+// 输入：execution_agent 结构化结果对象。
+// 输出：诊断健康度、执行发现、问题摘要、建议以及可动作问题计数。
+func parseExecutionDiagnosticInsight(result map[string]any) executionDiagnosticInsight {
+	insight := executionDiagnosticInsight{
+		Findings:        make([]string, 0, 4),
+		Issues:          make([]string, 0, 4),
+		Recommendations: make([]string, 0, 4),
+	}
+	if result == nil {
+		return insight
+	}
+
+	addUnique := func(target *[]string, text string) {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		for _, existing := range *target {
+			if existing == text {
+				return
+			}
+		}
+		*target = append(*target, text)
+	}
+
+	if steps, ok := result["executed_steps"].([]any); ok {
+		for _, item := range steps {
+			step, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			finding := strings.TrimSpace(stringFromMap(step, "findings"))
+			if isExecutionAbnormalFinding(finding) {
+				addUnique(&insight.Findings, finding)
+			}
+		}
+	}
+
+	diagnostic, ok := result["diagnostic_summary"].(map[string]any)
+	if !ok {
+		insight.Summary = firstNonEmptyText(joinExecutionIssueSummaries(insight.Findings, 2))
+		return insight
+	}
+
+	insight.OverallHealth = strings.TrimSpace(stringFromMap(diagnostic, "overall_health"))
+	if issues, ok := diagnostic["critical_issues"].([]any); ok {
+		for _, item := range issues {
+			issueObj, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			severity := strings.ToLower(strings.TrimSpace(stringFromMap(issueObj, "severity")))
+			component := strings.TrimSpace(stringFromMap(issueObj, "component"))
+			issueText := strings.TrimSpace(stringFromMap(issueObj, "issue"))
+			impact := strings.TrimSpace(stringFromMap(issueObj, "impact"))
+			recommendation := strings.TrimSpace(stringFromMap(issueObj, "recommendation"))
+
+			issueSummary := formatExecutionIssueSummary(severity, component, issueText, impact)
+			addUnique(&insight.Issues, issueSummary)
+
+			if recommendation != "" {
+				if component != "" {
+					addUnique(&insight.Recommendations, fmt.Sprintf("%s：%s", component, recommendation))
+				} else {
+					addUnique(&insight.Recommendations, recommendation)
+				}
+			}
+			if isActionableExecutionIssue(severity, component, issueText) {
+				insight.ActionableIssueCount++
+			}
+		}
+	}
+
+	if insight.ActionableIssueCount == 0 && len(insight.Issues) == 0 && len(insight.Findings) > 0 {
+		insight.Summary = joinExecutionIssueSummaries(insight.Findings, 2)
+	} else {
+		insight.Summary = joinExecutionIssueSummaries(insight.Issues, 2)
+	}
+	return insight
+}
+
+// isExecutionAbnormalFinding 判断执行发现是否包含异常信号。
+// 输入：执行步骤 findings 文本。
+// 输出：true 表示值得继续写入图状态和最终报告。
+func isExecutionAbnormalFinding(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	keywords := []string{
+		"异常", "warning", "warn", "error", "backoff", "imagepull", "notready",
+		"失败", "无法", "重启", "告警", "偏移", "不可达", "timeout", "超时",
+	}
+	for _, keyword := range keywords {
+		if strings.Contains(lower, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+// formatExecutionIssueSummary 生成适合报告展示的问题摘要。
+// 输入：严重级别、组件、问题描述、影响描述。
+// 输出：单行问题摘要。
+func formatExecutionIssueSummary(severity, component, issue, impact string) string {
+	parts := make([]string, 0, 3)
+	if component != "" && issue != "" {
+		parts = append(parts, fmt.Sprintf("%s：%s", component, issue))
+	} else if issue != "" {
+		parts = append(parts, issue)
+	} else if component != "" {
+		parts = append(parts, component)
+	}
+	if impact != "" {
+		parts = append(parts, "影响："+impact)
+	}
+	text := strings.TrimSpace(strings.Join(parts, "；"))
+	switch severity {
+	case "critical", "high":
+		return "高风险问题：" + text
+	case "medium":
+		return "中风险问题：" + text
+	case "low":
+		return "低风险问题：" + text
+	default:
+		return text
+	}
+}
+
+// isActionableExecutionIssue 判断诊断问题是否需要回到 ops_agent 继续规划。
+// 输入：严重级别、组件、问题描述。
+// 输出：true 表示当前问题不应直接视为执行成功闭环。
+func isActionableExecutionIssue(severity, component, issue string) bool {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "critical", "high", "medium":
+		return true
+	}
+
+	lowerIssue := strings.ToLower(strings.TrimSpace(issue))
+	lowerComponent := strings.ToLower(strings.TrimSpace(component))
+	if lowerIssue == "" {
+		return false
+	}
+	if strings.Contains(lowerIssue, "crashloopbackoff") ||
+		strings.Contains(lowerIssue, "imagepullbackoff") ||
+		strings.Contains(lowerIssue, "notready") ||
+		strings.Contains(lowerIssue, "unavailable") ||
+		strings.Contains(lowerIssue, "无法连接") ||
+		strings.Contains(lowerIssue, "could not be established") {
+		return !strings.Contains(lowerComponent, "test")
+	}
+	return false
+}
+
+// joinExecutionIssueSummaries 将问题摘要拼接为简短句子。
+// 输入：issues 为问题数组，limit 为最大条数。
+// 输出：拼接后的摘要。
+func joinExecutionIssueSummaries(issues []string, limit int) string {
+	if len(issues) == 0 {
+		return ""
+	}
+	if limit <= 0 || limit > len(issues) {
+		limit = len(issues)
+	}
+	parts := make([]string, 0, limit)
+	for _, issue := range issues[:limit] {
+		text := strings.TrimSpace(issue)
+		if text == "" {
+			continue
+		}
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, "；")
 }
 
 func parseStrategyReport(messages []adk.Message) (map[string]any, bool) {

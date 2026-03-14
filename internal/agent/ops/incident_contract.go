@@ -2,12 +2,17 @@ package ops
 
 import (
 	"context"
+	"encoding/gob"
 	"fmt"
 	"strings"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 )
+
+func init() {
+	gob.Register(&IncidentInterruptInfo{})
+}
 
 // RCAReport RCA -> Ops 的结构化契约。
 type RCAReport struct {

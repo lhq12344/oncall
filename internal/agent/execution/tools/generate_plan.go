@@ -129,6 +129,9 @@ func (t *GeneratePlanTool) InvokableRun(ctx context.Context, argumentsInJSON str
 	}
 	plan.RiskLevel = assessExecutionPlanRisk(plan)
 	markExecutionPlanPrepared(ctx, plan.PlanID)
+	if err := rememberExecutionPlan(ctx, plan); err != nil {
+		return "", err
+	}
 
 	output, err := json.Marshal(plan)
 	if err != nil {

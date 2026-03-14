@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -26,6 +27,10 @@ type executionToolState struct {
 
 	planPrepared              bool
 	planID                    string
+	preparedPlanJSON          string
+	executedStepIDs           []int
+	lastExecutedStepID        int
+	lastExecutionResultJSON   string
 	planValidated             bool
 	validatedPlanID           string
 	hasValidStep              bool
@@ -41,6 +46,10 @@ type executionToolState struct {
 type executionToolStateSnapshot struct {
 	PlanPrepared              bool
 	PlanID                    string
+	PreparedPlanJSON          string
+	ExecutedStepIDs           []int
+	LastExecutedStepID        int
+	LastExecutionResultJSON   string
 	PlanValidated             bool
 	ValidatedPlanID           string
 	HasValidStep              bool
@@ -65,6 +74,10 @@ func (s *executionToolState) GobEncode() ([]byte, error) {
 	snapshot := executionToolStateSnapshot{
 		PlanPrepared:              s.planPrepared,
 		PlanID:                    s.planID,
+		PreparedPlanJSON:          s.preparedPlanJSON,
+		ExecutedStepIDs:           append([]int(nil), s.executedStepIDs...),
+		LastExecutedStepID:        s.lastExecutedStepID,
+		LastExecutionResultJSON:   s.lastExecutionResultJSON,
 		PlanValidated:             s.planValidated,
 		ValidatedPlanID:           s.validatedPlanID,
 		HasValidStep:              s.hasValidStep,
@@ -101,6 +114,10 @@ func (s *executionToolState) GobDecode(data []byte) error {
 
 	s.planPrepared = snapshot.PlanPrepared
 	s.planID = snapshot.PlanID
+	s.preparedPlanJSON = snapshot.PreparedPlanJSON
+	s.executedStepIDs = append([]int(nil), snapshot.ExecutedStepIDs...)
+	s.lastExecutedStepID = snapshot.LastExecutedStepID
+	s.lastExecutionResultJSON = snapshot.LastExecutionResultJSON
 	s.planValidated = snapshot.PlanValidated
 	s.validatedPlanID = snapshot.ValidatedPlanID
 	s.hasValidStep = snapshot.HasValidStep
@@ -143,6 +160,10 @@ func markExecutionPlanPrepared(ctx context.Context, planID string) {
 	defer state.mu.Unlock()
 	state.planPrepared = true
 	state.planID = planID
+	state.preparedPlanJSON = ""
+	state.executedStepIDs = nil
+	state.lastExecutedStepID = 0
+	state.lastExecutionResultJSON = ""
 	state.planValidated = false
 	state.validatedPlanID = ""
 	state.hasValidStep = false
@@ -166,6 +187,160 @@ func hasPreparedExecutionPlan(ctx context.Context) (bool, string) {
 	state.mu.RLock()
 	defer state.mu.RUnlock()
 	return state.planPrepared, state.planID
+}
+
+// rememberExecutionPlan 缓存当前执行轮次的完整计划，供 validate_plan 等工具兜底复用。
+// 输入：ctx（Agent 运行上下文）、plan（完整命令级执行计划）。
+// 输出：错误信息。
+func rememberExecutionPlan(ctx context.Context, plan *ExecutionPlan) error {
+	if plan == nil {
+		return fmt.Errorf("execution plan is nil")
+	}
+
+	payload, err := json.Marshal(plan)
+	if err != nil {
+		return fmt.Errorf("marshal execution plan failed: %w", err)
+	}
+
+	state := getExecutionToolState(ctx)
+	if state == nil {
+		return nil
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.preparedPlanJSON = string(payload)
+	return nil
+}
+
+// getPreparedExecutionPlan 读取当前执行轮次已缓存的完整执行计划。
+// 输入：ctx（Agent 运行上下文）。
+// 输出：执行计划、是否命中。
+func getPreparedExecutionPlan(ctx context.Context) (*ExecutionPlan, bool) {
+	state := getExecutionToolState(ctx)
+	if state == nil {
+		return nil, false
+	}
+
+	state.mu.RLock()
+	payload := strings.TrimSpace(state.preparedPlanJSON)
+	state.mu.RUnlock()
+	if payload == "" {
+		return nil, false
+	}
+
+	var plan ExecutionPlan
+	if err := json.Unmarshal([]byte(payload), &plan); err != nil {
+		return nil, false
+	}
+	if len(plan.Steps) == 0 {
+		return nil, false
+	}
+	return &plan, true
+}
+
+// getExecutionPlanStepByID 从当前缓存计划中查找指定步骤。
+// 输入：ctx、stepID。
+// 输出：命中的步骤与是否存在。
+func getExecutionPlanStepByID(ctx context.Context, stepID int) (*ExecutionStep, bool) {
+	plan, ok := getPreparedExecutionPlan(ctx)
+	if !ok || plan == nil {
+		return nil, false
+	}
+	for _, step := range plan.Steps {
+		if step.StepID == stepID {
+			copied := step
+			return &copied, true
+		}
+	}
+	return nil, false
+}
+
+// getNextPendingExecutionStep 获取当前计划中尚未执行的下一步。
+// 输入：ctx。
+// 输出：下一待执行步骤与是否存在。
+func getNextPendingExecutionStep(ctx context.Context) (*ExecutionStep, bool) {
+	plan, ok := getPreparedExecutionPlan(ctx)
+	if !ok || plan == nil {
+		return nil, false
+	}
+
+	state := getExecutionToolState(ctx)
+	if state == nil {
+		return nil, false
+	}
+
+	state.mu.RLock()
+	executedSet := make(map[int]struct{}, len(state.executedStepIDs))
+	for _, stepID := range state.executedStepIDs {
+		executedSet[stepID] = struct{}{}
+	}
+	state.mu.RUnlock()
+
+	for _, step := range plan.Steps {
+		if _, exists := executedSet[step.StepID]; exists {
+			continue
+		}
+		copied := step
+		return &copied, true
+	}
+	return nil, false
+}
+
+// rememberExecutionResult 缓存最近一次 execute_step 的结果，并记录步骤已处理。
+// 输入：ctx、result。
+// 输出：错误信息。
+func rememberExecutionResult(ctx context.Context, result *ExecutionResult) error {
+	if result == nil {
+		return fmt.Errorf("execution result is nil")
+	}
+
+	payload, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("marshal execution result failed: %w", err)
+	}
+
+	state := getExecutionToolState(ctx)
+	if state == nil {
+		return nil
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.lastExecutedStepID = result.StepID
+	state.lastExecutionResultJSON = string(payload)
+	if result.StepID > 0 {
+		for _, existing := range state.executedStepIDs {
+			if existing == result.StepID {
+				return nil
+			}
+		}
+		state.executedStepIDs = append(state.executedStepIDs, result.StepID)
+	}
+	return nil
+}
+
+// getLastExecutionResult 获取最近一次 execute_step 的结构化结果。
+// 输入：ctx。
+// 输出：执行结果与是否命中。
+func getLastExecutionResult(ctx context.Context) (*ExecutionResult, bool) {
+	state := getExecutionToolState(ctx)
+	if state == nil {
+		return nil, false
+	}
+
+	state.mu.RLock()
+	payload := strings.TrimSpace(state.lastExecutionResultJSON)
+	state.mu.RUnlock()
+	if payload == "" {
+		return nil, false
+	}
+
+	var result ExecutionResult
+	if err := json.Unmarshal([]byte(payload), &result); err != nil {
+		return nil, false
+	}
+	return &result, true
 }
 
 // markExecutionPlanValidated 标记当前执行轮次的计划已通过 validate_plan。

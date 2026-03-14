@@ -66,7 +66,10 @@ interface AppState {
   setOpsPanelOpen: (isOpen: boolean) => void;
   runOps: (taskName: string) => Promise<void>;
   clearOps: () => void;
+  addOpsStep: (toolName: string, content?: string, status?: OpsStep['status'], interrupt?: InterruptData) => string;
   updateOpsStep: (id: string, content?: string, status?: OpsStep['status'], interrupt?: InterruptData) => void;
+  markOpsInterruptHandled: (id: string, handled: boolean) => void;
+  setOpsRunning: (isRunning: boolean) => void;
   setRehydrated: (val: boolean) => void;
 }
 
@@ -210,6 +213,19 @@ export const useStore = create<AppState>()(
 
       setOpsPanelOpen: (isOpen) => set({ isOpsPanelOpen: isOpen }),
       clearOps: () => set({ opsSteps: [], currentOpsTask: '', isOpsRunning: false }),
+      addOpsStep: (toolName, content = '', status = 'pending', interrupt) => {
+        const id = crypto.randomUUID();
+        set((state) => ({
+          opsSteps: [...state.opsSteps, {
+            id,
+            toolName,
+            content,
+            status,
+            interrupt
+          }]
+        }));
+        return id;
+      },
 
       updateOpsStep: (id, content, status, interrupt) => set((state) => ({
         opsSteps: state.opsSteps.map((step) => 
@@ -223,26 +239,30 @@ export const useStore = create<AppState>()(
             : step
         )
       })),
+      markOpsInterruptHandled: (id, handled) => set((state) => ({
+        opsSteps: state.opsSteps.map((step) =>
+          step.id === id
+            ? {
+                ...step,
+                interrupt: step.interrupt ? { ...step.interrupt, handled } : step.interrupt
+              }
+            : step
+        )
+      })),
+      setOpsRunning: (isRunning) => set({ isOpsRunning: isRunning }),
 
       runOps: async (taskName) => {
-        const { updateOpsStep, clearOps } = get();
+        const { updateOpsStep, clearOps, addOpsStep } = get();
         clearOps();
         set({ isOpsPanelOpen: true, isOpsRunning: true, currentOpsTask: taskName });
 
         const { streamOps } = await import('../services/api');
 
         let currentStepId = '';
+        let pausedByInterrupt = false;
         const createOpsStep = (toolName: string): string => {
-          const id = crypto.randomUUID();
+          const id = addOpsStep(toolName);
           currentStepId = id;
-          set((state) => ({
-            opsSteps: [...state.opsSteps, {
-              id,
-              toolName,
-              content: '',
-              status: 'pending'
-            }]
-          }));
           return id;
         };
 
@@ -266,6 +286,7 @@ export const useStore = create<AppState>()(
             updateOpsStep(currentStepId, content);
           },
           onInterrupt: (interrupt) => {
+            pausedByInterrupt = true;
             if (!currentStepId) {
               createOpsStep('等待人工确认');
             }
@@ -275,7 +296,7 @@ export const useStore = create<AppState>()(
             if (currentStepId) {
               updateOpsStep(currentStepId, undefined, 'completed');
             }
-            set({ isOpsRunning: false });
+            set({ isOpsRunning: pausedByInterrupt });
           },
           onError: (err) => {
             if (!currentStepId) {

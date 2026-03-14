@@ -17,6 +17,13 @@ import (
 	"go.uber.org/zap"
 )
 
+const maxRepeatedIssueRetries = 3
+
+var (
+	repeatedIssueSpacePattern = regexp.MustCompile(`\s+`)
+	repeatedIssueNoisePattern = regexp.MustCompile(`\b(plan_[a-z0-9_-]+|step[_\s-]*\d+|\d{4}-\d{2}-\d{2}[t\s]\d{2}:\d{2}:\d{2}[^\s]*|\d+)\b`)
+)
+
 type executionGateAgent struct {
 	name   string
 	desc   string
@@ -39,6 +46,136 @@ func (a *executionGateAgent) Description(_ context.Context) string {
 	return a.desc
 }
 
+type repeatedIssueDecision struct {
+	Count   int
+	Limit   int
+	Reached bool
+	Reason  string
+}
+
+// trackRepeatedIssue 记录同类问题的重试次数并返回阈值判定。
+// 输入：ctx（工作流上下文）、issueType（问题类别）、reason（问题描述）。
+// 输出：计数结果（当前次数、上限、是否达到上限、归一化原因）。
+func trackRepeatedIssue(ctx context.Context, issueType, reason string) repeatedIssueDecision {
+	key := normalizeRepeatedIssueKey(issueType, reason)
+	if key == "" {
+		return repeatedIssueDecision{Limit: maxRepeatedIssueRetries}
+	}
+
+	state := getIncidentState(ctx)
+	state.RepeatedIssueRetryLimit = maxRepeatedIssueRetries
+	if key == strings.TrimSpace(state.RepeatedIssueKey) {
+		state.RepeatedIssueRetryCount++
+	} else {
+		state.RepeatedIssueKey = key
+		state.RepeatedIssueReason = clipText(strings.TrimSpace(reason), 300)
+		state.RepeatedIssueRetryCount = 1
+		state.RepeatedIssueEscalated = false
+	}
+	if state.RepeatedIssueRetryCount >= maxRepeatedIssueRetries {
+		state.RepeatedIssueEscalated = true
+	}
+	state.UpdatedAt = time.Now().Format(time.RFC3339)
+	setIncidentState(ctx, state)
+
+	return repeatedIssueDecision{
+		Count:   state.RepeatedIssueRetryCount,
+		Limit:   maxRepeatedIssueRetries,
+		Reached: state.RepeatedIssueEscalated,
+		Reason:  firstNonEmptyText(state.RepeatedIssueReason, strings.TrimSpace(reason)),
+	}
+}
+
+// normalizeRepeatedIssueKey 归一化重复问题签名，避免时间戳/步骤号导致同问题无法聚合。
+// 输入：issueType（问题类别）、reason（问题描述）。
+// 输出：可用于重复计数的稳定 key。
+func normalizeRepeatedIssueKey(issueType, reason string) string {
+	raw := strings.ToLower(strings.TrimSpace(issueType + " " + reason))
+	if raw == "" {
+		return ""
+	}
+	raw = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ", "`", "", "\"", "", "'", "").Replace(raw)
+	raw = repeatedIssueNoisePattern.ReplaceAllString(raw, "#")
+	raw = repeatedIssueSpacePattern.ReplaceAllString(raw, " ")
+	return clipText(strings.TrimSpace(raw), 220)
+}
+
+// clearRepeatedIssueState 清理重复问题计数状态。
+// 输入：ctx（工作流上下文）。
+// 输出：无。
+func clearRepeatedIssueState(ctx context.Context) {
+	state := getIncidentState(ctx)
+	if strings.TrimSpace(state.RepeatedIssueKey) == "" &&
+		strings.TrimSpace(state.RepeatedIssueReason) == "" &&
+		state.RepeatedIssueRetryCount == 0 &&
+		!state.RepeatedIssueEscalated {
+		return
+	}
+	state.RepeatedIssueKey = ""
+	state.RepeatedIssueReason = ""
+	state.RepeatedIssueRetryCount = 0
+	state.RepeatedIssueRetryLimit = maxRepeatedIssueRetries
+	state.RepeatedIssueEscalated = false
+	state.UpdatedAt = time.Now().Format(time.RFC3339)
+	setIncidentState(ctx, state)
+}
+
+// buildFallbackPlan 统一提取人工兜底方案，优先使用 execution 输出，其次 proposal。
+// 输入：manualPlan、proposal、executionPlan、state。
+// 输出：可展示给用户的人工方案。
+func buildFallbackPlan(manualPlan string, proposal *RemediationProposal, executionPlan *GeneratedExecutionPlan, state *IncidentState) string {
+	fallback := strings.TrimSpace(manualPlan)
+	if fallback == "" && proposal != nil {
+		fallback = strings.TrimSpace(proposal.FallbackPlan)
+	}
+	if fallback == "" && executionPlan != nil {
+		fallback = strings.TrimSpace(executionPlan.Description)
+	}
+	if fallback == "" && state != nil {
+		fallback = strings.TrimSpace(firstNonEmptyText(
+			state.ExecutionFallback,
+			state.RemediationProposalFallback,
+			state.FallbackPlan,
+		))
+	}
+	if fallback == "" {
+		fallback = "请根据技术报告中的执行计划和失败原因执行人工处置，并在完成后回填处理结果。"
+	}
+	return clipText(fallback, 800)
+}
+
+// buildRepeatedIssueStopEvent 在重复重试达到阈值时写入状态并结束自动循环。
+// 输入：ctx、reason（重复问题摘要）、fallback（人工方案）。
+// 输出：用于结束循环并进入最终报告的 AgentEvent。
+func (a *executionGateAgent) buildRepeatedIssueStopEvent(ctx context.Context, reason, fallback string) *adk.AgentEvent {
+	state := getIncidentState(ctx)
+	retryCount := state.RepeatedIssueRetryCount
+	if retryCount <= 0 {
+		retryCount = maxRepeatedIssueRetries
+	}
+	stopReason := clipText(firstNonEmptyText(reason, state.RepeatedIssueReason), 600)
+	fallback = buildFallbackPlan(fallback, nil, nil, state)
+
+	state.ExecutionStatus = "manual_required"
+	state.ExecutionSuccess = false
+	state.ExecutionReason = clipText(fmt.Sprintf("同一问题重复重试 %d 次仍未解决：%s", retryCount, stopReason), 600)
+	state.ExecutionFallback = fallback
+	state.RepeatedIssueEscalated = true
+	state.RepeatedIssueRetryLimit = maxRepeatedIssueRetries
+	if state.RepeatedIssueRetryCount <= 0 {
+		state.RepeatedIssueRetryCount = retryCount
+	}
+	if strings.TrimSpace(state.FinalStatus) == "" {
+		state.FinalStatus = "unresolved"
+	}
+	appendIncidentExecutionLog(state, fmt.Sprintf("[execution_gate] 同一问题重试达到上限，停止自动执行：%s", stopReason))
+	state.UpdatedAt = time.Now().Format(time.RFC3339)
+	setIncidentState(ctx, state)
+
+	message := fmt.Sprintf("同一问题已连续重试 %d 次仍未解决，停止自动调用并转人工处理。问题：%s。建议人工方案：%s", retryCount, stopReason, clipText(fallback, 220))
+	return breakLoopEvent(a.name, message)
+}
+
 func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
 	iterator, generator := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
 
@@ -59,6 +196,7 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 		executedSteps := parseExecutedStepCount(execResult)
 		executionStatusText := parseExecutionStatusText(execResult)
 		manualPlan := parseExecutionManualPlan(execResult)
+		diagnostic := parseExecutionDiagnosticInsight(execResult)
 
 		if hasValidation && validation.Blocked {
 			reason := formatReasons(validation.Reasons)
@@ -106,6 +244,12 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 			reason := strings.TrimSpace(firstNonEmptyText(stepValidation.StopReason, stepValidation.Message))
 			if strings.EqualFold(strings.TrimSpace(stepValidation.StopAction), "replan") {
 				runtimeSummary := strings.TrimSpace(firstNonEmptyText(stepValidation.RuntimeSummary, stepValidation.MismatchReason, stepValidation.Actual))
+				retryDecision := trackRepeatedIssue(ctx, "step_validation_replan", firstNonEmptyText(reason, runtimeSummary))
+				if retryDecision.Reached {
+					fallback := buildFallbackPlan(manualPlan, proposal, executionPlan, getIncidentState(ctx))
+					generator.Send(a.buildRepeatedIssueStopEvent(ctx, retryDecision.Reason, fallback))
+					return
+				}
 				message := fmt.Sprintf("执行校验发现当前现场与上游故障假设不一致，停止当前计划并回到 ops_agent 重新规划。原因：%s。", reason)
 				if runtimeSummary != "" {
 					message += " 最新运行时观测：" + clipText(runtimeSummary, 220)
@@ -141,6 +285,7 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 		}
 
 		if executionStatusText == "manual_required" {
+			clearRepeatedIssueState(ctx)
 			fallback := strings.TrimSpace(manualPlan)
 			planID := ""
 			if executionPlan != nil {
@@ -169,9 +314,33 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 		}
 
 		if execStatus.Found && execStatus.Success {
+			if hasExecResult && diagnostic.ActionableIssueCount > 0 {
+				summary := firstNonEmptyText(
+					joinExecutionIssueSummaries(diagnostic.Issues, 2),
+					diagnostic.Summary,
+				)
+				retryDecision := trackRepeatedIssue(ctx, "execution_actionable_issue", summary)
+				if retryDecision.Reached {
+					fallback := buildFallbackPlan(manualPlan, proposal, executionPlan, getIncidentState(ctx))
+					generator.Send(a.buildRepeatedIssueStopEvent(ctx, retryDecision.Reason, fallback))
+					return
+				}
+				message := "执行阶段已完成既定检查，但仍发现未闭环问题，将回到 ops_agent 继续生成修复动作。"
+				if summary != "" {
+					message = fmt.Sprintf("执行阶段已完成既定检查，但仍发现未闭环问题：%s。将回到 ops_agent 继续生成修复动作。", clipText(summary, 220))
+				}
+				generator.Send(assistantEvent(message))
+				return
+			}
 			// 防止 execution_agent 在未调用工具时直接输出 success。
 			// 若存在结构化执行结果但 executed_steps 为空，视为未实际执行，回到 ops 重新生成可执行计划。
 			if hasExecResult && executedSteps <= 0 {
+				retryDecision := trackRepeatedIssue(ctx, "execution_empty_steps", "execution_agent 返回 success 但未产生 executed_steps")
+				if retryDecision.Reached {
+					fallback := buildFallbackPlan(manualPlan, proposal, executionPlan, getIncidentState(ctx))
+					generator.Send(a.buildRepeatedIssueStopEvent(ctx, retryDecision.Reason, fallback))
+					return
+				}
 				if a.logger != nil {
 					a.logger.Warn("execution success without executed steps, fallback to replan",
 						zap.String("execution_status", executionStatusText))
@@ -179,11 +348,13 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 				generator.Send(assistantEvent("未检测到执行步骤明细（executed_steps 为空），将回到 ops_agent 重新生成可执行计划。"))
 				return
 			}
+			clearRepeatedIssueState(ctx)
 			generator.Send(breakLoopEvent(a.name, "执行步骤已成功，停止重规划循环，进入策略复盘。"))
 			return
 		}
 
 		if execStatus.ToolCannotFix {
+			clearRepeatedIssueState(ctx)
 			fallback := ""
 			planID := ""
 			if proposal != nil {
@@ -200,6 +371,13 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 			return
 		}
 
+		replanReason := strings.TrimSpace(firstNonEmptyText(execStatus.RawMessageHint, "执行未达成预期"))
+		retryDecision := trackRepeatedIssue(ctx, "execution_replan", replanReason)
+		if retryDecision.Reached {
+			fallback := buildFallbackPlan(manualPlan, proposal, executionPlan, getIncidentState(ctx))
+			generator.Send(a.buildRepeatedIssueStopEvent(ctx, retryDecision.Reason, fallback))
+			return
+		}
 		generator.Send(assistantEvent("执行未达成预期，回到 ops_agent 重新生成计划。"))
 	}()
 
@@ -226,11 +404,18 @@ func (a *executionGateAgent) Resume(ctx context.Context, info *adk.ResumeInfo, _
 		}
 
 		approved, resolved, comment := parseResumeDecision(info.ResumeData)
+		state := getIncidentState(ctx)
 		if resolved {
 			if strings.TrimSpace(comment) == "" {
 				comment = "用户已确认"
 			}
 			generator.Send(breakLoopEvent(a.name, fmt.Sprintf("收到确认：%s。结束执行循环，进入 strategy_agent 生成最终报告。", comment)))
+			return
+		}
+		if state.RepeatedIssueEscalated {
+			reason := firstNonEmptyText(state.RepeatedIssueReason, state.ExecutionReason, "同一问题重复重试后仍未解决")
+			fallback := buildFallbackPlan("", nil, nil, state)
+			generator.Send(breakLoopEvent(a.name, fmt.Sprintf("同一问题已达到自动重试上限（%d 次），不再继续自动执行。问题：%s。请按人工方案处理：%s", maxIntValue(state.RepeatedIssueRetryCount, maxRepeatedIssueRetries), clipText(reason, 220), clipText(fallback, 220))))
 			return
 		}
 
@@ -249,6 +434,16 @@ func (a *executionGateAgent) Resume(ctx context.Context, info *adk.ResumeInfo, _
 	}()
 
 	return iterator
+}
+
+// maxIntValue 返回两个整数中的较大值。
+// 输入：left、right。
+// 输出：较大值。
+func maxIntValue(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 type finalReportAgent struct {
@@ -314,13 +509,16 @@ func buildFinalOpsSummary(state *IncidentState) string {
 	finalStatus := strings.TrimSpace(state.FinalStatus)
 	if finalStatus == "" {
 		switch {
-		case state.ExecutionSuccess:
+		case state.ExecutionSuccess && len(state.ExecutionIssues) == 0:
 			finalStatus = "resolved"
-		case strings.TrimSpace(state.ExecutionStatus) != "":
+		case state.ExecutionSuccess || strings.TrimSpace(state.ExecutionStatus) != "":
 			finalStatus = "partially_resolved"
 		default:
 			finalStatus = "unresolved"
 		}
+	}
+	if state.RepeatedIssueEscalated {
+		finalStatus = "unresolved"
 	}
 
 	resolvedText := "待确认"
@@ -602,6 +800,12 @@ func buildReadableProblemSection(state *IncidentState, facts incidentReadableFac
 	if len(facts.RestartedPods) > 0 {
 		appendOnce(fmt.Sprintf("故障窗口内多个关键 Pod 出现重启，重点包括：%s", joinReadableList(facts.RestartedPods, 5)))
 	}
+	for _, issue := range limitReadableItems(state.ExecutionIssues, 3) {
+		appendOnce("执行阶段新增发现：" + clipText(issue, 180))
+	}
+	for _, finding := range limitReadableItems(state.ExecutionFindings, 2) {
+		appendOnce("现场核查发现：" + clipText(finding, 180))
+	}
 	if impact := strings.TrimSpace(state.Impact); impact != "" {
 		appendOnce("影响范围：" + clipText(impact, 160))
 	}
@@ -685,6 +889,9 @@ func buildReadableMethodSection(state *IncidentState, facts incidentReadableFact
 	if len(out) == 0 && facts.NodeReboot {
 		out = append(out, "通过核查节点事件、关键组件状态和历史日志，确认问题由节点级异常触发，当前以恢复确认和风险复核为主")
 	}
+	if len(state.ExecutionIssues) > 0 {
+		out = append(out, "本轮 execution 主要完成核查与诊断，已识别新增异常，但尚未对这些新增问题执行进一步变更修复")
+	}
 	return limitReadableItems(out, 5)
 }
 
@@ -726,9 +933,21 @@ func buildReadableResultSection(state *IncidentState, facts incidentReadableFact
 	default:
 		out = append(out, "本次事件尚未完全闭环，仍需人工继续处理")
 	}
+	if state.RepeatedIssueEscalated {
+		retryCount := maxIntValue(state.RepeatedIssueRetryCount, maxRepeatedIssueRetries)
+		out = append(out, fmt.Sprintf("同一问题重复重试 %d 次后仍未闭环，已停止自动调用并转人工处理", retryCount))
+		if reason := strings.TrimSpace(state.RepeatedIssueReason); reason != "" {
+			out = append(out, "重复问题摘要："+clipText(reason, 180))
+		}
+	}
 
 	if facts.NodeReboot || facts.NodeNotReady {
 		out = append(out, "处置结论显示，本次更符合节点异常导致关键组件被动重启的场景")
+	}
+	if len(state.ExecutionIssues) > 0 {
+		for _, issue := range limitReadableItems(state.ExecutionIssues, 2) {
+			out = append(out, "当前仍需跟进的问题："+clipText(issue, 180))
+		}
 	}
 	if facts.PrometheusNoData || facts.ElasticsearchNoHits {
 		out = append(out, "监控和日志证据链仍不完整，后续复盘需要补齐历史指标与日志采集")
@@ -750,12 +969,19 @@ func buildReadableConclusionSection(state *IncidentState, facts incidentReadable
 	} else {
 		out = append(out, "综合结论："+synthesizeIncidentConclusion(state, facts, finalStatus))
 	}
+	if state.RepeatedIssueEscalated {
+		retryCount := maxIntValue(state.RepeatedIssueRetryCount, maxRepeatedIssueRetries)
+		out = append(out, fmt.Sprintf("自动化流程已触发同问题重试上限（%d 次），建议由运维人员接管并执行人工处置闭环", retryCount))
+	}
 
 	if facts.NodeReboot || facts.NodeNotReady {
 		out = append(out, "建议后续优先排查宿主节点重启原因、节点稳定性以及相关宿主机资源/系统日志")
 	}
 	if facts.PrometheusNoData || facts.ElasticsearchNoHits {
 		out = append(out, "建议补齐 Prometheus 历史指标采集和 Elasticsearch 日志链路，避免类似事件复盘时证据不足")
+	}
+	for _, recommendation := range limitReadableItems(state.ExecutionRecommendations, 2) {
+		out = append(out, "针对执行阶段发现问题的建议："+clipText(recommendation, 180))
 	}
 	if fallback := strings.TrimSpace(state.ExecutionFallback); fallback != "" && !strings.EqualFold(finalStatus, "resolved") {
 		out = append(out, "如需继续处置，可按人工兜底方案推进："+clipText(fallback, 180))
