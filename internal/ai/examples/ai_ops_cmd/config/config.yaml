@@ -24,7 +24,3 @@ doubao_embedding_model:
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
   model: "doubao-embedding-vision-250615"
   dimensions: 2048
-
-file_dir: "/home/lihaoqian/myproject/go_agent/docs/"
-cls_mcp_url: "https://mcp-api.tencent-cloud.com/sse/77977c99c3e6593c"
-
