@@ -44,3 +44,5 @@ CLAUDE.*
 # Binary files
 bin/
 go_agent
+
+AGENTS.md
