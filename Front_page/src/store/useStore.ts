@@ -288,7 +288,7 @@ export const useStore = create<AppState>()(
           onInterrupt: (interrupt) => {
             pausedByInterrupt = true;
             if (!currentStepId) {
-              createOpsStep('等待人工确认');
+              createOpsStep(interrupt.bash_request?.raw_command ? '执行确认' : '人工确认');
             }
             updateOpsStep(currentStepId, undefined, undefined, interrupt);
           },

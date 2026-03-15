@@ -29,6 +29,11 @@ type executionToolState struct {
 	planID                    string
 	preparedPlanJSON          string
 	executedStepIDs           []int
+	validatedStepIDs          []int
+	stepAttemptCount          map[int]int
+	stepCommandAttemptCount   map[string]int
+	stepCommandSucceeded      map[string]bool
+	stepCommandLastResultJSON map[string]string
 	lastExecutedStepID        int
 	lastExecutionResultJSON   string
 	planValidated             bool
@@ -48,6 +53,11 @@ type executionToolStateSnapshot struct {
 	PlanID                    string
 	PreparedPlanJSON          string
 	ExecutedStepIDs           []int
+	ValidatedStepIDs          []int
+	StepAttemptCount          map[int]int
+	StepCommandAttemptCount   map[string]int
+	StepCommandSucceeded      map[string]bool
+	StepCommandLastResultJSON map[string]string
 	LastExecutedStepID        int
 	LastExecutionResultJSON   string
 	PlanValidated             bool
@@ -76,6 +86,11 @@ func (s *executionToolState) GobEncode() ([]byte, error) {
 		PlanID:                    s.planID,
 		PreparedPlanJSON:          s.preparedPlanJSON,
 		ExecutedStepIDs:           append([]int(nil), s.executedStepIDs...),
+		ValidatedStepIDs:          append([]int(nil), s.validatedStepIDs...),
+		StepAttemptCount:          cloneIntIntMap(s.stepAttemptCount),
+		StepCommandAttemptCount:   cloneStringIntMap(s.stepCommandAttemptCount),
+		StepCommandSucceeded:      cloneStringBoolMap(s.stepCommandSucceeded),
+		StepCommandLastResultJSON: cloneStringMap(s.stepCommandLastResultJSON),
 		LastExecutedStepID:        s.lastExecutedStepID,
 		LastExecutionResultJSON:   s.lastExecutionResultJSON,
 		PlanValidated:             s.planValidated,
@@ -116,6 +131,11 @@ func (s *executionToolState) GobDecode(data []byte) error {
 	s.planID = snapshot.PlanID
 	s.preparedPlanJSON = snapshot.PreparedPlanJSON
 	s.executedStepIDs = append([]int(nil), snapshot.ExecutedStepIDs...)
+	s.validatedStepIDs = append([]int(nil), snapshot.ValidatedStepIDs...)
+	s.stepAttemptCount = cloneIntIntMap(snapshot.StepAttemptCount)
+	s.stepCommandAttemptCount = cloneStringIntMap(snapshot.StepCommandAttemptCount)
+	s.stepCommandSucceeded = cloneStringBoolMap(snapshot.StepCommandSucceeded)
+	s.stepCommandLastResultJSON = cloneStringMap(snapshot.StepCommandLastResultJSON)
 	s.lastExecutedStepID = snapshot.LastExecutedStepID
 	s.lastExecutionResultJSON = snapshot.LastExecutionResultJSON
 	s.planValidated = snapshot.PlanValidated
@@ -162,6 +182,11 @@ func markExecutionPlanPrepared(ctx context.Context, planID string) {
 	state.planID = planID
 	state.preparedPlanJSON = ""
 	state.executedStepIDs = nil
+	state.validatedStepIDs = nil
+	state.stepAttemptCount = nil
+	state.stepCommandAttemptCount = nil
+	state.stepCommandSucceeded = nil
+	state.stepCommandLastResultJSON = nil
 	state.lastExecutedStepID = 0
 	state.lastExecutionResultJSON = ""
 	state.planValidated = false
@@ -310,14 +335,171 @@ func rememberExecutionResult(ctx context.Context, result *ExecutionResult) error
 	state.lastExecutedStepID = result.StepID
 	state.lastExecutionResultJSON = string(payload)
 	if result.StepID > 0 {
+		if !result.Skipped {
+			if state.stepAttemptCount == nil {
+				state.stepAttemptCount = make(map[int]int)
+			}
+			state.stepAttemptCount[result.StepID]++
+		}
 		for _, existing := range state.executedStepIDs {
 			if existing == result.StepID {
-				return nil
+				break
 			}
 		}
-		state.executedStepIDs = append(state.executedStepIDs, result.StepID)
+		if len(state.executedStepIDs) == 0 || state.executedStepIDs[len(state.executedStepIDs)-1] != result.StepID {
+			exists := false
+			for _, existing := range state.executedStepIDs {
+				if existing == result.StepID {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				state.executedStepIDs = append(state.executedStepIDs, result.StepID)
+			}
+		}
+		if result.Success && result.Resolved {
+			appendValidatedStepIDLocked(state, result.StepID)
+		}
+	}
+	commandKey := buildStepCommandKey(result.StepID, result.Command)
+	if commandKey != "" {
+		if state.stepCommandAttemptCount == nil {
+			state.stepCommandAttemptCount = make(map[string]int)
+		}
+		if state.stepCommandSucceeded == nil {
+			state.stepCommandSucceeded = make(map[string]bool)
+		}
+		if state.stepCommandLastResultJSON == nil {
+			state.stepCommandLastResultJSON = make(map[string]string)
+		}
+		state.stepCommandAttemptCount[commandKey]++
+		if result.Success && !result.Skipped {
+			state.stepCommandSucceeded[commandKey] = true
+		}
+		state.stepCommandLastResultJSON[commandKey] = string(payload)
 	}
 	return nil
+}
+
+// getStepExecutionStats 获取步骤级执行统计。
+// 输入：ctx、stepID。
+// 输出：总执行次数、是否已完成校验、是否命中。
+func getStepExecutionStats(ctx context.Context, stepID int) (int, bool, bool) {
+	state := getExecutionToolState(ctx)
+	if state == nil || stepID <= 0 {
+		return 0, false, false
+	}
+
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+
+	attemptCount := state.stepAttemptCount[stepID]
+	validated := containsInt(state.validatedStepIDs, stepID)
+	if attemptCount == 0 && !validated {
+		return 0, false, false
+	}
+	return attemptCount, validated, true
+}
+
+// getStepCommandStats 获取同一步骤同一命令的执行统计。
+// 输入：ctx、stepID、command。
+// 输出：尝试次数、是否已成功、最近执行结果、是否命中。
+func getStepCommandStats(ctx context.Context, stepID int, command string) (int, bool, *ExecutionResult, bool) {
+	state := getExecutionToolState(ctx)
+	if state == nil {
+		return 0, false, nil, false
+	}
+
+	key := buildStepCommandKey(stepID, command)
+	if key == "" {
+		return 0, false, nil, false
+	}
+
+	state.mu.RLock()
+	attemptCount := state.stepCommandAttemptCount[key]
+	succeeded := state.stepCommandSucceeded[key]
+	lastResultJSON := strings.TrimSpace(state.stepCommandLastResultJSON[key])
+	state.mu.RUnlock()
+	if attemptCount <= 0 && !succeeded && lastResultJSON == "" {
+		return 0, false, nil, false
+	}
+
+	var lastResult *ExecutionResult
+	if lastResultJSON != "" {
+		var parsed ExecutionResult
+		if err := json.Unmarshal([]byte(lastResultJSON), &parsed); err == nil {
+			lastResult = &parsed
+		}
+	}
+	return attemptCount, succeeded, lastResult, true
+}
+
+// buildStepCommandKey 构造步骤命令统计 key。
+// 输入：stepID、command。
+// 输出：归一化 key。
+func buildStepCommandKey(stepID int, command string) string {
+	command = strings.TrimSpace(command)
+	if stepID <= 0 || command == "" {
+		return ""
+	}
+	return fmt.Sprintf("%d|%s", stepID, strings.ToLower(command))
+}
+
+// cloneStringMap 复制字符串映射。
+// 输入：源 map。
+// 输出：复制后的 map。
+func cloneStringMap(source map[string]string) map[string]string {
+	if len(source) == 0 {
+		return make(map[string]string)
+	}
+	target := make(map[string]string, len(source))
+	for key, value := range source {
+		target[key] = value
+	}
+	return target
+}
+
+// cloneStringIntMap 复制字符串整型映射。
+// 输入：源 map。
+// 输出：复制后的 map。
+func cloneStringIntMap(source map[string]int) map[string]int {
+	if len(source) == 0 {
+		return make(map[string]int)
+	}
+	target := make(map[string]int, len(source))
+	for key, value := range source {
+		target[key] = value
+	}
+	return target
+}
+
+// cloneIntIntMap 复制整型映射。
+// 输入：源 map。
+// 输出：复制后的 map。
+func cloneIntIntMap(source map[int]int) map[int]int {
+	if len(source) == 0 {
+		return make(map[int]int)
+	}
+	target := make(map[int]int, len(source))
+	for key, value := range source {
+		target[key] = value
+	}
+	return target
+}
+
+// cloneStringBoolMap 复制字符串布尔映射。
+// 输入：源 map。
+// 输出：复制后的 map。
+func cloneStringBoolMap(source map[string]bool) map[string]bool {
+	if len(source) == 0 {
+		return make(map[string]bool)
+	}
+	target := make(map[string]bool, len(source))
+	for key, value := range source {
+		target[key] = value
+	}
+	return target
 }
 
 // getLastExecutionResult 获取最近一次 execute_step 的结构化结果。
@@ -384,6 +566,31 @@ func hasValidatedExecutionPlan(ctx context.Context) (bool, string) {
 	return state.planValidated, state.validatedPlanID
 }
 
+// markExecutionStopped 主动标记 execution 进入停止状态。
+// 输入：ctx（Agent 运行上下文）、reason（停止原因）、action（停止动作，如 manual_required/replan）。
+// 输出：无。
+func markExecutionStopped(ctx context.Context, reason, action string) {
+	state := getExecutionToolState(ctx)
+	if state == nil {
+		return
+	}
+
+	reason = strings.TrimSpace(reason)
+	action = strings.TrimSpace(action)
+	if reason == "" {
+		reason = "execution stopped by tool guard"
+	}
+	if action == "" {
+		action = "manual_required"
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.stopExecution = true
+	state.stopReason = reason
+	state.stopAction = action
+}
+
 // shouldSkipExecutionStep 判断当前步骤是否应被跳过。
 // 输入：ctx、stepID。
 // 输出：是否跳过、跳过原因。
@@ -392,11 +599,13 @@ func shouldSkipExecutionStep(ctx context.Context, stepID int) (bool, string) {
 	if state == nil {
 		return false, ""
 	}
-	_ = stepID
 	state.mu.RLock()
 	defer state.mu.RUnlock()
 	if state.stopExecution {
 		return true, state.stopReason
+	}
+	if stepID > 0 && containsInt(state.validatedStepIDs, stepID) {
+		return true, fmt.Sprintf("步骤 %d 已完成校验，无需重复执行，请继续下一步", stepID)
 	}
 	return false, ""
 }
@@ -426,6 +635,7 @@ func recordValidationProgress(ctx context.Context, stepID int, validation *Valid
 		state.hasValidStep = true
 		state.lastValidStepID = stepID
 		state.consecutiveHardInvalids = 0
+		appendValidatedStepIDLocked(state, stepID)
 	} else {
 		state.consecutivePlanMismatches = 0
 	}
@@ -483,4 +693,29 @@ func firstNonEmptyExecutionText(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// appendValidatedStepIDLocked 记录已完成校验的步骤。
+// 输入：state、stepID。
+// 输出：直接修改 state。
+func appendValidatedStepIDLocked(state *executionToolState, stepID int) {
+	if state == nil || stepID <= 0 {
+		return
+	}
+	if containsInt(state.validatedStepIDs, stepID) {
+		return
+	}
+	state.validatedStepIDs = append(state.validatedStepIDs, stepID)
+}
+
+// containsInt 判断整数切片是否包含目标值。
+// 输入：values、target。
+// 输出：是否包含。
+func containsInt(values []int, target int) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

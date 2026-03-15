@@ -88,6 +88,10 @@ type executeStepArgs struct {
 	DryRun  bool     `json:"dry_run"`
 }
 
+const maxSameStepCommandAttempts = 2
+const maxSameStepExecutionAttempts = 4
+const maxExecutionOutputRunes = 8000
+
 // NewExecuteStepTool 创建执行步骤工具。
 // 输入：logger。
 // 输出：可注册到 execution_agent 的执行工具。
@@ -138,6 +142,7 @@ func (t *ExecuteStepTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 			},
 			"args": {
 				Type:     schema.Array,
+				ElemInfo: &schema.ParameterInfo{Type: schema.String},
 				Desc:     "命令参数数组",
 				Required: false,
 			},
@@ -227,6 +232,102 @@ func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 				zap.String("reason", reason))
 		}
 		return output, nil
+	}
+
+	if in.StepID > 0 {
+		if attemptCount, validated, hit := getStepExecutionStats(ctx, in.StepID); hit && !validated && attemptCount >= maxSameStepExecutionAttempts {
+			reason := fmt.Sprintf("步骤 %d 在未完成校验前已执行 %d 次，判定进入重复试错，停止自动执行并建议人工处理或重规划", in.StepID, attemptCount)
+			markExecutionStopped(ctx, reason, "manual_required")
+			result := &ExecutionResult{
+				StepID:     in.StepID,
+				Success:    false,
+				Skipped:    true,
+				Mode:       modeLabel(isBashMode),
+				Command:    rendered,
+				Timeout:    in.Timeout,
+				Output:     "",
+				Error:      reason,
+				ExitCode:   -4,
+				Duration:   0,
+				ExecutedAt: time.Now().Format("2006-01-02 15:04:05"),
+			}
+			if err := rememberExecutionResult(ctx, result); err != nil {
+				return "", err
+			}
+			if t.logger != nil {
+				t.logger.Info("step execution blocked due to excessive retries",
+					zap.Int("step_id", in.StepID),
+					zap.String("command", rendered),
+					zap.Int("step_attempt_count", attemptCount),
+					zap.String("reason", reason))
+			}
+			return marshalExecutionResult(result)
+		}
+
+		attemptCount, succeeded, lastResult, hit := getStepCommandStats(ctx, in.StepID, rendered)
+		if hit && succeeded {
+			result := &ExecutionResult{
+				StepID:     in.StepID,
+				Success:    true,
+				Skipped:    true,
+				Mode:       modeLabel(isBashMode),
+				Command:    rendered,
+				Timeout:    in.Timeout,
+				Output:     "",
+				Error:      "同一步骤同一命令已成功执行，忽略重复调用，请继续 validate_result 或执行下一步",
+				ExitCode:   0,
+				Duration:   0,
+				ExecutedAt: time.Now().Format("2006-01-02 15:04:05"),
+			}
+			if lastResult != nil {
+				result.Output = lastResult.Output
+				if lastResult.ExitCode != 0 {
+					result.ExitCode = lastResult.ExitCode
+				}
+			}
+			if err := rememberExecutionResult(ctx, result); err != nil {
+				return "", err
+			}
+			if t.logger != nil {
+				t.logger.Info("step duplicate execution skipped",
+					zap.Int("step_id", in.StepID),
+					zap.String("command", rendered),
+					zap.Int("attempt_count", attemptCount))
+			}
+			return marshalExecutionResult(result)
+		}
+
+		if hit && !succeeded && attemptCount >= maxSameStepCommandAttempts {
+			reason := fmt.Sprintf("同一步骤同一命令已连续失败 %d 次，停止重复执行并建议人工处理或重规划", attemptCount)
+			markExecutionStopped(ctx, reason, "manual_required")
+			result := &ExecutionResult{
+				StepID:     in.StepID,
+				Success:    false,
+				Skipped:    true,
+				Mode:       modeLabel(isBashMode),
+				Command:    rendered,
+				Timeout:    in.Timeout,
+				Output:     "",
+				Error:      reason,
+				ExitCode:   -3,
+				Duration:   0,
+				ExecutedAt: time.Now().Format("2006-01-02 15:04:05"),
+			}
+			if lastResult != nil {
+				result.Output = lastResult.Output
+			}
+			if err := rememberExecutionResult(ctx, result); err != nil {
+				return "", err
+			}
+			if t.logger != nil {
+				t.logger.Info("step execution blocked due to repeated failures",
+					zap.Int("step_id", in.StepID),
+					zap.String("command", rendered),
+					zap.Int("attempt_count", attemptCount),
+					zap.String("reason", reason))
+			}
+			return marshalExecutionResult(result)
+		}
 	}
 
 	if !t.whitelist.AllowedCommands[in.Command] {
@@ -760,7 +861,7 @@ func (t *ExecuteStepTool) executeCommand(ctx context.Context, stepID int, comman
 		Mode:       modeLabel(isBashMode),
 		Command:    rendered,
 		Timeout:    timeoutSec,
-		Output:     string(output),
+		Output:     sanitizeExecutionOutput(output, maxExecutionOutputRunes),
 		Duration:   int(duration),
 		ExecutedAt: time.Now().Format("2006-01-02 15:04:05"),
 	}
@@ -799,4 +900,39 @@ func renderedCommand(command string, args []string, script string) string {
 		return strings.TrimSpace(script)
 	}
 	return strings.TrimSpace(command + " " + strings.Join(args, " "))
+}
+
+// sanitizeExecutionOutput 清洗并裁剪命令输出，避免大段日志或控制字符直接回灌模型上下文。
+// 输入：原始输出字节、最大保留 rune 数。
+// 输出：可安全写入 ExecutionResult 的文本。
+func sanitizeExecutionOutput(raw []byte, maxRunes int) string {
+	text := strings.ToValidUTF8(string(raw), "�")
+	text = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			return r
+		case r < 32:
+			return -1
+		default:
+			return r
+		}
+	}, text)
+	text = strings.TrimSpace(text)
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+
+	headLen := maxRunes / 2
+	tailLen := maxRunes - headLen
+	if headLen <= 0 || tailLen <= 0 {
+		return string(runes[:maxRunes]) + "\n... (truncated)"
+	}
+
+	head := string(runes[:headLen])
+	tail := string(runes[len(runes)-tailLen:])
+	return head + "\n... (truncated) ...\n" + tail
 }

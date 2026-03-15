@@ -23,6 +23,12 @@ type MetricsCollectorTool struct {
 	logger *zap.Logger
 }
 
+const (
+	maxMetricSampleItems       = 20
+	maxMetricSeriesItems       = 8
+	maxMetricSeriesValuePoints = 6
+)
+
 // NewMetricsCollectorTool 创建 Prometheus 指标采集工具
 func NewMetricsCollectorTool(prometheusURL string, logger *zap.Logger) (tool.BaseTool, error) {
 	if prometheusURL == "" {
@@ -524,8 +530,11 @@ func (t *MetricsCollectorTool) formatResult(value model.Value, isRange bool) int
 	switch v := value.(type) {
 	case model.Vector:
 		// 即时查询结果
-		samples := make([]map[string]interface{}, 0, len(v))
-		for _, sample := range v {
+		samples := make([]map[string]interface{}, 0, minInt(maxMetricSampleItems, len(v)))
+		for index, sample := range v {
+			if index >= maxMetricSampleItems {
+				break
+			}
 			samples = append(samples, map[string]interface{}{
 				"metric":    sample.Metric.String(),
 				"value":     float64(sample.Value),
@@ -533,36 +542,38 @@ func (t *MetricsCollectorTool) formatResult(value model.Value, isRange bool) int
 			})
 		}
 		return map[string]interface{}{
-			"type":    "instant",
-			"count":   len(samples),
-			"samples": samples,
+			"type":           "instant",
+			"count":          len(v),
+			"returned_count": len(samples),
+			"truncated":      len(v) > len(samples),
+			"samples":        samples,
 		}
 
 	case model.Matrix:
 		// 范围查询结果
-		series := make([]map[string]interface{}, 0, len(v))
-		for _, stream := range v {
-			values := make([]map[string]interface{}, 0, len(stream.Values))
-			for _, pair := range stream.Values {
-				values = append(values, map[string]interface{}{
-					"timestamp": pair.Timestamp.Time().Format("2006-01-02 15:04:05"),
-					"value":     float64(pair.Value),
-				})
+		series := make([]map[string]interface{}, 0, minInt(maxMetricSeriesItems, len(v)))
+		for index, stream := range v {
+			if index >= maxMetricSeriesItems {
+				break
 			}
 
 			// 计算统计信息
 			stats := t.calculateStats(stream.Values)
 
 			series = append(series, map[string]interface{}{
-				"metric": stream.Metric.String(),
-				"values": values,
-				"stats":  stats,
+				"metric":          stream.Metric.String(),
+				"stats":           stats,
+				"returned_points": len(sampleMetricPoints(stream.Values, maxMetricSeriesValuePoints)),
+				"total_points":    len(stream.Values),
+				"values":          sampleMetricPoints(stream.Values, maxMetricSeriesValuePoints),
 			})
 		}
 		return map[string]interface{}{
-			"type":   "range",
-			"count":  len(series),
-			"series": series,
+			"type":           "range",
+			"count":          len(v),
+			"returned_count": len(series),
+			"truncated":      len(v) > len(series),
+			"series":         series,
 		}
 
 	default:
@@ -571,6 +582,51 @@ func (t *MetricsCollectorTool) formatResult(value model.Value, isRange bool) int
 			"value": value.String(),
 		}
 	}
+}
+
+// sampleMetricPoints 对时间序列点做头尾采样，避免把整段原始序列直接回灌模型上下文。
+// 输入：原始 points、最大保留点数。
+// 输出：采样后的时间点列表。
+func sampleMetricPoints(points []model.SamplePair, limit int) []map[string]interface{} {
+	if len(points) == 0 || limit <= 0 {
+		return nil
+	}
+	if len(points) <= limit {
+		out := make([]map[string]interface{}, 0, len(points))
+		for _, pair := range points {
+			out = append(out, map[string]interface{}{
+				"timestamp": pair.Timestamp.Time().Format("2006-01-02 15:04:05"),
+				"value":     float64(pair.Value),
+			})
+		}
+		return out
+	}
+
+	headCount := limit / 2
+	tailCount := limit - headCount
+	if headCount <= 0 {
+		headCount = 1
+		tailCount = limit - 1
+	}
+
+	out := make([]map[string]interface{}, 0, limit+1)
+	for _, pair := range points[:headCount] {
+		out = append(out, map[string]interface{}{
+			"timestamp": pair.Timestamp.Time().Format("2006-01-02 15:04:05"),
+			"value":     float64(pair.Value),
+		})
+	}
+	out = append(out, map[string]interface{}{
+		"truncated": true,
+		"omitted":   len(points) - limit,
+	})
+	for _, pair := range points[len(points)-tailCount:] {
+		out = append(out, map[string]interface{}{
+			"timestamp": pair.Timestamp.Time().Format("2006-01-02 15:04:05"),
+			"value":     float64(pair.Value),
+		})
+	}
+	return out
 }
 
 // calculateStats 计算统计信息

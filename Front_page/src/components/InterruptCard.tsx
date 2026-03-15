@@ -45,11 +45,9 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
   const checkpointId = interrupt.checkpoint_id;
   const contexts = interrupt.interrupt_contexts || [];
   const fullCommand = bashRequest?.raw_command || [bashRequest?.command, ...(bashRequest?.args || [])].filter(Boolean).join(' ');
-  const isCommandApproval = Boolean(bashRequest);
-  const cardTitle = isCommandApproval ? '💡 动作请求：执行系统命令' : '⚠️ 流程中断：等待人工确认';
-  const cardDescription = isCommandApproval
-    ? '请确认是否执行以下命令。'
-    : (interrupt.message?.trim() || '当前流程需要人工确认后继续。');
+  const isCommandApproval = Boolean(fullCommand);
+  const approvalPurpose = bashRequest?.reason?.trim() || extractInterruptPurpose(interrupt.message, contexts);
+  const cardTitle = isCommandApproval ? '执行确认' : '人工确认';
 
   useEffect(() => {
     setIsHandled(Boolean(interrupt.handled));
@@ -129,7 +127,7 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
         if (resumedStepId) {
           updateOpsStep(resumedStepId, undefined, 'completed');
         }
-        resumedStepId = addOpsStep('等待人工确认', '', 'pending', nextInterrupt);
+        resumedStepId = addOpsStep(inferInterruptStepTitle(nextInterrupt), '', 'pending', nextInterrupt);
         return;
       }
       if (currentSessionId) {
@@ -254,17 +252,14 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
           <h3 className="font-display font-black text-base mb-1 tracking-tight">
             {cardTitle}
           </h3>
-          <p className="text-xs opacity-80 whitespace-pre-wrap break-words">
-            {cardDescription}
-          </p>
         </div>
       </div>
 
-      {bashRequest && (
+      {fullCommand && (
         <div className="mb-4 space-y-2">
           <div className="rounded-xl border border-[#F59E0B]/40 bg-black/80">
             <div className="flex items-center justify-between px-3 py-2 border-b border-[#F59E0B]/30">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-[#F59E0B]">Command Preview</span>
+              <span className="text-[10px] font-bold uppercase tracking-widest text-[#F59E0B]">待执行命令</span>
               <button
                 type="button"
                 onClick={handleCopy}
@@ -285,24 +280,18 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
             </pre>
           </div>
           <div className="text-xs rounded-lg border border-white/10 bg-black/50 p-3">
-            <span className="opacity-60 mr-2">执行原因：</span>
-            <span className="opacity-90">{bashRequest.reason || 'Agent 未提供具体原因'}</span>
+            <span className="opacity-60 mr-2">指令作用：</span>
+            <span className="opacity-90">{approvalPurpose || 'Agent 未提供具体作用说明'}</span>
           </div>
         </div>
       )}
 
-      {!bashRequest && (
+      {!fullCommand && approvalPurpose && (
         <div className="mb-4 space-y-2">
-          {interrupt.message && (
-            <div className="text-xs rounded-lg border border-white/10 bg-black/50 p-3 whitespace-pre-wrap break-words">
-              {interrupt.message}
-            </div>
-          )}
-          {contexts.map((ctx, i) => (
-            <div key={i} className="text-xs font-mono p-2 bg-black/20 rounded border border-white/5">
-              <span className="text-cyber-neon">[{ctx.address}]</span> {ctx.info}
-            </div>
-          ))}
+          <div className="text-xs rounded-lg border border-white/10 bg-black/50 p-3">
+            <span className="opacity-60 mr-2">确认事项：</span>
+            <span className="opacity-90">{approvalPurpose}</span>
+          </div>
         </div>
       )}
 
@@ -381,4 +370,35 @@ function inferOpsResumeStepTitle(content: string, actionName: string): string {
     return `审批后继续：${actionName}`;
   }
   return '继续执行';
+}
+
+function inferInterruptStepTitle(interrupt: InterruptData): string {
+  return interrupt.bash_request?.raw_command ? '执行确认' : '人工确认';
+}
+
+function extractInterruptPurpose(message: string, contexts: InterruptData['interrupt_contexts']): string {
+  const candidates = [
+    message,
+    ...contexts.map((ctx) => ctx.info),
+  ]
+    .map((item) => (item || '').trim())
+    .filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (isGenericInterruptText(candidate)) {
+      continue;
+    }
+    return candidate;
+  }
+
+  return '';
+}
+
+function isGenericInterruptText(text: string): boolean {
+  const normalized = text.replace(/\s+/g, '');
+  return (
+    normalized.includes('流程已暂停，等待你的确认。') ||
+    normalized.includes('流程已暂停，等待确认。') ||
+    normalized.includes('当前流程需要人工确认后继续。')
+  );
 }

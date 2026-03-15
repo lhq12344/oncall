@@ -64,6 +64,7 @@ func (t *InferRootCauseTool) Info(ctx context.Context) (*schema.ToolInfo, error)
 			},
 			"correlations": {
 				Type:     schema.Array,
+				ElemInfo: &schema.ParameterInfo{Type: schema.Object},
 				Desc:     "信号关联结果（JSON 数组）",
 				Required: true,
 			},

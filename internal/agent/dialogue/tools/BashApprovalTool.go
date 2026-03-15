@@ -117,6 +117,7 @@ func (t *BashApprovalTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 			},
 			"args": {
 				Type:     schema.Array,
+				ElemInfo: &schema.ParameterInfo{Type: schema.String},
 				Desc:     "命令参数数组",
 				Required: false,
 			},

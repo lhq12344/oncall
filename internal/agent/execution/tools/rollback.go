@@ -46,6 +46,7 @@ func (t *RollbackTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 			},
 			"rollback_steps": {
 				Type:     schema.Array,
+				ElemInfo: &schema.ParameterInfo{Type: schema.Object},
 				Desc:     "回滚步骤列表（JSON 数组）",
 				Required: true,
 			},
@@ -66,9 +67,9 @@ func (t *RollbackTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 	}
 
 	type args struct {
-		StepID         int            `json:"step_id"`
-		RollbackSteps  []rollbackStep `json:"rollback_steps"`
-		Reason         string         `json:"reason"`
+		StepID        int            `json:"step_id"`
+		RollbackSteps []rollbackStep `json:"rollback_steps"`
+		Reason        string         `json:"reason"`
 	}
 
 	var in args

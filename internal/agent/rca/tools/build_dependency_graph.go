@@ -97,6 +97,7 @@ func (t *BuildDependencyGraphTool) Info(ctx context.Context) (*schema.ToolInfo, 
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"services": {
 				Type:     schema.Array,
+				ElemInfo: &schema.ParameterInfo{Type: schema.Object},
 				Desc:     "服务列表（JSON 数组），每个服务包含 name 和 dependencies",
 				Required: false,
 			},

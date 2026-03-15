@@ -71,6 +71,7 @@ func (t *CorrelateSignalsTool) Info(ctx context.Context) (*schema.ToolInfo, erro
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"signals": {
 				Type:     schema.Array,
+				ElemInfo: &schema.ParameterInfo{Type: schema.Object},
 				Desc:     "信号列表（JSON 数组）",
 				Required: true,
 			},

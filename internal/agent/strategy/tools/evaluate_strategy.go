@@ -58,6 +58,7 @@ func (t *EvaluateStrategyTool) Info(ctx context.Context) (*schema.ToolInfo, erro
 			},
 			"executions": {
 				Type:     schema.Array,
+				ElemInfo: &schema.ParameterInfo{Type: schema.Object},
 				Desc:     "执行记录列表（JSON 数组）",
 				Required: true,
 			},

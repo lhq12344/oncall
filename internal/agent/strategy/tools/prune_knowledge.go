@@ -49,6 +49,7 @@ func (t *PruneKnowledgeTool) Info(ctx context.Context) (*schema.ToolInfo, error)
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"cases": {
 				Type:     schema.Array,
+				ElemInfo: &schema.ParameterInfo{Type: schema.Object},
 				Desc:     "知识案例列表（JSON 数组）",
 				Required: true,
 			},
