@@ -22,7 +22,7 @@ type SessionMemoryConfig struct {
 
 func DefaultSessionMemoryConfig() SessionMemoryConfig {
 	return SessionMemoryConfig{
-		ReserveToolTokens:   5,
+		ReserveToolTokens:   20000,
 		MaxRecentTurns:      20,
 		SummarizeAfterTurns: 40,
 		SummaryMaxRunes:     1200,

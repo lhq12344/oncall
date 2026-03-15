@@ -10,14 +10,14 @@ logger:
   stdout: true
 
 ds_think_chat_model:
-  api_key: "sk-ImoWDGMu3iS7V3cpr9C3eOZEOWZsqJ6aTkAMiSAEvgfvOmqM"
-  base_url: "http://newapi.200m.997555.xyz/v1"
-  model: "claude-opus-4-6"  # Claude Opus 4.6
+  api_key: "sk-9429cafc6d377fbe82b8a75a99e4b7199726b240a44e19563252e1b48a6c0f6a"
+  base_url: "https://gmncode.cn/v1"
+  model: "gpt-5.4"  # Codex / GPT-5.4
 
 ds_quick_chat_model:
-  api_key: "sk-ImoWDGMu3iS7V3cpr9C3eOZEOWZsqJ6aTkAMiSAEvgfvOmqM"
-  base_url: "http://newapi.200m.997555.xyz/v1"
-  model: "claude-sonnet-4-6"  # Claude Sonnet 4.6 (更快)
+  api_key: "sk-9429cafc6d377fbe82b8a75a99e4b7199726b240a44e19563252e1b48a6c0f6a"
+  base_url: "https://gmncode.cn/v1"
+  model: "gpt-5.4"  # Codex / GPT-5.4
 
 doubao_embedding_model:
   api_key: "c3b9d277-0f82-4ef0-970a-1f3b5607c861"
