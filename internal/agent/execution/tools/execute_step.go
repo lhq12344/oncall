@@ -91,6 +91,7 @@ type executeStepArgs struct {
 const maxSameStepCommandAttempts = 2
 const maxSameStepExecutionAttempts = 4
 const maxExecutionOutputRunes = 8000
+const defaultExecuteStepTimeoutSeconds = 15
 
 // NewExecuteStepTool 创建执行步骤工具。
 // 输入：logger。
@@ -153,7 +154,7 @@ func (t *ExecuteStepTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 			},
 			"timeout": {
 				Type:     schema.Integer,
-				Desc:     "超时时间（秒），默认 30",
+				Desc:     "超时时间（秒），默认 15",
 				Required: false,
 			},
 			"dry_run": {
@@ -195,7 +196,7 @@ func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 	}
 
 	if in.Timeout <= 0 {
-		in.Timeout = 30
+		in.Timeout = defaultExecuteStepTimeoutSeconds
 	}
 
 	rendered := renderedCommand(in.Command, in.Args, in.Script)

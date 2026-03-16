@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	defaultBashTimeoutSeconds = 30
-	maxBashTimeoutSeconds     = 180
+	defaultBashTimeoutSeconds = 15
+	maxBashTimeoutSeconds     = 90
 	maxBashOutputRunes        = 8000
 )
 
@@ -123,7 +123,7 @@ func (t *BashApprovalTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 			},
 			"timeout": {
 				Type:     schema.Integer,
-				Desc:     "命令超时时间（秒），默认 30，最大 180",
+				Desc:     "命令超时时间（秒），默认 15，最大 90",
 				Required: false,
 			},
 			"reason": {

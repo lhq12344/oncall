@@ -80,14 +80,24 @@ func main() {
 	// 初始化新的 Agent 架构
 	prometheusURL, _ := g.Cfg().Get(ctx, "prometheus.url")
 	kubeConfig, _ := g.Cfg().Get(ctx, "kubeconfig")
+	logSyncEnabled := g.Cfg().MustGet(ctx, "log_sync.enabled", false).Bool()
+	logSyncNamespaces := g.Cfg().MustGet(ctx, "log_sync.namespaces", []string{"infra"}).Strings()
+	logSyncInterval := g.Cfg().MustGet(ctx, "log_sync.interval", "30s").Duration()
+	logSyncTailLines := g.Cfg().MustGet(ctx, "log_sync.tail_lines", 200).Int64()
+	logSyncIndexPrefix := g.Cfg().MustGet(ctx, "log_sync.index_prefix", "logs-k8s").String()
 
 	app, err := bootstrap.NewApplication(&bootstrap.Config{
-		RedisAddr:     redisAddr.String(),
-		RedisPassword: "",
-		RedisDB:       redisDB.Int(),
-		LogLevel:      "info",
-		PrometheusURL: prometheusURL.String(),
-		KubeConfig:    kubeConfig.String(),
+		RedisAddr:          redisAddr.String(),
+		RedisPassword:      "",
+		RedisDB:            redisDB.Int(),
+		LogLevel:           "info",
+		PrometheusURL:      prometheusURL.String(),
+		KubeConfig:         kubeConfig.String(),
+		LogSyncEnabled:     logSyncEnabled,
+		LogSyncNamespaces:  logSyncNamespaces,
+		LogSyncInterval:    logSyncInterval,
+		LogSyncTailLines:   logSyncTailLines,
+		LogSyncIndexPrefix: logSyncIndexPrefix,
 	})
 	if err != nil {
 		log.Fatalf("failed to init application: %v", err)

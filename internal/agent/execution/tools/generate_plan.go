@@ -190,7 +190,7 @@ func (t *GeneratePlanTool) generatePlanWithLLM(ctx context.Context, proposal *Re
       "expected_result": "预期结果",
       "rollback_command": "回滚命令",
       "rollback_args": ["回滚参数"],
-      "timeout": 30,
+      "timeout": 15,
       "critical": true
     }
   ],
@@ -255,7 +255,7 @@ func (t *GeneratePlanTool) generatePlanWithTemplate(proposal *RemediationProposa
 				Args:            []string{firstNonEmptyExecText(contextText, "echo restart target not specified")},
 				ExpectedResult:  "命令执行成功",
 				RollbackCommand: "",
-				Timeout:         30,
+				Timeout:         15,
 				Critical:        true,
 			},
 		}
@@ -268,7 +268,7 @@ func (t *GeneratePlanTool) generatePlanWithTemplate(proposal *RemediationProposa
 				Args:            []string{firstNonEmptyExecText(contextText, "echo log target not specified")},
 				ExpectedResult:  "输出目标日志",
 				RollbackCommand: "",
-				Timeout:         20,
+				Timeout:         10,
 				Critical:        false,
 			},
 		}
@@ -281,7 +281,7 @@ func (t *GeneratePlanTool) generatePlanWithTemplate(proposal *RemediationProposa
 				Args:            []string{firstNonEmptyExecText(intent, "execute remediation")},
 				ExpectedResult:  "动作完成",
 				RollbackCommand: "",
-				Timeout:         10,
+				Timeout:         8,
 				Critical:        false,
 			},
 		}
@@ -413,9 +413,9 @@ func buildExecutionStepFromAction(action ProposalActionInput, defaultStepID int,
 
 	command, args := normalizeCommandHint(commandHint)
 	rollbackCommand, rollbackArgs := normalizeCommandHint(strings.TrimSpace(action.RollbackHint))
-	timeout := 30
+	timeout := 15
 	if action.ReadOnly {
-		timeout = 15
+		timeout = 10
 	}
 
 	return ExecutionStep{

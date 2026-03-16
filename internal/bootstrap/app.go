@@ -31,12 +31,17 @@ type Application struct {
 
 // Config 应用配置
 type Config struct {
-	RedisAddr     string
-	RedisPassword string
-	RedisDB       int
-	LogLevel      string
-	PrometheusURL string // Prometheus 地址
-	KubeConfig    string // K8s kubeconfig 路径
+	RedisAddr          string
+	RedisPassword      string
+	RedisDB            int
+	LogLevel           string
+	PrometheusURL      string   // Prometheus 地址
+	KubeConfig         string   // K8s kubeconfig 路径
+	LogSyncEnabled     bool     // 是否开启 Pod 日志写入 Elasticsearch
+	LogSyncNamespaces  []string // 需要采集的命名空间列表
+	LogSyncInterval    time.Duration
+	LogSyncTailLines   int64
+	LogSyncIndexPrefix string
 }
 
 // NewApplication 创建应用实例
@@ -135,8 +140,26 @@ func NewApplication(cfg *Config) (*Application, error) {
 	}
 	logger.Info("incident workflow ops agent initialized")
 
+	var podLogShipper *ops.PodLogShipper
+	if cfg.LogSyncEnabled {
+		podLogShipper, err = ops.NewPodLogShipper(&ops.PodLogShipperConfig{
+			KubeConfig:  cfg.KubeConfig,
+			Namespaces:  cfg.LogSyncNamespaces,
+			Interval:    cfg.LogSyncInterval,
+			TailLines:   cfg.LogSyncTailLines,
+			IndexPrefix: cfg.LogSyncIndexPrefix,
+			Logger:      logger,
+		})
+		if err != nil {
+			logger.Warn("failed to init pod log shipper, log ingestion disabled", zap.Error(err))
+		} else {
+			logger.Info("pod log shipper initialized",
+				zap.Strings("namespaces", cfg.LogSyncNamespaces))
+		}
+	}
+
 	// 10. 启动后台任务
-	go startBackgroundTasks(contextManager, logger)
+	go startBackgroundTasks(contextManager, logger, podLogShipper)
 
 	return &Application{
 		ContextManager: contextManager,
@@ -179,7 +202,7 @@ func initLogger(level string) (*zap.Logger, error) {
 }
 
 // startBackgroundTasks 启动后台任务
-func startBackgroundTasks(cm *appcontext.ContextManager, logger *zap.Logger) {
+func startBackgroundTasks(cm *appcontext.ContextManager, logger *zap.Logger, podLogShipper *ops.PodLogShipper) {
 	// 数据迁移任务
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
@@ -196,6 +219,10 @@ func startBackgroundTasks(cm *appcontext.ContextManager, logger *zap.Logger) {
 			}
 		}
 	}()
+
+	if podLogShipper != nil {
+		go podLogShipper.Start(context.Background())
+	}
 }
 
 // Close 关闭应用

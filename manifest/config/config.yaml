@@ -70,6 +70,14 @@ elasticsearch:
   timeout: "10s"  # 请求超时
   tls_skip: true  # 跳过 TLS 验证（开发环境）
 
+log_sync:
+  enabled: true
+  namespaces:
+    - "infra"
+  interval: "30s"
+  tail_lines: 200
+  index_prefix: "logs-k8s"
+
 # Milvus 向量数据库配置
 milvus:
   address: "milvus.infra.svc:19530"        # K8s 集群内访问
