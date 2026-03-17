@@ -47,10 +47,10 @@ mysql:
 
 #web
 web_search:
-  provider: "serper"  # serper | searxng
-  serper_api_key: "your-serper-api-key"
-  serper_base_url: "https://google.serper.dev/search"
-  searxng_base_url: ""
+  provider: "serper"  # 主配置来源：auto | serper | searxng；未配置时回退环境变量 WEB_SEARCH_PROVIDER
+  serper_api_key: "your-serper-api-key"  # 主配置来源；未配置时回退环境变量 SERPER_API_KEY
+  serper_base_url: "https://google.serper.dev/search"  # 主配置来源；未配置时回退环境变量 SERPER_BASE_URL
+  searxng_base_url: ""  # 主配置来源；未配置时回退环境变量 SEARXNG_BASE_URL
 
 # Prometheus 监控配置
 prometheus:

@@ -15,7 +15,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// Config Execution Agent 配置
+// Config Execution Agent 配置结构。
+//
+// 字段说明：
+// - ChatModel: 聊天模型，用于生成执行计划
+// - Logger: 日志记录器
 type Config struct {
 	ChatModel *models.ChatModel
 	Logger    *zap.Logger
@@ -23,7 +27,31 @@ type Config struct {
 
 const defaultExecutionAgentMaxIterations = 96
 
-// NewExecutionAgent 创建 Execution Agent（执行计划生成 + 安全执行）
+// NewExecutionAgent 创建 Execution Agent（执行计划生成 + 安全执行）。
+//
+// 功能：
+// 1. 创建工具集（规范化、生成计划、校验计划、执行步骤、验证结果、回滚）
+// 2. 创建 ChatModelAgent 并配置工具和指令
+// 3. 返回执行代理实例
+//
+// 调用位置：
+// - incident_workflow.go:61 行，创建故障处置工作流时调用
+//
+// 输入：
+// - ctx: 上下文
+// - cfg: Execution Agent 配置
+//
+// 输出：
+// - adk.Agent: 执行代理实例
+// - error: 创建过程中的错误
+//
+// 执行流程：
+// 1. 规范化提案（normalize_plan）
+// 2. 生成执行计划（generate_plan，如果 command_hint 不足）
+// 3. 校验计划风险（validate_plan）
+// 4. 逐步执行命令（execute_step）
+// 5. 验证执行结果（validate_result）
+// 6. 必要时回滚（rollback）
 func NewExecutionAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")

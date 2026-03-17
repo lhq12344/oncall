@@ -52,7 +52,23 @@ var (
 	inited bool
 )
 
-// InitRedis：进程启动时调用一次
+// InitRedis 初始化 Redis 客户端和内存配置（进程启动时调用一次）。
+//
+// 功能：
+// 1. 验证 Redis 客户端不为空
+// 2. 使用互斥锁确保幂等性（已初始化则直接返回）
+// 3. 设置全局 Redis 客户端和配置
+//
+// 调用位置：
+// - main.go:47-56 行，应用启动时调用
+// - bootstrap/app.go:75 行，应用初始化时调用
+//
+// 输入：
+// - client: Redis 客户端
+// - c: 内存配置（可选，使用默认配置）
+//
+// 输出：
+// - error: 初始化过程中的错误
 func InitRedis(client *redis.Client, c *Config) error {
 	if client == nil {
 		return errors.New("redis client is nil")
@@ -84,12 +100,37 @@ const (
 	historySummaryPrefix       = "历史会话摘要：\n"
 )
 
-// GetSimpleMemory：保持你原有使用方式
+// GetSimpleMemory 创建 SimpleMemory 实例。
+//
+// 功能：根据会话 ID 创建内存管理实例
+//
+// 输入：
+// - id: 会话 ID
+//
+// 输出：
+// - *SimpleMemory: 内存管理实例
 func GetSimpleMemory(id string) *SimpleMemory {
 	return &SimpleMemory{ID: id}
 }
 
-// GetMessagesForRequest：包级函数（请求级裁剪在这里做）
+// GetMessagesForRequest 获取请求级消息历史（包级函数，请求级裁剪在这里做）。
+//
+// 功能：
+// 1. 根据会话 ID 创建 SimpleMemory 实例
+// 2. 调用实例的 GetMessagesForRequest 方法构建消息历史
+//
+// 调用位置：
+// - session_memory.go:111 行，构建消息历史时调用
+//
+// 输入：
+// - ctx: 上下文
+// - id: 会话 ID
+// - userMsg: 当前用户消息
+// - reserveToolsTokens: 为工具调用预留的 token 数量
+//
+// 输出：
+// - []*schema.Message: 消息历史（包含历史对话 + 当前消息）
+// - error: 加载历史过程中的错误
 func GetMessagesForRequest(ctx context.Context, id string, userMsg *schema.Message, reserveToolsTokens int) ([]*schema.Message, error) {
 	return GetSimpleMemory(id).GetMessagesForRequest(ctx, userMsg, reserveToolsTokens)
 }

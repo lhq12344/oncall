@@ -18,6 +18,20 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// main 是 OnCall 系统的唯一进程入口。
+//
+// 功能：
+// 1. 初始化应用配置（从 .env 和 config.yaml）
+// 2. 初始化基础设施（Redis、MySQL、Elasticsearch）
+// 3. 初始化 Agent 架构（对话、知识、运维工作流）
+// 4. 启动 HTTP 服务并绑定路由
+//
+// 调用位置：
+// - go run main.go（直接启动）
+// - 通过 systemd/k8s 部署启动
+//
+// 输入：无（从配置文件读取）
+// 输出：启动 HTTP 服务，监听 6872 端口
 func main() {
 	ctx := gctx.New()
 

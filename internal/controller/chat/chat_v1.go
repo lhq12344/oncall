@@ -39,6 +39,25 @@ type ControllerV1 struct {
 	knowledgeAgent   adk.Agent
 }
 
+// NewV1 创建 V1 版本的聊天控制器。
+//
+// 功能：
+// 1. 初始化控制器实例，绑定各个 Agent
+// 2. 创建检查点存储（Redis 或内存）
+// 3. 初始化聊天流式 Runner 和运维流式 Runner
+//
+// 调用位置：
+// - main.go:118 行，应用启动时调用
+//
+// 输入：
+// - dialogueAgent: 对话代理（可选）
+// - logger: 日志记录器
+// - redisClient: Redis 客户端（可选，用于持久化检查点）
+// - opsAgent: 运维代理（可选）
+// - knowledgeAgent: 知识代理（可选）
+//
+// 输出：
+// - *ControllerV1: 初始化完成的控制器实例
 func NewV1(
 	dialogueAgent adk.ResumableAgent,
 	logger *zap.Logger,
@@ -88,6 +107,31 @@ func NewV1(
 	return ctrl
 }
 
+// ChatStream 处理聊天流式请求。
+//
+// 功能：
+// 1. 验证输入参数（问题和会话 ID）
+// 2. 构建会话消息历史
+// 3. 创建检查点 ID 并启动流式 Runner
+// 4. 处理流式事件（content、interrupt、error、done）
+// 5. 保存完整的对话历史
+//
+// 调用位置：
+// - API 路由 `/api/v1/chat/stream` 的处理函数
+//
+// 输入：
+// - ctx: 上下文
+// - req: 聊天流式请求参数（包含问题和会话 ID）
+//
+// 输出：
+// - *v1.ChatStreamRes: 响应对象（实际响应通过 SSE 流式输出）
+// - error: 处理过程中的错误
+//
+// SSE 事件类型：
+// - content: 助手回复内容块
+// - interrupt: 中断请求（需要用户审批）
+// - error: 错误信息
+// - done: 流式结束标记
 func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (res *v1.ChatStreamRes, err error) {
 	question, sessionID, err := validateChatStreamInput(req)
 	if err != nil {
@@ -194,6 +238,30 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 	return &v1.ChatStreamRes{}, nil
 }
 
+// ChatResumeStream 处理聊天中断恢复请求。
+//
+// 功能：
+// 1. 验证输入参数（会话 ID、检查点 ID、中断 ID、审批结果）
+// 2. 恢复流式 Runner，从中断点继续执行
+// 3. 处理恢复后的流式事件
+// 4. 保存恢复操作的历史记录
+//
+// 调用位置：
+// - API 路由 `/api/v1/chat/resume` 的处理函数
+//
+// 输入：
+// - ctx: 上下文
+// - req: 中断恢复请求参数（包含会话 ID、检查点 ID、中断 ID、审批结果等）
+//
+// 输出：
+// - *v1.ChatResumeStreamRes: 响应对象（实际响应通过 SSE 流式输出）
+// - error: 处理过程中的错误
+//
+// 中断恢复流程：
+// 1. 用户收到中断请求（需要审批高风险命令）
+// 2. 用户通过前端提交审批结果（approved/resolved/comment）
+// 3. 调用此方法恢复执行
+// 4. 继续执行被中断的流程
 func (c *ControllerV1) ChatResumeStream(ctx context.Context, req *v1.ChatResumeStreamReq) (res *v1.ChatResumeStreamRes, err error) {
 	if req == nil {
 		return nil, fmt.Errorf("request is required")

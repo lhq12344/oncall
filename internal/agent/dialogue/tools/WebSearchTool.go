@@ -13,6 +13,7 @@ import (
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+	"github.com/gogf/gf/v2/frame/g"
 	"go.uber.org/zap"
 )
 
@@ -35,6 +36,13 @@ const (
 type WebSearchTool struct {
 	httpClient *http.Client
 	logger     *zap.Logger
+}
+
+type webSearchConfig struct {
+	Provider       string
+	SerperAPIKey   string
+	SerperBaseURL  string
+	SearXNGBaseURL string
 }
 
 // webSearchResultItem 定义单条网络检索结果。
@@ -102,16 +110,17 @@ func (t *WebSearchTool) InvokableRun(ctx context.Context, argumentsInJSON string
 		in.TopK = maxWebSearchTopK
 	}
 
-	provider, cfgErr := resolveWebSearchProvider()
+	cfg := loadWebSearchConfig(ctx)
+	provider, cfgErr := resolveWebSearchProvider(cfg)
 	if cfgErr != nil {
 		return t.degradedResponse(in.Query, in.TimeRange, "", cfgErr.Error())
 	}
 
 	switch provider {
 	case webSearchProviderSerper:
-		return t.searchWithSerper(ctx, in.Query, in.TimeRange, in.TopK)
+		return t.searchWithSerper(ctx, cfg, in.Query, in.TimeRange, in.TopK)
 	case webSearchProviderSearXNG:
-		return t.searchWithSearXNG(ctx, in.Query, in.TimeRange, in.TopK)
+		return t.searchWithSearXNG(ctx, cfg, in.Query, in.TimeRange, in.TopK)
 	default:
 		return t.degradedResponse(in.Query, in.TimeRange, provider, "no available web search provider configured")
 	}
@@ -137,12 +146,12 @@ type serperSearchResponse struct {
 }
 
 // searchWithSerper 使用 Serper.dev Search API 执行检索。
-// 依赖环境变量：SERPER_API_KEY，默认请求 https://google.serper.dev/search。
-func (t *WebSearchTool) searchWithSerper(ctx context.Context, query, timeRange string, topK int) (string, error) {
-	apiKey := strings.TrimSpace(os.Getenv("SERPER_API_KEY"))
-	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("SERPER_BASE_URL")), "/")
+// 优先读取 web_search.* 配置，未配置时回退到环境变量。
+func (t *WebSearchTool) searchWithSerper(ctx context.Context, cfg webSearchConfig, query, timeRange string, topK int) (string, error) {
+	apiKey := strings.TrimSpace(cfg.SerperAPIKey)
+	baseURL := strings.TrimRight(strings.TrimSpace(cfg.SerperBaseURL), "/")
 	if apiKey == "" {
-		return t.degradedResponse(query, timeRange, webSearchProviderSerper, "missing SERPER_API_KEY")
+		return t.degradedResponse(query, timeRange, webSearchProviderSerper, "missing web_search.serper_api_key or SERPER_API_KEY")
 	}
 	if baseURL == "" {
 		baseURL = serperSearchURL
@@ -246,11 +255,11 @@ type searXNGResponse struct {
 }
 
 // searchWithSearXNG 使用 SearXNG JSON 接口执行检索。
-// 依赖环境变量：SEARXNG_BASE_URL，例如 https://searx.example.com。
-func (t *WebSearchTool) searchWithSearXNG(ctx context.Context, query, timeRange string, topK int) (string, error) {
-	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("SEARXNG_BASE_URL")), "/")
+// 优先读取 web_search.* 配置，未配置时回退到环境变量。
+func (t *WebSearchTool) searchWithSearXNG(ctx context.Context, cfg webSearchConfig, query, timeRange string, topK int) (string, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(cfg.SearXNGBaseURL), "/")
 	if baseURL == "" {
-		return t.degradedResponse(query, timeRange, webSearchProviderSearXNG, "missing SEARXNG_BASE_URL")
+		return t.degradedResponse(query, timeRange, webSearchProviderSearXNG, "missing web_search.searxng_base_url or SEARXNG_BASE_URL")
 	}
 
 	params := url.Values{}
@@ -332,45 +341,97 @@ func (t *WebSearchTool) degradedResponse(query, timeRange, provider, errText str
 
 // resolveWebSearchProvider 解析当前可用的网络搜索提供方。
 // 优先级：
-// 1. WEB_SEARCH_PROVIDER 指定 serper / searxng；
+// 1. web_search.provider，未配置时回退 WEB_SEARCH_PROVIDER；
 // 2. auto：优先 Serper.dev，次选 SearXNG。
-func resolveWebSearchProvider() (string, error) {
-	provider := strings.ToLower(strings.TrimSpace(os.Getenv("WEB_SEARCH_PROVIDER")))
+func resolveWebSearchProvider(cfg webSearchConfig) (string, error) {
+	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
 	switch provider {
 	case "", webSearchProviderAuto:
-		if hasSerperConfig() {
+		if hasSerperConfig(cfg) {
 			return webSearchProviderSerper, nil
 		}
-		if hasSearXNGConfig() {
+		if hasSearXNGConfig(cfg) {
 			return webSearchProviderSearXNG, nil
 		}
-		return "", fmt.Errorf("no web search provider configured: set SERPER_API_KEY or SEARXNG_BASE_URL")
+		return "", fmt.Errorf("no web search provider configured: set web_search.serper_api_key or SERPER_API_KEY, or web_search.searxng_base_url or SEARXNG_BASE_URL")
 	case webSearchProviderSerper:
-		if !hasSerperConfig() {
-			return "", fmt.Errorf("WEB_SEARCH_PROVIDER=serper but SERPER_API_KEY is missing")
+		if !hasSerperConfig(cfg) {
+			return "", fmt.Errorf("web_search.provider=serper but web_search.serper_api_key or SERPER_API_KEY is missing")
 		}
 		return webSearchProviderSerper, nil
 	case webSearchProviderGoogle:
-		if !hasSerperConfig() {
-			return "", fmt.Errorf("WEB_SEARCH_PROVIDER=google is deprecated, set SERPER_API_KEY and use WEB_SEARCH_PROVIDER=serper")
+		if !hasSerperConfig(cfg) {
+			return "", fmt.Errorf("web_search.provider=google is deprecated; set web_search.serper_api_key or SERPER_API_KEY and use serper")
 		}
 		return webSearchProviderSerper, nil
 	case webSearchProviderSearXNG:
-		if !hasSearXNGConfig() {
-			return "", fmt.Errorf("WEB_SEARCH_PROVIDER=searxng but SEARXNG_BASE_URL is missing")
+		if !hasSearXNGConfig(cfg) {
+			return "", fmt.Errorf("web_search.provider=searxng but web_search.searxng_base_url or SEARXNG_BASE_URL is missing")
 		}
 		return webSearchProviderSearXNG, nil
 	default:
-		return "", fmt.Errorf("unsupported WEB_SEARCH_PROVIDER: %s", provider)
+		return "", fmt.Errorf("unsupported web_search.provider: %s", provider)
 	}
 }
 
-func hasSerperConfig() bool {
-	return strings.TrimSpace(os.Getenv("SERPER_API_KEY")) != ""
+func loadWebSearchConfig(ctx context.Context) webSearchConfig {
+	cfgValues := map[string]string{
+		"web_search.provider":         readWebSearchConfigString(ctx, "web_search.provider"),
+		"web_search.serper_api_key":   readWebSearchConfigString(ctx, "web_search.serper_api_key"),
+		"web_search.serper_base_url":  readWebSearchConfigString(ctx, "web_search.serper_base_url"),
+		"web_search.searxng_base_url": readWebSearchConfigString(ctx, "web_search.searxng_base_url"),
+	}
+	return loadWebSearchConfigFromSources(cfgValues, os.Getenv)
 }
 
-func hasSearXNGConfig() bool {
-	return strings.TrimSpace(os.Getenv("SEARXNG_BASE_URL")) != ""
+func loadWebSearchConfigFromSources(cfgValues map[string]string, getenv func(string) string) webSearchConfig {
+	if getenv == nil {
+		getenv = func(string) string { return "" }
+	}
+	return webSearchConfig{
+		Provider: firstNonEmpty(
+			cfgValues["web_search.provider"],
+			getenv("WEB_SEARCH_PROVIDER"),
+		),
+		SerperAPIKey: firstNonEmpty(
+			cfgValues["web_search.serper_api_key"],
+			getenv("SERPER_API_KEY"),
+		),
+		SerperBaseURL: firstNonEmpty(
+			cfgValues["web_search.serper_base_url"],
+			getenv("SERPER_BASE_URL"),
+		),
+		SearXNGBaseURL: firstNonEmpty(
+			cfgValues["web_search.searxng_base_url"],
+			getenv("SEARXNG_BASE_URL"),
+		),
+	}
+}
+
+func readWebSearchConfigString(ctx context.Context, key string) string {
+	value, err := g.Cfg().Get(ctx, key)
+	if err != nil || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(value.String())
+}
+
+func hasSerperConfig(cfg webSearchConfig) bool {
+	return strings.TrimSpace(cfg.SerperAPIKey) != ""
+}
+
+func hasSearXNGConfig(cfg webSearchConfig) bool {
+	return strings.TrimSpace(cfg.SearXNGBaseURL) != ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // normalizeSerperTimeRange 将 d/w/m/y 转为 Serper tbs 参数。

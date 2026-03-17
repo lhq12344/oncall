@@ -26,8 +26,44 @@ type IncidentWorkflowConfig struct {
 	Logger *zap.Logger
 }
 
-// NewIncidentWorkflowAgent 创建一个 Observation -> RCA -> Ops -> Execution -> Strategy 的工作流 Agent。
-// 工作流形态：Sequential(Observation, RCA, Loop(Ops, Execution, Gate), Strategy, FinalReport)。
+// NewIncidentWorkflowAgent 创建故障处置工作流 Agent。
+//
+// 功能：
+// 1. 创建各个子 Agent（观察、RCA、运维、执行、策略）
+// 2. 构建执行循环（Ops -> Execution -> Gate，最多循环 MaxExecutionLoops 次）
+// 3. 构建顺序工作流（Observation -> RCA -> Loop -> Strategy -> FinalReport）
+// 4. 绑定历史重写器，优化 token 消耗
+//
+// 工作流形态：
+// Sequential(
+//
+//	Observation,
+//	RCA,
+//	Loop(Ops, Execution, Gate),  // 最多循环 3 次
+//	Strategy,
+//	FinalReport
+//
+// )
+//
+// 调用位置：
+// - bootstrap/app.go:132 行，应用启动时调用
+//
+// 输入：
+// - ctx: 上下文
+// - cfg: 故障处置工作流配置
+//
+// 输出：
+// - adk.ResumableAgent: 可恢复的工作流 Agent
+// - error: 创建过程中的错误
+//
+// 使用示例：
+//
+//	opsAgent, err := ops.NewIncidentWorkflowAgent(ctx, &ops.IncidentWorkflowConfig{
+//	    ChatModel:     chatModel,
+//	    KubeConfig:    cfg.KubeConfig,
+//	    PrometheusURL: cfg.PrometheusURL,
+//	    Logger:        logger,
+//	})
 func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) (adk.ResumableAgent, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")

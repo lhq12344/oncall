@@ -20,6 +20,7 @@ const (
 	maxBashOutputRunes        = 8000
 )
 
+// 需要将BashApprovalInterruptInfo 注册到 gob 中，以支持 Eino 的工具中断机制正确序列化和反序列化审批信息。
 func init() {
 	gob.Register(&BashApprovalInterruptInfo{})
 }

@@ -18,7 +18,16 @@ import (
 	"go.uber.org/zap"
 )
 
-// Application 应用实例
+// Application 应用实例，包含所有核心组件的引用。
+//
+// 字段说明：
+// - ContextManager: 会话上下文管理器，负责存储和恢复会话状态
+// - DialogueAgent: 对话代理，处理用户聊天请求
+// - KnowledgeAgent: 知识代理，处理知识库上传和检索
+// - OpsIntegration: 运维集成执行器，负责顺序工具查询和超时控制
+// - OpsAgent: 运维代理，处理故障处置工作流
+// - Logger: 日志记录器
+// - RedisClient: Redis 客户端，用于会话状态存储
 type Application struct {
 	ContextManager *appcontext.ContextManager
 	DialogueAgent  adk.ResumableAgent
@@ -29,7 +38,20 @@ type Application struct {
 	RedisClient    *redis.Client
 }
 
-// Config 应用配置
+// Config 应用配置结构，用于初始化 Application。
+//
+// 字段说明：
+// - RedisAddr: Redis 服务器地址
+// - RedisPassword: Redis 密码（可选）
+// - RedisDB: Redis 数据库编号
+// - LogLevel: 日志级别（debug/info/warn/error）
+// - PrometheusURL: Prometheus 监控服务地址
+// - KubeConfig: Kubernetes kubeconfig 文件路径
+// - LogSyncEnabled: 是否开启 Pod 日志同步到 Elasticsearch
+// - LogSyncNamespaces: 需要采集日志的命名空间列表
+// - LogSyncInterval: 日志同步间隔时间
+// - LogSyncTailLines: 每次同步的尾部日志行数
+// - LogSyncIndexPrefix: Elasticsearch 索引前缀
 type Config struct {
 	RedisAddr          string
 	RedisPassword      string
@@ -44,7 +66,33 @@ type Config struct {
 	LogSyncIndexPrefix string
 }
 
-// NewApplication 创建应用实例
+// NewApplication 创建并初始化应用实例。
+//
+// 功能：
+// 1. 初始化日志系统
+// 2. 初始化 Redis 客户端并测试连接
+// 3. 初始化存储层和上下文管理器
+// 4. 初始化 LLM 模型和 Embedding
+// 5. 创建对话、知识、运维等 Agent
+// 6. 启动后台任务（如 Pod 日志同步）
+//
+// 调用位置：
+// - main.go:90-101 行，启动时调用
+//
+// 输入：
+// - cfg: 应用配置结构指针
+//
+// 输出：
+// - *Application: 初始化完成的应用实例
+// - error: 初始化过程中的错误
+//
+// 使用示例：
+//
+//	app, err := bootstrap.NewApplication(&bootstrap.Config{...})
+//	if err != nil {
+//	    log.Fatalf("failed to init application: %v", err)
+//	}
+//	defer app.Close()
 func NewApplication(cfg *Config) (*Application, error) {
 	ctx := context.Background()
 
@@ -172,7 +220,23 @@ func NewApplication(cfg *Config) (*Application, error) {
 	}, nil
 }
 
-// initLogger 初始化日志
+// initLogger 初始化日志系统。
+//
+// 功能：根据配置的日志级别创建 zap 日志记录器
+//
+// 输入：
+// - level: 日志级别字符串，支持 "debug"、"info"、"warn"、"error"，默认 "info"
+//
+// 输出：
+// - *zap.Logger: 初始化完成的日志记录器
+// - error: 初始化过程中的错误
+//
+// 使用示例：
+//
+//	logger, err := initLogger("info")
+//	if err != nil {
+//	    return nil, fmt.Errorf("failed to init logger: %w", err)
+//	}
 func initLogger(level string) (*zap.Logger, error) {
 	var zapLevel zap.AtomicLevel
 
@@ -201,7 +265,21 @@ func initLogger(level string) (*zap.Logger, error) {
 	return config.Build()
 }
 
-// startBackgroundTasks 启动后台任务
+// startBackgroundTasks 启动后台任务。
+//
+// 功能：
+// 1. 启动数据迁移任务（每 5 分钟执行一次，将不活跃的会话从 L1 迁移到 L2）
+// 2. 启动 Pod 日志同步任务（如果配置了日志同步）
+//
+// 调用位置：
+// - NewApplication:210 行，应用启动时调用
+//
+// 输入：
+// - cm: 上下文管理器，用于执行数据迁移
+// - logger: 日志记录器
+// - podLogShipper: Pod 日志同步器（可选，如果未配置日志同步则为 nil）
+//
+// 输出：无（后台任务在 goroutine 中运行）
 func startBackgroundTasks(cm *appcontext.ContextManager, logger *zap.Logger, podLogShipper *ops.PodLogShipper) {
 	// 数据迁移任务
 	go func() {
@@ -225,7 +303,19 @@ func startBackgroundTasks(cm *appcontext.ContextManager, logger *zap.Logger, pod
 	}
 }
 
-// Close 关闭应用
+// Close 关闭应用，释放资源。
+//
+// 功能：
+// 1. 关闭 Redis 客户端连接
+// 2. 同步日志缓冲区
+//
+// 调用位置：
+// - main.go:105 行，应用退出时调用（通过 defer）
+//
+// 输入：无
+//
+// 输出：
+// - error: 关闭过程中的错误（如果有）
 func (app *Application) Close() error {
 	if err := app.RedisClient.Close(); err != nil {
 		return fmt.Errorf("failed to close redis: %w", err)
