@@ -84,13 +84,21 @@ func (t *ValidateResultTool) Info(ctx context.Context) (*schema.ToolInfo, error)
 }
 
 func (t *ValidateResultTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
+	fail := func(err error) (string, error) {
+		if err == nil {
+			return "", nil
+		}
+		decision := recordExecutionToolFailure(ctx, "validate_result", err.Error())
+		return "", fmt.Errorf("%s", decision.StopReason)
+	}
+
 	in, err := parseValidateResultInput(ctx, argumentsInJSON)
 	if err != nil {
-		return "", err
+		return fail(err)
 	}
 
 	if in.ExpectedResult == "" {
-		return "", fmt.Errorf("expected_result is required")
+		return fail(fmt.Errorf("expected_result is required"))
 	}
 
 	// 默认验证方法
@@ -100,15 +108,27 @@ func (t *ValidateResultTool) InvokableRun(ctx context.Context, argumentsInJSON s
 
 	// 执行验证
 	result := t.validate(in.StepID, in.ExpectedResult, in.ActualOutput, in.ExitCode, in.ValidationMethod)
+	repeatedFailure := repeatedExecutionFailureDecision{}
+	switch {
+	case result.Valid, result.MismatchDetected:
+		clearRepeatedExecutionToolFailureState(ctx)
+	default:
+		repeatedFailure = recordExecutionToolFailure(ctx, "validate_result", firstNonEmptyExecutionText(result.Message, result.FailureCategory, result.Expected))
+	}
 	decision := recordValidationProgress(ctx, in.StepID, result)
 	result.ShouldStop = decision.ShouldStop
 	result.StopReason = decision.StopReason
 	result.StopAction = decision.StopAction
 	result.RuntimeSummary = decision.RuntimeSummary
+	if repeatedFailure.Reached {
+		result.ShouldStop = true
+		result.StopReason = repeatedFailure.StopReason
+		result.StopAction = "manual_required"
+	}
 
 	output, err := json.Marshal(result)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal result: %w", err)
+		return fail(fmt.Errorf("failed to marshal result: %w", err))
 	}
 
 	if t.logger != nil {

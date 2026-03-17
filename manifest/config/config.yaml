@@ -11,13 +11,15 @@ logger:
 
 ds_think_chat_model:
   api_key: "sk-eHapaw8ZR7VJWAHwm76fmH2qwaxFeOQQv9kuuCJfws8V5A9O"
+  #base_url: "https://ark.cn-beijing.volces.com/api/v3"
   base_url: "http://newapi.200m.997555.xyz/v1"
+  #model: "doubao-seed-2-0-mini-260215"
   model: "claude-sonnet-4-6-thinking"
 
 ds_quick_chat_model:
   api_key: "sk-eHapaw8ZR7VJWAHwm76fmH2qwaxFeOQQv9kuuCJfws8V5A9O"
   base_url: "http://newapi.200m.997555.xyz/v1"
-  model: "claude-sonnet-4-6"
+  model: "claude-sonnet-4-6-thinking"
 
 doubao_embedding_model:
   api_key: "c3b9d277-0f82-4ef0-970a-1f3b5607c861"
@@ -25,8 +27,6 @@ doubao_embedding_model:
   model: "doubao-embedding-vision-250615"  # Doubao Embedding vision-250615
   dimensions: 2048  # vision-250615 使用 2048 维度
 
-file_dir: "/home/lihaoqian/myproject/go_agent/docs/"
-cls_mcp_url: "https://mcp-api.tencent-cloud.com/sse/77977c99c3e6593c"
 
 redis:
   addr: "localhost:31029"

@@ -90,7 +90,7 @@ type executeStepArgs struct {
 
 const maxSameStepCommandAttempts = 2
 const maxSameStepExecutionAttempts = 4
-const maxExecutionOutputRunes = 8000
+const maxExecutionOutputRunes = 800
 const defaultExecuteStepTimeoutSeconds = 15
 
 // NewExecuteStepTool 创建执行步骤工具。
@@ -167,14 +167,22 @@ func (t *ExecuteStepTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 }
 
 func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
+	fail := func(err error) (string, error) {
+		if err == nil {
+			return "", nil
+		}
+		decision := recordExecutionToolFailure(ctx, "execute_step", err.Error())
+		return "", fmt.Errorf("%s", decision.StopReason)
+	}
+
 	in, err := parseExecuteStepInput(ctx, argumentsInJSON)
 	if err != nil {
-		return "", err
+		return fail(err)
 	}
 
 	in.Command = strings.TrimSpace(in.Command)
 	if in.Command == "" {
-		return "", fmt.Errorf("command is required")
+		return fail(fmt.Errorf("command is required"))
 	}
 
 	if strings.TrimSpace(in.Script) == "" && len(in.Args) == 0 && strings.Contains(in.Command, " ") {
@@ -189,10 +197,10 @@ func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 		in.Args = nil
 	}
 	if isBashMode && in.Script == "" {
-		return "", fmt.Errorf("script is required when command is bash")
+		return fail(fmt.Errorf("script is required when command is bash"))
 	}
 	if !isBashMode && in.Script != "" {
-		return "", fmt.Errorf("script only supported when command is bash")
+		return fail(fmt.Errorf("script only supported when command is bash"))
 	}
 
 	if in.Timeout <= 0 {
@@ -202,10 +210,10 @@ func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 	rendered := renderedCommand(in.Command, in.Args, in.Script)
 
 	if ok, _ := hasPreparedExecutionPlan(ctx); !ok {
-		return "", fmt.Errorf("execution plan not prepared: call generate_plan first with intent/context before execute_step")
+		return fail(fmt.Errorf("execution plan not prepared: call generate_plan first with intent/context before execute_step"))
 	}
 	if ok, _ := hasValidatedExecutionPlan(ctx); !ok {
-		return "", fmt.Errorf("execution plan not validated: call validate_plan after normalize_plan/generate_plan before execute_step")
+		return fail(fmt.Errorf("execution plan not validated: call validate_plan after normalize_plan/generate_plan before execute_step"))
 	}
 
 	if shouldSkip, reason := shouldSkipExecutionStep(ctx, in.StepID); shouldSkip {
@@ -332,16 +340,16 @@ func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 	}
 
 	if !t.whitelist.AllowedCommands[in.Command] {
-		return "", fmt.Errorf("command not in whitelist: %s", in.Command)
+		return fail(fmt.Errorf("command not in whitelist: %s", in.Command))
 	}
 
 	if isBashMode {
 		if err := t.validateScript(in.Script); err != nil {
-			return "", fmt.Errorf("unsafe script: %w", err)
+			return fail(fmt.Errorf("unsafe script: %w", err))
 		}
 	} else {
 		if err := t.validateArgs(in.Args); err != nil {
-			return "", fmt.Errorf("unsafe arguments: %w", err)
+			return fail(fmt.Errorf("unsafe arguments: %w", err))
 		}
 	}
 
@@ -379,8 +387,9 @@ func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 				Comment:    approvalComment,
 			}
 			if err := rememberExecutionResult(ctx, result); err != nil {
-				return "", err
+				return fail(err)
 			}
+			clearRepeatedExecutionToolFailureState(ctx)
 			return marshalExecutionResult(result)
 		}
 
@@ -402,8 +411,9 @@ func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 				Comment:    approvalComment,
 			}
 			if err := rememberExecutionResult(ctx, result); err != nil {
-				return "", err
+				return fail(err)
 			}
+			clearRepeatedExecutionToolFailureState(ctx)
 			return marshalExecutionResult(result)
 		}
 	}
@@ -421,8 +431,9 @@ func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 			ExecutedAt: time.Now().Format("2006-01-02 15:04:05"),
 		}
 		if err := rememberExecutionResult(ctx, result); err != nil {
-			return "", err
+			return fail(err)
 		}
+		clearRepeatedExecutionToolFailureState(ctx)
 		return marshalExecutionResult(result)
 	}
 
@@ -433,13 +444,24 @@ func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 		result.Executed = true
 		result.Comment = approvalComment
 	}
+	if !result.Success {
+		decision := recordExecutionToolFailure(ctx, "execute_step", firstNonEmptyExecutionText(result.Error, result.Output, rendered))
+		if decision.Reached {
+			result.Error = firstNonEmptyExecutionText(result.Error, decision.StopReason)
+			if !strings.Contains(result.Error, decision.StopReason) {
+				result.Error = strings.TrimSpace(result.Error + "；" + decision.StopReason)
+			}
+		}
+	} else {
+		clearRepeatedExecutionToolFailureState(ctx)
+	}
 	if err := rememberExecutionResult(ctx, result); err != nil {
-		return "", err
+		return fail(err)
 	}
 
 	output, err := marshalExecutionResult(result)
 	if err != nil {
-		return "", err
+		return fail(err)
 	}
 
 	if t.logger != nil {

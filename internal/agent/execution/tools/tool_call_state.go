@@ -6,6 +6,7 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -13,6 +14,12 @@ import (
 )
 
 const executionToolStateSessionKey = "_execution_tool_state_v1"
+const maxRepeatedExecutionToolFailures = 3
+
+var (
+	executionFailureSpacePattern = regexp.MustCompile(`\s+`)
+	executionFailureNoisePattern = regexp.MustCompile(`(?i)\b(plan_[a-z0-9_-]+|tooluse_[a-z0-9_-]+|step[_\s-]*\d+|\d{4}-\d{2}-\d{2}[t\s]\d{2}:\d{2}:\d{2}[^\s]*|\d+)\b`)
+)
 
 func init() {
 	gob.Register(&executionToolState{})
@@ -46,6 +53,10 @@ type executionToolState struct {
 	stopReason                string
 	stopAction                string
 	lastRuntimeSummary        string
+	repeatedFailureKey        string
+	repeatedFailureReason     string
+	repeatedFailureCount      int
+	repeatedFailureLimit      int
 }
 
 type executionToolStateSnapshot struct {
@@ -70,6 +81,19 @@ type executionToolStateSnapshot struct {
 	StopReason                string
 	StopAction                string
 	LastRuntimeSummary        string
+	RepeatedFailureKey        string
+	RepeatedFailureReason     string
+	RepeatedFailureCount      int
+	RepeatedFailureLimit      int
+}
+
+type repeatedExecutionFailureDecision struct {
+	Count      int
+	Limit      int
+	Reached    bool
+	Key        string
+	Reason     string
+	StopReason string
 }
 
 // GobEncode 自定义序列化 execution 内部状态，确保 checkpoint/resume 后校验进度不丢失。
@@ -103,6 +127,10 @@ func (s *executionToolState) GobEncode() ([]byte, error) {
 		StopReason:                s.stopReason,
 		StopAction:                s.stopAction,
 		LastRuntimeSummary:        s.lastRuntimeSummary,
+		RepeatedFailureKey:        s.repeatedFailureKey,
+		RepeatedFailureReason:     s.repeatedFailureReason,
+		RepeatedFailureCount:      s.repeatedFailureCount,
+		RepeatedFailureLimit:      s.repeatedFailureLimit,
 	}
 	s.mu.RUnlock()
 
@@ -148,6 +176,10 @@ func (s *executionToolState) GobDecode(data []byte) error {
 	s.stopReason = snapshot.StopReason
 	s.stopAction = snapshot.StopAction
 	s.lastRuntimeSummary = snapshot.LastRuntimeSummary
+	s.repeatedFailureKey = snapshot.RepeatedFailureKey
+	s.repeatedFailureReason = snapshot.RepeatedFailureReason
+	s.repeatedFailureCount = snapshot.RepeatedFailureCount
+	s.repeatedFailureLimit = snapshot.RepeatedFailureLimit
 	return nil
 }
 
@@ -199,6 +231,7 @@ func markExecutionPlanPrepared(ctx context.Context, planID string) {
 	state.stopReason = ""
 	state.stopAction = ""
 	state.lastRuntimeSummary = ""
+	clearRepeatedExecutionToolFailureLocked(state)
 }
 
 // hasPreparedExecutionPlan 判断当前执行轮次是否已生成可执行计划。
@@ -551,6 +584,127 @@ func clearExecutionPlanValidated(ctx context.Context) {
 	defer state.mu.Unlock()
 	state.planValidated = false
 	state.validatedPlanID = ""
+}
+
+// clearRepeatedExecutionToolFailureState 清理 execution 内部工具重复失败计数。
+// 输入：ctx（Agent 运行上下文）。
+// 输出：无。
+func clearRepeatedExecutionToolFailureState(ctx context.Context) {
+	state := getExecutionToolState(ctx)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	clearRepeatedExecutionToolFailureLocked(state)
+}
+
+func clearRepeatedExecutionToolFailureLocked(state *executionToolState) {
+	if state == nil {
+		return
+	}
+	state.repeatedFailureKey = ""
+	state.repeatedFailureReason = ""
+	state.repeatedFailureCount = 0
+	state.repeatedFailureLimit = maxRepeatedExecutionToolFailures
+}
+
+// recordExecutionToolFailure 记录 generate_plan/validate_plan/execute_step/validate_result 的同类失败。
+// 输入：ctx、toolName、reason。
+// 输出：累计结果；达到阈值时会同步标记 execution 停止并要求人工介入。
+func recordExecutionToolFailure(ctx context.Context, toolName, reason string) repeatedExecutionFailureDecision {
+	state := getExecutionToolState(ctx)
+	if state == nil {
+		return repeatedExecutionFailureDecision{Limit: maxRepeatedExecutionToolFailures}
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return recordExecutionToolFailureLocked(state, toolName, reason)
+}
+
+func recordExecutionToolFailureLocked(state *executionToolState, toolName, reason string) repeatedExecutionFailureDecision {
+	if state == nil {
+		return repeatedExecutionFailureDecision{Limit: maxRepeatedExecutionToolFailures}
+	}
+
+	normalizedKey := normalizeExecutionFailureKey(reason)
+	reason = strings.TrimSpace(reason)
+	if normalizedKey == "" {
+		normalizedKey = normalizeExecutionFailureKey(toolName)
+	}
+	if reason == "" {
+		reason = strings.TrimSpace(toolName)
+	}
+
+	state.repeatedFailureLimit = maxRepeatedExecutionToolFailures
+	if normalizedKey == "" {
+		return repeatedExecutionFailureDecision{Limit: maxRepeatedExecutionToolFailures}
+	}
+
+	if normalizedKey == strings.TrimSpace(state.repeatedFailureKey) {
+		state.repeatedFailureCount++
+	} else {
+		state.repeatedFailureKey = normalizedKey
+		state.repeatedFailureReason = clipRepeatedFailureReason(reason)
+		state.repeatedFailureCount = 1
+	}
+
+	decision := repeatedExecutionFailureDecision{
+		Count:  state.repeatedFailureCount,
+		Limit:  maxRepeatedExecutionToolFailures,
+		Key:    state.repeatedFailureKey,
+		Reason: firstNonEmptyExecutionText(state.repeatedFailureReason, reason),
+	}
+	if state.repeatedFailureCount >= maxRepeatedExecutionToolFailures {
+		decision.Reached = true
+		decision.StopReason = fmt.Sprintf(
+			"execution_agent 内部连续 %d 次遇到同类失败（%s），已停止自动重试并建议人工处理",
+			state.repeatedFailureCount,
+			firstNonEmptyExecutionText(decision.Reason, toolName),
+		)
+		state.stopExecution = true
+		state.stopAction = "manual_required"
+		state.stopReason = decision.StopReason
+	} else {
+		decision.StopReason = fmt.Sprintf(
+			"%s（同类失败累计 %d/%d）",
+			firstNonEmptyExecutionText(decision.Reason, toolName),
+			state.repeatedFailureCount,
+			maxRepeatedExecutionToolFailures,
+		)
+	}
+	return decision
+}
+
+func normalizeExecutionFailureKey(reason string) string {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if reason == "" {
+		return ""
+	}
+	reason = strings.NewReplacer(
+		"\n", " ",
+		"\r", " ",
+		"\t", " ",
+		"`", "",
+		"\"", "",
+		"'", "",
+	).Replace(reason)
+	reason = executionFailureNoisePattern.ReplaceAllString(reason, "#")
+	reason = executionFailureSpacePattern.ReplaceAllString(reason, " ")
+	return strings.TrimSpace(reason)
+}
+
+func clipRepeatedFailureReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return ""
+	}
+	runes := []rune(reason)
+	if len(runes) <= 220 {
+		return reason
+	}
+	return string(runes[:220]) + "..."
 }
 
 // hasValidatedExecutionPlan 判断当前执行轮次是否已通过 validate_plan。

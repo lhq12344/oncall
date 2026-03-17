@@ -96,6 +96,17 @@ func (t *GeneratePlanTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 }
 
 func (t *GeneratePlanTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
+	fail := func(err error) (string, error) {
+		if err == nil {
+			return "", nil
+		}
+		decision := recordExecutionToolFailure(ctx, "generate_plan", err.Error())
+		if decision.Reached {
+			return "", fmt.Errorf("%s", decision.StopReason)
+		}
+		return "", fmt.Errorf("%s", decision.StopReason)
+	}
+
 	type args struct {
 		Proposal map[string]any `json:"proposal"`
 		Intent   string         `json:"intent"`
@@ -104,16 +115,16 @@ func (t *GeneratePlanTool) InvokableRun(ctx context.Context, argumentsInJSON str
 
 	var in args
 	if err := unmarshalArgsLenient(argumentsInJSON, &in); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
+		return fail(fmt.Errorf("invalid arguments: %w", err))
 	}
 
 	proposal, err := parseProposalInput(in.Proposal)
 	if err != nil {
-		return "", err
+		return fail(err)
 	}
 	intent, contextText := buildPlanIntentAndContext(proposal, in.Intent, in.Context)
 	if strings.TrimSpace(intent) == "" && proposal == nil {
-		return "", fmt.Errorf("intent or proposal is required")
+		return fail(fmt.Errorf("intent or proposal is required"))
 	}
 
 	plan, err := t.generatePlanWithLLM(ctx, proposal, intent, contextText)
@@ -125,18 +136,19 @@ func (t *GeneratePlanTool) InvokableRun(ctx context.Context, argumentsInJSON str
 	}
 
 	if err := validateExecutionPlanStructure(plan); err != nil {
-		return "", fmt.Errorf("plan validation failed: %w", err)
+		return fail(fmt.Errorf("plan validation failed: %w", err))
 	}
 	plan.RiskLevel = assessExecutionPlanRisk(plan)
 	markExecutionPlanPrepared(ctx, plan.PlanID)
 	if err := rememberExecutionPlan(ctx, plan); err != nil {
-		return "", err
+		return fail(err)
 	}
 
 	output, err := json.Marshal(plan)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal plan: %w", err)
+		return fail(fmt.Errorf("failed to marshal plan: %w", err))
 	}
+	clearRepeatedExecutionToolFailureState(ctx)
 
 	if t.logger != nil {
 		t.logger.Info("execution plan generated",

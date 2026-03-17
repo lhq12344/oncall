@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"strings"
 	"sync"
 	"time"
 	"unicode"
@@ -75,6 +76,13 @@ func InitRedis(client *redis.Client, c *Config) error {
 type SimpleMemory struct {
 	ID string
 }
+
+const (
+	defaultSummaryTriggerTurns = 40
+	defaultSummaryBatchTurns   = 20
+	defaultSummaryMaxRunes     = 1200
+	historySummaryPrefix       = "历史会话摘要：\n"
+)
 
 // GetSimpleMemory：保持你原有使用方式
 func GetSimpleMemory(id string) *SimpleMemory {
@@ -161,6 +169,108 @@ func (m *SimpleMemory) SetMessages(
 	return nil
 }
 
+// CompactHistory 在写入完成后增量压缩历史：
+// - Redis 原始 turns 最多保留约 40 轮
+// - 当超过 40 轮时，将最旧 20 轮合并进持久化摘要
+// - 摘要单独存储，不作为新的 turn。
+func (m *SimpleMemory) CompactHistory(ctx context.Context, compactBatchTurns, triggerTurns, summaryMaxRunes int) error {
+	if !inited || rdb == nil {
+		return errors.New("mem: redis not initialized, call InitRedis first")
+	}
+
+	if compactBatchTurns <= 0 {
+		compactBatchTurns = defaultSummaryBatchTurns
+	}
+	if triggerTurns <= 0 {
+		triggerTurns = defaultSummaryTriggerTurns
+	}
+	if summaryMaxRunes <= 0 {
+		summaryMaxRunes = defaultSummaryMaxRunes
+	}
+
+	const maxRetries = 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err := rdb.Watch(ctx, func(tx *redis.Tx) error {
+			rawTurns, err := tx.LRange(ctx, m.keyTurns(), 0, -1).Result()
+			if err != nil && err != redis.Nil {
+				return err
+			}
+
+			turns, err := decodeStoredTurns(rawTurns)
+			if err != nil {
+				return err
+			}
+			if len(turns) <= triggerTurns {
+				return nil
+			}
+
+			summaryText, err := m.loadSummaryTextWithClient(ctx, tx)
+			if err != nil {
+				return err
+			}
+
+			nextSummary, remainingTurns, changed := compactStoredTurns(summaryText, turns, compactBatchTurns, triggerTurns, summaryMaxRunes)
+			if !changed {
+				return nil
+			}
+
+			now := time.Now().Unix()
+			turnsTokens := sumStoredTurnTokens(remainingTurns)
+			summaryItem, err := buildStoredSummaryItem(ctx, nextSummary)
+			if err != nil {
+				return err
+			}
+
+			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Del(ctx, m.keyTurns())
+				if len(remainingTurns) > 0 {
+					values := make([]interface{}, 0, len(remainingTurns))
+					for _, turn := range remainingTurns {
+						payload, marshalErr := json.Marshal(turn)
+						if marshalErr != nil {
+							return marshalErr
+						}
+						values = append(values, string(payload))
+					}
+					pipe.RPush(ctx, m.keyTurns(), values...)
+					pipe.Expire(ctx, m.keyTurns(), cfg.TTL)
+				}
+
+				if summaryItem == nil {
+					pipe.Del(ctx, m.keySummary())
+					pipe.HSet(ctx, m.keyMeta(), "summary_tokens", 0)
+				} else {
+					payload, marshalErr := json.Marshal(summaryItem)
+					if marshalErr != nil {
+						return marshalErr
+					}
+					pipe.Set(ctx, m.keySummary(), string(payload), cfg.TTL)
+					pipe.HSet(ctx, m.keyMeta(), "summary_tokens", summaryItem.T)
+					pipe.Expire(ctx, m.keySummary(), cfg.TTL)
+				}
+
+				pipe.HSet(ctx, m.keyMeta(), map[string]any{
+					"turns_tokens": turnsTokens,
+					"updated_at":   now,
+				})
+				pipe.Expire(ctx, m.keyMeta(), cfg.TTL)
+				pipe.Expire(ctx, m.keySys(), cfg.TTL)
+				return nil
+			})
+			return err
+		}, m.keyTurns(), m.keySummary(), m.keyMeta())
+
+		if err == nil {
+			return nil
+		}
+		if err != redis.TxFailedErr {
+			return err
+		}
+	}
+
+	return redis.TxFailedErr
+}
+
 // ------------------- Get：请求级裁剪（不估算 user token，改为固定预留） -------------------
 
 // GetMessagesForRequest：在 get 时做“请求级裁剪”
@@ -172,6 +282,10 @@ func (m *SimpleMemory) GetMessagesForRequest(ctx context.Context, userMsg *schem
 
 	// 1) 读取 sys（永远保留）
 	sysMsgs, sysTokens, err := m.loadSystem(ctx)
+	if err != nil {
+		return nil, err
+	}
+	summaryMsg, summaryTokens, err := m.loadSummaryMessage(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +312,8 @@ func (m *SimpleMemory) GetMessagesForRequest(ctx context.Context, userMsg *schem
 		reserveToolsTokens -
 		userTokensReserve -
 		cfg.SafetyTokens -
-		sysTokens
+		sysTokens -
+		summaryTokens
 	if turnsBudget < 0 {
 		turnsBudget = 0
 	}
@@ -214,8 +329,11 @@ func (m *SimpleMemory) GetMessagesForRequest(ctx context.Context, userMsg *schem
 		return nil, err
 	}
 
-	out := make([]*schema.Message, 0, len(sysMsgs)+len(turnMsgs)+1)
+	out := make([]*schema.Message, 0, len(sysMsgs)+len(turnMsgs)+2)
 	out = append(out, sysMsgs...)
+	if summaryMsg != nil {
+		out = append(out, summaryMsg)
+	}
 	out = append(out, turnMsgs...)
 	if appendedUser != nil {
 		out = append(out, appendedUser)
@@ -229,7 +347,10 @@ func (m *SimpleMemory) GetMessagesForRequest(ctx context.Context, userMsg *schem
 
 // ------------------- Redis Key 设计 -------------------
 
-func (m *SimpleMemory) keySys() string   { return "aiagent:ctx:" + m.ID + ":sys" }
+func (m *SimpleMemory) keySys() string { return "aiagent:ctx:" + m.ID + ":sys" }
+func (m *SimpleMemory) keySummary() string {
+	return "aiagent:ctx:" + m.ID + ":summary"
+}
 func (m *SimpleMemory) keyTurns() string { return "aiagent:ctx:" + m.ID + ":turns" }
 func (m *SimpleMemory) keyMeta() string  { return "aiagent:ctx:" + m.ID + ":meta" }
 
@@ -245,6 +366,11 @@ type storedTurn struct {
 	T    int               `json:"t"`    // tokens for this turn
 	TS   int64             `json:"ts"`   // last update time
 	Msgs []*schema.Message `json:"msgs"` // messages in this turn
+}
+
+type storedSummaryItem struct {
+	T       int    `json:"t"`
+	Summary string `json:"summary"`
 }
 
 // ------------------- system 写入/读取 -------------------
@@ -295,6 +421,53 @@ func (m *SimpleMemory) loadSystem(ctx context.Context) ([]*schema.Message, int, 
 		}
 	}
 	return sysMsgs, sysTokens, nil
+}
+
+func (m *SimpleMemory) loadSummaryMessage(ctx context.Context) (*schema.Message, int, error) {
+	item, err := m.loadSummary(ctx)
+	if err != nil || item == nil || item.Summary == "" {
+		return nil, 0, err
+	}
+	return schema.SystemMessage(historySummaryPrefix + item.Summary), item.T, nil
+}
+
+func (m *SimpleMemory) loadSummary(ctx context.Context) (*storedSummaryItem, error) {
+	return m.loadSummaryWithClient(ctx, rdb)
+}
+
+func (m *SimpleMemory) loadSummaryTextWithClient(ctx context.Context, client redis.Cmdable) (string, error) {
+	item, err := m.loadSummaryWithClient(ctx, client)
+	if err != nil || item == nil {
+		return "", err
+	}
+	return strings.TrimSpace(item.Summary), nil
+}
+
+func (m *SimpleMemory) loadSummaryWithClient(ctx context.Context, client redis.Cmdable) (*storedSummaryItem, error) {
+	if client == nil {
+		return nil, nil
+	}
+	raw, err := client.Get(ctx, m.keySummary()).Result()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var item storedSummaryItem
+	if err := json.Unmarshal([]byte(raw), &item); err != nil {
+		return nil, err
+	}
+	item.Summary = strings.TrimSpace(item.Summary)
+	if item.Summary == "" {
+		return nil, nil
+	}
+	if item.T <= 0 {
+		msg := schema.SystemMessage(historySummaryPrefix + item.Summary)
+		item.T = estimateMessageTokensWithFallback(ctx, msg, cfg.KeepReasoningInContext)
+	}
+	return &item, nil
 }
 
 // ------------------- turns 写入：Lua 原子（按 Turn 聚合） -------------------
@@ -441,10 +614,149 @@ func (m *SimpleMemory) loadTurnsMessages(ctx context.Context) ([]*schema.Message
 func (m *SimpleMemory) refreshTTL(ctx context.Context) error {
 	pipe := rdb.Pipeline()
 	pipe.Expire(ctx, m.keySys(), cfg.TTL)
+	pipe.Expire(ctx, m.keySummary(), cfg.TTL)
 	pipe.Expire(ctx, m.keyTurns(), cfg.TTL)
 	pipe.Expire(ctx, m.keyMeta(), cfg.TTL)
 	_, err := pipe.Exec(ctx)
 	return err
+}
+
+func decodeStoredTurns(raw []string) ([]storedTurn, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]storedTurn, 0, len(raw))
+	for _, item := range raw {
+		var turn storedTurn
+		if err := json.Unmarshal([]byte(item), &turn); err != nil {
+			return nil, err
+		}
+		out = append(out, turn)
+	}
+	return out, nil
+}
+
+func compactStoredTurns(existingSummary string, turns []storedTurn, compactBatchTurns, triggerTurns, summaryMaxRunes int) (string, []storedTurn, bool) {
+	if compactBatchTurns <= 0 {
+		compactBatchTurns = defaultSummaryBatchTurns
+	}
+	if triggerTurns <= 0 {
+		triggerTurns = defaultSummaryTriggerTurns
+	}
+	if summaryMaxRunes <= 0 {
+		summaryMaxRunes = defaultSummaryMaxRunes
+	}
+	if len(turns) <= triggerTurns {
+		return strings.TrimSpace(existingSummary), turns, false
+	}
+
+	remaining := append([]storedTurn(nil), turns...)
+	compacted := make([]storedTurn, 0, len(turns)-triggerTurns+compactBatchTurns)
+	for len(remaining) > triggerTurns {
+		take := compactBatchTurns
+		if take > len(remaining) {
+			take = len(remaining)
+		}
+		compacted = append(compacted, remaining[:take]...)
+		remaining = remaining[take:]
+	}
+
+	addition := summarizeStoredTurns(compacted, summaryMaxRunes)
+	nextSummary := mergeSummaryText(existingSummary, addition, summaryMaxRunes)
+	return nextSummary, remaining, true
+}
+
+func summarizeStoredTurns(turns []storedTurn, maxRunes int) string {
+	if len(turns) == 0 {
+		return ""
+	}
+	if maxRunes <= 0 {
+		maxRunes = defaultSummaryMaxRunes
+	}
+
+	var builder strings.Builder
+	for _, turn := range turns {
+		for _, msg := range turn.Msgs {
+			if msg == nil {
+				continue
+			}
+			content := strings.TrimSpace(msg.Content)
+			if content == "" {
+				continue
+			}
+			switch msg.Role {
+			case schema.User:
+				builder.WriteString("- 用户: ")
+				builder.WriteString(content)
+				builder.WriteString("\n")
+			case schema.Assistant:
+				builder.WriteString("- 助手: ")
+				builder.WriteString(content)
+				builder.WriteString("\n")
+			}
+		}
+		if len([]rune(builder.String())) >= maxRunes {
+			break
+		}
+	}
+	return clipSummaryText(builder.String(), maxRunes)
+}
+
+func mergeSummaryText(existingSummary, addition string, maxRunes int) string {
+	existingSummary = strings.TrimSpace(existingSummary)
+	addition = strings.TrimSpace(addition)
+	if maxRunes <= 0 {
+		maxRunes = defaultSummaryMaxRunes
+	}
+
+	switch {
+	case existingSummary == "":
+		return clipSummaryText(addition, maxRunes)
+	case addition == "":
+		return clipSummaryText(existingSummary, maxRunes)
+	default:
+		return clipSummaryText(existingSummary+"\n"+addition, maxRunes)
+	}
+}
+
+func clipSummaryText(summary string, maxRunes int) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return ""
+	}
+	if maxRunes <= 0 {
+		maxRunes = defaultSummaryMaxRunes
+	}
+	runes := []rune(summary)
+	if len(runes) <= maxRunes {
+		return summary
+	}
+	if maxRunes <= 3 {
+		return string(runes[len(runes)-maxRunes:])
+	}
+	return "..." + string(runes[len(runes)-(maxRunes-3):])
+}
+
+func sumStoredTurnTokens(turns []storedTurn) int {
+	total := 0
+	for _, turn := range turns {
+		if turn.T > 0 {
+			total += turn.T
+		}
+	}
+	return total
+}
+
+func buildStoredSummaryItem(ctx context.Context, summary string) (*storedSummaryItem, error) {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return nil, nil
+	}
+	msg := schema.SystemMessage(historySummaryPrefix + summary)
+	return &storedSummaryItem{
+		T:       estimateMessageTokensWithFallback(ctx, msg, cfg.KeepReasoningInContext),
+		Summary: summary,
+	}, nil
 }
 
 // ------------------- Message 净化（不涉及 token 估算） -------------------

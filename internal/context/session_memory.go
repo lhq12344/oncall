@@ -74,7 +74,7 @@ func (s *SessionMemory) BuildMessages(ctx context.Context, sessionID, question s
 	if len(messages) == 0 {
 		return []*schema.Message{schema.UserMessage(question)}, nil
 	}
-	return s.compactMessages(messages), nil
+	return messages, nil
 }
 
 func (s *SessionMemory) SaveTurn(
@@ -120,127 +120,18 @@ func (s *SessionMemory) SaveTurn(
 		s.logger.Warn("failed to save session memory",
 			zap.String("session_id", sessionID),
 			zap.Error(err))
-	}
-}
-
-func (s *SessionMemory) compactMessages(messages []*schema.Message) []*schema.Message {
-	if len(messages) == 0 {
-		return messages
+		return
 	}
 
-	systemMessages := make([]*schema.Message, 0, 2)
-	chatMessages := make([]*schema.Message, 0, len(messages))
-	for _, msg := range messages {
-		if msg == nil {
-			continue
-		}
-		switch msg.Role {
-		case schema.System:
-			systemMessages = append(systemMessages, msg)
-		case schema.User, schema.Assistant:
-			chatMessages = append(chatMessages, msg)
-		}
+	compactErr := memory.CompactHistory(saveCtx, s.cfg.MaxRecentTurns, s.cfg.SummarizeAfterTurns, s.cfg.SummaryMaxRunes)
+	if compactErr != nil && (errors.Is(compactErr, context.Canceled) || errors.Is(compactErr, context.DeadlineExceeded)) {
+		detachedCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		compactErr = memory.CompactHistory(detachedCtx, s.cfg.MaxRecentTurns, s.cfg.SummarizeAfterTurns, s.cfg.SummaryMaxRunes)
 	}
-
-	turns := splitTurns(chatMessages)
-	if len(turns) == 0 {
-		return append(systemMessages, chatMessages...)
+	if compactErr != nil && s.logger != nil {
+		s.logger.Warn("failed to compact session memory",
+			zap.String("session_id", sessionID),
+			zap.Error(compactErr))
 	}
-
-	summarizeAfterTurns := s.cfg.SummarizeAfterTurns
-	if summarizeAfterTurns <= 0 {
-		summarizeAfterTurns = 40
-	}
-	maxRecentTurns := s.cfg.MaxRecentTurns
-	if maxRecentTurns <= 0 {
-		maxRecentTurns = 20
-	}
-
-	splitPoint := 0
-	if len(turns) > maxRecentTurns {
-		splitPoint = len(turns) - maxRecentTurns
-	}
-	if len(turns) > summarizeAfterTurns && splitPoint == 0 {
-		splitPoint = len(turns) - summarizeAfterTurns/2
-		if splitPoint < 1 {
-			splitPoint = 1
-		}
-	}
-
-	out := make([]*schema.Message, 0, len(systemMessages)+len(chatMessages)+1)
-	out = append(out, systemMessages...)
-
-	if splitPoint > 0 {
-		summary := summarizeTurns(turns[:splitPoint], s.cfg.SummaryMaxRunes)
-		if summary != "" {
-			out = append(out, schema.SystemMessage("历史会话摘要：\n"+summary))
-		}
-		turns = turns[splitPoint:]
-	}
-
-	for _, turn := range turns {
-		out = append(out, turn...)
-	}
-	return out
-}
-
-func splitTurns(messages []*schema.Message) [][]*schema.Message {
-	turns := make([][]*schema.Message, 0, len(messages)/2+1)
-	for _, msg := range messages {
-		if msg == nil {
-			continue
-		}
-		if msg.Role == schema.User || len(turns) == 0 {
-			turns = append(turns, []*schema.Message{msg})
-			continue
-		}
-		turns[len(turns)-1] = append(turns[len(turns)-1], msg)
-	}
-	return turns
-}
-
-func summarizeTurns(turns [][]*schema.Message, maxRunes int) string {
-	if len(turns) == 0 {
-		return ""
-	}
-	if maxRunes <= 0 {
-		maxRunes = 1200
-	}
-
-	var builder strings.Builder
-	for _, turn := range turns {
-		for _, msg := range turn {
-			if msg == nil {
-				continue
-			}
-			content := strings.TrimSpace(msg.Content)
-			if content == "" {
-				continue
-			}
-			if msg.Role == schema.User {
-				builder.WriteString("- 用户: ")
-				builder.WriteString(content)
-				builder.WriteString("\n")
-				continue
-			}
-			if msg.Role == schema.Assistant {
-				builder.WriteString("- 助手: ")
-				builder.WriteString(content)
-				builder.WriteString("\n")
-			}
-		}
-		if len([]rune(builder.String())) >= maxRunes {
-			break
-		}
-	}
-
-	summary := strings.TrimSpace(builder.String())
-	if summary == "" {
-		return ""
-	}
-	runes := []rune(summary)
-	if len(runes) > maxRunes {
-		return string(runes[:maxRunes]) + "..."
-	}
-	return summary
 }

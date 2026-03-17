@@ -48,9 +48,17 @@ func (t *ValidatePlanTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 }
 
 func (t *ValidatePlanTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
+	fail := func(err error) (string, error) {
+		if err == nil {
+			return "", nil
+		}
+		decision := recordExecutionToolFailure(ctx, "validate_plan", err.Error())
+		return "", fmt.Errorf("%s", decision.StopReason)
+	}
+
 	plan, err := parseValidatePlanInput(ctx, argumentsInJSON)
 	if err != nil {
-		return "", err
+		return fail(err)
 	}
 
 	result := t.validate(plan)
@@ -62,8 +70,9 @@ func (t *ValidatePlanTool) InvokableRun(ctx context.Context, argumentsInJSON str
 
 	output, err := json.Marshal(result)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal result: %w", err)
+		return fail(fmt.Errorf("failed to marshal result: %w", err))
 	}
+	clearRepeatedExecutionToolFailureState(ctx)
 
 	if t.logger != nil {
 		t.logger.Info("execution plan validated",
