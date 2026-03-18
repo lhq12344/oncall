@@ -20,13 +20,14 @@ type InterruptContext struct {
 }
 
 type ChatResumeStreamReq struct {
-	g.Meta       `path:"/chat_resume_stream" method:"post" summary:"流式恢复中断对话"`
-	Id           string   `json:"id" v:"required"`
-	CheckpointID string   `json:"checkpoint_id" v:"required"`
-	InterruptIDs []string `json:"interrupt_ids,omitempty"`
-	Approved     *bool    `json:"approved,omitempty"`
-	Resolved     *bool    `json:"resolved,omitempty"`
-	Comment      string   `json:"comment,omitempty"`
+	g.Meta         `path:"/chat_resume_stream" method:"post" summary:"流式恢复中断对话"`
+	Id             string   `json:"id" v:"required"`
+	CheckpointID   string   `json:"checkpoint_id" v:"required"`
+	InterruptIDs   []string `json:"interrupt_ids,omitempty"`
+	Approved       *bool    `json:"approved,omitempty"`
+	Resolved       *bool    `json:"resolved,omitempty"`
+	Comment        string   `json:"comment,omitempty"`
+	SelectionValue string   `json:"selection_value,omitempty"`
 }
 
 type ChatResumeStreamRes struct{}

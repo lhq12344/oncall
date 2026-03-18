@@ -119,17 +119,27 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 
 					运维规则（必须遵守）：
 					- 优先观测：默认遵循“先看后动”，先 monitor / retrieve，再考虑 execute。
-					- 自主追问：缺少命名空间、Pod 名称、资源名、时间范围等关键上下文时，直接追问，不做大范围模糊查询。
+					- 自主追问：缺少命名空间、Pod 名称、资源名、时间范围等关键上下文时，优先补充上下文，不做大范围模糊查询。
+					- 补充细节：当缺少关键上下文且候选值有限（例如 namespace、环境、资源类型）时，优先调用 request_detail_selection 发起单选补充，而不是直接猜测或全局扫描。
 					- 事实导向：先展示核心资源状态、指标结果、检索结果，再给诊断结论。
 					- 安全红线：执行 bash_execute_with_approval 前，必须明确说明命令影响范围，例如“该命令会重启某服务 / 删除某资源 / 修改某配置”。
 					- 用户确认：只有用户明确表达“确认 / Proceed / 执行 / 同意”后，才能进入实际 Bash 执行。
 
 					工具链优先级：
 					- 意图澄清：intent_analysis（仅在意图模糊、跨多类任务、或你无法确定下一步工具时使用；意图明确时可直接跳过）
+					- 细节补充：request_detail_selection（仅在缺少关键上下文且候选项可枚举、有限、单选时使用）
 					- 状态检查：k8s_monitor -> metrics_collector
 					- 历史经验：ops_case_retrieve -> knowledge_retrieve
 					- 外部检索：web_search（仅在需要最新外部信息或官方资料时使用）
 					- 执行动作：bash_execute_with_approval（必须最后考虑，且需人工确认）
+
+					补充细节工具说明（必须遵守）：
+					- 工具名：request_detail_selection。
+					- 适用场景：当前任务缺少关键字段，且候选项可枚举、数量有限、适合单选，例如 namespace、environment、resource_type。
+					- 典型示例：用户说“查看 K8s 的 mysql 状态”，但未说明 namespace，此时应优先调用 request_detail_selection 让用户选择，而不是直接扫描全部命名空间。
+					- 输入要求：question 必须面向用户可直接理解；field 必须是规范字段名；options 只提供 2-6 个明确选项。
+					- 禁止误用：若问题是开放式补充信息（如“请描述报错现象”），不要使用该工具，改为自然语言追问。
+					- 默认策略：若只有一个合理值，不要调用该工具，直接带着假设执行，并在回答中说明你的假设。
 
 					网络检索工具说明（必须遵守）：
 					- 工具名：web_search。
@@ -202,6 +212,7 @@ func noFormatGenModelInput(_ context.Context, instruction string, input *adk.Age
 func buildDialogueTools(ctx context.Context, cfg *Config, knowledgeRetriever einoretriever.Retriever, opsCaseRetriever einoretriever.Retriever) []tool.BaseTool {
 	toolsList := []tool.BaseTool{
 		tools.NewIntentAnalysisTool(cfg.ChatModel, cfg.Embedder, cfg.Logger, cfg.EnableToolLLM),
+		tools.NewDetailSelectionTool(cfg.Logger),
 		tools.NewKnowledgeRetrieveTool(knowledgeRetriever, cfg.Logger),
 		tools.NewOpsCaseRetrieveTool(opsCaseRetriever, cfg.Logger),
 		tools.NewBashApprovalTool(cfg.Logger),

@@ -1,4 +1,4 @@
-import { InterruptData, AIOpsStep, InterruptContext, BashApprovalRequest } from '../types';
+import { InterruptData, AIOpsStep, InterruptContext, BashApprovalRequest, DetailOption, DetailRequest } from '../types';
 
 const BASE_URL = 'http://127.0.0.1:6872/api/v1';
 
@@ -37,7 +37,7 @@ export async function streamChat(
 export async function resumeChat(
   sessionId: string,
   checkpointId: string,
-  data: { approved?: boolean; resolved?: boolean; comment?: string; interrupt_ids?: string[] },
+  data: { approved?: boolean; resolved?: boolean; comment?: string; interrupt_ids?: string[]; selection_value?: string },
   options: StreamOptions
 ) {
   return streamRequest(`${BASE_URL}/chat_resume_stream`, {
@@ -169,12 +169,14 @@ function mapInterruptData(raw: any): InterruptData {
   const message = typeof raw?.message === 'string' ? raw.message : '';
   const interrupt_contexts = normalizeInterruptContexts(raw?.interrupt_contexts);
   const bash_request = extractBashApprovalRequest(raw, message, interrupt_contexts);
+  const detail_request = extractDetailRequest(raw);
 
   return {
     checkpoint_id,
     message,
     interrupt_contexts,
-    bash_request
+    bash_request,
+    detail_request
   };
 }
 
@@ -222,6 +224,44 @@ function extractBashApprovalRequest(
   }
 
   return undefined;
+}
+
+function extractDetailRequest(raw: any): DetailRequest | undefined {
+  const structuredCandidates = [
+    raw?.detail_request,
+    raw?.interrupt_data,
+    raw?.data
+  ];
+  for (const candidate of structuredCandidates) {
+    const parsed = parseDetailRequestFromUnknown(candidate);
+    if (parsed) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function parseDetailRequestFromUnknown(input: unknown): DetailRequest | undefined {
+  if (!input || typeof input !== 'object') {
+    return undefined;
+  }
+
+  const value = input as Record<string, any>;
+  const field = normalizeOptionalString(value.field);
+  const question = normalizeOptionalString(value.question);
+  const reason = normalizeOptionalString(value.reason);
+  const options = normalizeDetailOptions(value.options);
+
+  if (!field || !question || options.length === 0) {
+    return undefined;
+  }
+
+  return {
+    field,
+    question,
+    reason,
+    options
+  };
 }
 
 function parseBashRequestFromUnknown(input: unknown): BashApprovalRequest | undefined {
@@ -402,6 +442,34 @@ function normalizeArgs(value: unknown): string[] | undefined {
   return value
     .map((item) => (typeof item === 'string' ? item.trim() : String(item)))
     .filter(Boolean);
+}
+
+function normalizeDetailOptions(value: unknown): DetailOption[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => normalizeDetailOption(item))
+    .filter((item): item is DetailOption => Boolean(item));
+}
+
+function normalizeDetailOption(value: unknown): DetailOption | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const record = value as Record<string, any>;
+  const label = normalizeOptionalString(record.label);
+  const optionValue = normalizeOptionalString(record.value);
+  const description = normalizeOptionalString(record.description);
+  if (!label || !optionValue) {
+    return undefined;
+  }
+  return {
+    label,
+    value: optionValue,
+    description
+  };
 }
 
 function tokenizeCommandLine(rawCommand: string): string[] {

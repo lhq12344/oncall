@@ -241,18 +241,49 @@ func (t *MetricsCollectorTool) InvokableRun(ctx context.Context, argumentsInJSON
 }
 
 // discoverMetricSources 发现 Prometheus 当前可用指标源。
-// 输入：ctx、metric（可选过滤指标名）、limit（返回源样本上限）。
-// 输出：包含 targets、scrape pools、label values 与关键指标可用性的结构化结果。
+//
+// 功能：
+// 1. 获取 Prometheus 的 scrape targets 列表（active 和 dropped）
+// 2. 提取 active targets 的样本信息（scrape pool、URL、健康状态、标签）
+// 3. 获取关键标签的值（job、instance、namespace）
+// 4. 探测关键指标的可用性（container、node、kube_pod 等）
+// 5. 获取指定指标的元数据（类型、帮助信息、单位）
+//
+// 输入：
+// - ctx: 上下文
+// - metric: 可选的指标名过滤（用于获取该指标的元数据）
+// - limit: 返回源样本上限（默认 20，最大 100）
+//
+// 输出：
+// - interface{}: 包含以下信息的结构化结果
+//   - type: "source_discovery"
+//   - active_targets: 活跃目标数量
+//   - dropped_targets: 丢弃目标数量
+//   - health_summary: 健康状态统计（up/down/unknown）
+//   - scrape_pools: scrape pool 名称列表
+//   - target_samples: 目标样本列表（包含 scrape_pool、scrape_url、health、job、instance 等）
+//   - label_values: 关键标签的值（job、instance、namespace）
+//   - label_warnings: 标签查询警告
+//   - metric_probe: 关键指标可用性探测结果
+//   - metric_metadata: 指标元数据汇总
+//
+// 调用位置：
+// - InvokableRun:161 行，当 action="discover_sources" 时调用
+//
+// Prometheus API 使用：
+// - t.client.Targets(ctx): 获取 scrape targets 列表
+// - t.client.LabelValues(ctx, "job", ...): 获取 job 标签的值
+// - t.client.Metadata(ctx, metric, limit): 获取指标元数据
 func (t *MetricsCollectorTool) discoverMetricSources(ctx context.Context, metric string, limit int) (interface{}, error) {
-	targets, err := t.client.Targets(ctx)
+	targets, err := t.client.Targets(ctx) //返回当前 Prometheus 的 scrape targets 列表，包含 active 和 dropped 两部分
 	if err != nil {
 		return nil, err
 	}
 
 	active := targets.Active
-	samples := make([]map[string]interface{}, 0, minInt(limit, len(active)))
-	scrapePools := make([]string, 0, len(active))
-	poolSet := make(map[string]struct{}, len(active))
+	samples := make([]map[string]interface{}, 0, minInt(limit, len(active))) // scrape targets 样本列表，包含 scrape pool、scrape url、health 状态、相关标签等信息
+	scrapePools := make([]string, 0, len(active))                            // 使用集合辅助去重 scrape pool 名称
+	poolSet := make(map[string]struct{}, len(active))                        // 健康状态统计
 
 	healthSummary := map[string]int{
 		"up":      0,
@@ -273,6 +304,8 @@ func (t *MetricsCollectorTool) discoverMetricSources(ctx context.Context, metric
 
 		pool := strings.TrimSpace(target.ScrapePool)
 		if pool != "" {
+			//如果 scrape pool 不在列表中，则添加到列表和集合中
+			// 保证 scrape pool 的唯一性
 			if _, exists := poolSet[pool]; !exists {
 				poolSet[pool] = struct{}{}
 				scrapePools = append(scrapePools, pool)
@@ -351,8 +384,28 @@ func (t *MetricsCollectorTool) discoverMetricSources(ctx context.Context, metric
 }
 
 // probeMetricAvailability 探测关键指标在当前 Prometheus 中是否可查询。
-// 输入：ctx、指标名列表。
-// 输出：metric -> 可用性、样本数量、错误信息。
+//
+// 功能：
+// 1. 对每个指标执行 PromQL 查询（count(metric)）
+// 2. 检查查询结果是否包含样本数据
+// 3. 返回每个指标的可用性状态和样本数量
+//
+// 输入：
+// - ctx: 上下文
+// - metrics: 需要探测的指标名列表
+//
+// 输出：
+// - map[string]interface{}: 指标 -> 可用性信息
+//   - available: 是否可用（bool）
+//   - sample_count: 样本数量（float64，仅当可用时）
+//   - error: 错误信息（仅当不可用时）
+//
+// 使用的指标：
+// - container_cpu_usage_seconds_total: 容器 CPU 使用时间
+// - container_memory_working_set_bytes: 容器内存工作集
+// - node_cpu_seconds_total: 节点 CPU 使用时间
+// - node_memory_MemAvailable_bytes: 节点可用内存
+// - kube_pod_container_status_restarts_total: Pod 容器重启次数
 func (t *MetricsCollectorTool) probeMetricAvailability(ctx context.Context, metrics []string) map[string]interface{} {
 	out := make(map[string]interface{}, len(metrics))
 	now := time.Now()

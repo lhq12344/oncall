@@ -1,0 +1,35 @@
+# OpenCode MCP & Skills 配置
+# 后端开发常用配置
+
+## MCP Servers 配置
+# 将此配置添加到你的 OpenCode 设置中
+
+{
+  "mcpServers": {
+    # MySQL - 需要安装 mysql2 包或其他MySQL MCP
+    # "mysql": {
+    #   "command": "npx",
+    #   "args": ["-y", "@modelcontextprotocol/server-mysql", "-h", "localhost", "-P", "30306", "-u", "root", "-p", "123456", "orm_test"]
+    # },
+
+    # PostgreSQL (如果有PostgreSQL)
+    # "postgres": {
+    #   "command": "npx", 
+    #   "args": ["-y", "@modelcontextprotocol/server-postgres", "-h", "localhost", "-p", "5432", "-d", "orm_test", "-u", "root"]
+    # },
+
+    # SQLite (本地文件)
+    # "sqlite": {
+    #   "command": "npx",
+    #   "args": ["-y", "@modelcontextprotocol/server-sqlite", "--db-path", "./data.db"]
+    # }
+  }
+}
+
+## Skills (内置，直接可用)
+# 使用方法: task(category="...", load_skills=["git-master"], ...)
+#
+# - git-master: Git操作（提交、变基、blame、搜索历史）
+# - playwright: 浏览器自动化（测试、爬虫）
+# - dev-browser: 浏览器交互（填表、截图）
+# - frontend-ui-ux: 前端UI/UX设计开发

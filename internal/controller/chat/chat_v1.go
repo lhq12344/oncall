@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -202,7 +203,7 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 			writeSSEData(r, string(payloadBytes))
 			continue
 		}
-
+		//将工具调用信息传回前端
 		chunk, ok := c.extractAssistantContentFromResolved(event, msg)
 		if !ok {
 			continue
@@ -274,7 +275,7 @@ func (c *ControllerV1) ChatResumeStream(ctx context.Context, req *v1.ChatResumeS
 	}
 	sessionID := normalizeSessionID(req.Id)
 
-	iter, err := c.resumeAgent(ctx, c.chatStreamRunner, req.CheckpointID, req.InterruptIDs, req.Approved, req.Resolved, req.Comment, map[string]any{
+	iter, err := c.resumeAgent(ctx, c.chatStreamRunner, req.CheckpointID, req.InterruptIDs, req.Approved, req.Resolved, req.Comment, req.SelectionValue, map[string]any{
 		"session_id": sessionID,
 	})
 	if err != nil {
@@ -334,17 +335,22 @@ func (c *ControllerV1) ChatResumeStream(ctx context.Context, req *v1.ChatResumeS
 		if comment == "" {
 			comment = "(empty)"
 		}
+		selectionValue := strings.TrimSpace(req.SelectionValue)
+		if selectionValue == "" {
+			selectionValue = "(empty)"
+		}
 		interruptIDs := normalizeIDList(req.InterruptIDs)
 		if len(interruptIDs) == 0 {
 			interruptIDs = []string{"(all or checkpoint-level resume)"}
 		}
 		resumeInput := fmt.Sprintf(
-			"恢复执行确认：checkpoint_id=%s; interrupt_ids=%s; approved=%s; resolved=%s; comment=%s",
+			"恢复执行确认：checkpoint_id=%s; interrupt_ids=%s; approved=%s; resolved=%s; comment=%s; selection_value=%s",
 			strings.TrimSpace(req.CheckpointID),
 			strings.Join(interruptIDs, ","),
 			approvedValue,
 			resolvedValue,
 			comment,
+			selectionValue,
 		)
 		c.sessionMemory.SaveTurn(context.Background(), sessionID, resumeInput, answer, nil)
 	}
@@ -504,7 +510,7 @@ func (c *ControllerV1) AIOpsResumeStream(ctx context.Context, req *v1.AIOpsResum
 		return nil, fmt.Errorf("checkpoint_id is required")
 	}
 
-	iter, err := c.resumeAgent(ctx, c.opsStreamRunner, req.CheckpointID, req.InterruptIDs, req.Approved, req.Resolved, req.Comment, map[string]any{
+	iter, err := c.resumeAgent(ctx, c.opsStreamRunner, req.CheckpointID, req.InterruptIDs, req.Approved, req.Resolved, req.Comment, "", map[string]any{
 		"session_id": "aiops",
 	})
 	if err != nil {
@@ -584,6 +590,7 @@ func (c *ControllerV1) resumeAgent(
 	approved *bool,
 	resolved *bool,
 	comment string,
+	selectionValue string,
 	sessionValues map[string]any,
 ) (*adk.AsyncIterator[*adk.AgentEvent], error) {
 	if runner == nil {
@@ -599,16 +606,7 @@ func (c *ControllerV1) resumeAgent(
 		return runner.Resume(ctx, checkpointID, baseOpts...)
 	}
 
-	targetPayload := map[string]any{}
-	if approved != nil {
-		targetPayload["approved"] = *approved
-	}
-	if resolved != nil {
-		targetPayload["resolved"] = *resolved
-	}
-	if text := strings.TrimSpace(comment); text != "" {
-		targetPayload["comment"] = text
-	}
+	targetPayload := buildResumeTargetPayload(approved, resolved, comment, selectionValue)
 	if len(targetPayload) == 0 {
 		targetPayload["comment"] = "继续执行"
 	}
@@ -629,6 +627,30 @@ func (c *ControllerV1) extractAssistantContent(event *adk.AgentEvent) (string, b
 	return c.extractAssistantContentFromResolved(event, msg)
 }
 
+// extractAssistantContentFromResolved 从已解析的事件和消息中提取助手回复内容。
+//
+// 功能：
+// 1. 首先尝试从主 Agent（rootAgentName）的消息中提取内容
+// 2. 如果失败，尝试从 Bash 审批工具的执行结果中提取内容
+// 3. 如果 still 失败，放宽条件，允许任何 Agent 的 assistant 消息透出
+//
+// 调用位置：
+// - ChatStream:207 行，提取聊天流式响应的内容块
+// - extractAssistantContent:627 行，辅助函数调用
+//
+// 输入：
+// - event: ADK Agent 事件（包含 Agent 名称和输出）
+// - msg: schema.Message 消息（可能包含助手回复内容）
+//
+// 输出：
+// - string: 提取的助手回复内容（可能为空）
+// - bool: 是否成功提取内容
+//
+// 提取逻辑：
+// 1. 检查消息角色是否为 assistant
+// 2. 检查 Agent 名称是否匹配（优先主 Agent）
+// 3. 检查是否包含工具调用 ID（工具调用消息不提取）
+// 4. 清理内容中的特殊字符和格式
 func (c *ControllerV1) extractAssistantContentFromResolved(event *adk.AgentEvent, msg *schema.Message) (string, bool) {
 	if event == nil || msg == nil {
 		return "", false
@@ -752,6 +774,40 @@ func isBashExecuteResult(content string) bool {
 	return hasCommand && hasApproved && hasResolved && hasExecuted
 }
 
+// setupSSE 初始化服务器发送事件（Server-Sent Events）响应。
+//
+// 功能：
+// 1. 从上下文中获取 HTTP 请求对象
+// 2. 设置 SSE 响应头（Content-Type、Cache-Control、Connection 等）
+// 3. 写入 HTTP 200 状态码并刷新响应头
+// 4. 返回请求对象，用于后续写入 SSE 数据
+//
+// 调用位置：
+// - ChatStream:100 行，聊天流式请求开始时调用
+// - ChatResumeStream:260 行，中断恢复请求开始时调用
+// - AIOpsStream:441 行，AIOps 流式请求开始时调用
+// - AIOpsResumeStream:519 行，AIOps 恢复请求开始时调用
+//
+// 输入：
+// - ctx: 上下文（包含 HTTP 请求）
+//
+// 输出：
+// - *ghttp.Request: HTTP 请求对象（用于后续写入 SSE 数据）
+// - error: 获取请求失败时返回错误
+//
+// SSE 响应头说明：
+// - Content-Type: text/event-stream - 指定响应类型为 SSE
+// - Cache-Control: no-cache - 禁止缓存
+// - Connection: keep-alive - 保持连接
+// - X-Accel-Buffering: no - 禁用 Nginx 缓冲（用于流式响应）
+//
+// 使用示例：
+//
+//	r, err := setupSSE(ctx)
+//	if err != nil {
+//	    return nil, err
+//	}
+//	writeSSEData(r, "data: hello\n\n")
 func setupSSE(ctx context.Context) (*ghttp.Request, error) {
 	r := g.RequestFromCtx(ctx)
 	if r == nil {
@@ -766,18 +822,145 @@ func setupSSE(ctx context.Context) (*ghttp.Request, error) {
 	return r, nil
 }
 
+// writeSSEData 向 SSE 响应中写入数据。
+//
+// 功能：
+// 1. 将数据包装为 SSE 格式并写入响应流
+// 2. 刷新响应缓冲区，立即发送给客户端
+//
+// 输入：
+// - r: HTTP 请求对象（来自 setupSSE）
+// - data: 要发送的数据内容
+//
+// SSE 数据格式：
+//
+//	data: <内容行1>
+//	data: <内容行2>
+//	[空行]
 func writeSSEData(r *ghttp.Request, data string) {
 	if r == nil {
 		return
 	}
-	data = strings.ReplaceAll(data, "\r\n", "\n")
-	data = strings.ReplaceAll(data, "\r", "\n")
-	lines := strings.Split(data, "\n")
-	for _, line := range lines {
-		r.Response.Write(fmt.Sprintf("data: %s\n", line))
-	}
-	r.Response.Write("\n")
+	_ = writeSSEPayload(sseResponseWriter{resp: r.Response}, data)
 	r.Response.Flush()
+}
+
+type sseResponseWriter struct {
+	resp interface {
+		Write(content ...interface{})
+	}
+}
+
+func (w sseResponseWriter) Write(p []byte) (int, error) {
+	if w.resp == nil {
+		return 0, nil
+	}
+	w.resp.Write(p)
+	return len(p), nil
+}
+
+// writeSSEPayload 将数据格式化为 SSE 协议格式并写入 writer。
+//
+// 功能：
+// 1. 使用自定义扫描器分割数据行（支持 \n 和 \r\n）
+// 2. 每行数据前添加 "data: " 前缀
+// 3. 写入空行作为事件结束标记
+// 4. 处理空数据和边界情况
+//
+// 输入：
+// - w: io.Writer 接口（通常是 HTTP 响应流）
+// - data: 要发送的原始数据
+//
+// 输出：
+// - error: 写入过程中的错误
+//
+// SSE 协议格式：
+//
+//	data: <line1>
+//	data: <line2>
+//	[空行]
+func writeSSEPayload(w io.Writer, data string) error {
+	if w == nil {
+		return nil
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(data))
+	scanner.Split(scanSSELines)
+
+	maxTokenSize := len(data) + 1
+	if maxTokenSize < bufio.MaxScanTokenSize {
+		maxTokenSize = bufio.MaxScanTokenSize
+	}
+	scanner.Buffer(make([]byte, 0, 1024), maxTokenSize)
+
+	wroteAny := false
+	for scanner.Scan() {
+		wroteAny = true
+		if _, err := io.WriteString(w, "data: "); err != nil {
+			return err
+		}
+		if _, err := w.Write(scanner.Bytes()); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(w, "\n"); err != nil {
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	if !wroteAny || strings.HasSuffix(data, "\n") || strings.HasSuffix(data, "\r") {
+		if _, err := io.WriteString(w, "data: \n"); err != nil {
+			return err
+		}
+	}
+	_, err := io.WriteString(w, "\n")
+	return err
+}
+
+// scanSSELines 自定义扫描函数，用于分割 SSE 数据行。
+//
+// 功能：
+// 1. 按 \n 或 \r\n 分割数据
+// 2. 处理 \r 单独出现的情况
+// 3. 处理 EOF 边界情况
+//
+// 输入：
+// - data: 待扫描的字节数据
+// - atEOF: 是否到达数据流末尾
+//
+// 输出：
+// - advance: 前进的字节数
+// - token: 提取的令牌（一行数据）
+// - err: 错误信息
+func scanSSELines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+
+	for i := 0; i < len(data); i++ {
+		switch data[i] {
+		case '\n':
+			return i + 1, data[:i], nil
+		case '\r':
+			if i+1 < len(data) {
+				if data[i+1] == '\n' {
+					return i + 2, data[:i], nil
+				}
+				return i + 1, data[:i], nil
+			}
+			if atEOF {
+				return i + 1, data[:i], nil
+			}
+			return 0, nil, nil
+		}
+	}
+
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
 
 func validateChatStreamInput(req *v1.ChatStreamReq) (question string, sessionID string, err error) {
@@ -842,6 +1025,9 @@ func buildInterruptPayload(checkpointID string, info *adk.InterruptInfo) map[str
 		if bashRequest := extractBashApprovalPayload(structured); bashRequest != nil {
 			payload["bash_request"] = bashRequest
 		}
+		if detailRequest := extractDetailSelectionPayload(structured); detailRequest != nil {
+			payload["detail_request"] = detailRequest
+		}
 	}
 	return payload
 }
@@ -895,6 +1081,71 @@ func extractBashApprovalPayload(data any) map[string]any {
 		payload["raw_command"] = strings.TrimSpace(rawCommand)
 	}
 	return payload
+}
+
+func extractDetailSelectionPayload(data any) map[string]any {
+	value, ok := data.(map[string]any)
+	if !ok || value == nil {
+		return nil
+	}
+
+	field, _ := value["field"].(string)
+	question, _ := value["question"].(string)
+	options, ok := value["options"].([]any)
+	if strings.TrimSpace(field) == "" || strings.TrimSpace(question) == "" || !ok || len(options) == 0 {
+		return nil
+	}
+
+	normalizedOptions := make([]map[string]any, 0, len(options))
+	for _, item := range options {
+		optionValue, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		label, _ := optionValue["label"].(string)
+		rawValue, _ := optionValue["value"].(string)
+		if strings.TrimSpace(label) == "" || strings.TrimSpace(rawValue) == "" {
+			continue
+		}
+		optionPayload := map[string]any{
+			"label": strings.TrimSpace(label),
+			"value": strings.TrimSpace(rawValue),
+		}
+		if description, ok := optionValue["description"].(string); ok && strings.TrimSpace(description) != "" {
+			optionPayload["description"] = strings.TrimSpace(description)
+		}
+		normalizedOptions = append(normalizedOptions, optionPayload)
+	}
+	if len(normalizedOptions) == 0 {
+		return nil
+	}
+
+	payload := map[string]any{
+		"field":    strings.TrimSpace(field),
+		"question": strings.TrimSpace(question),
+		"options":  normalizedOptions,
+	}
+	if reason, ok := value["reason"].(string); ok && strings.TrimSpace(reason) != "" {
+		payload["reason"] = strings.TrimSpace(reason)
+	}
+	return payload
+}
+
+func buildResumeTargetPayload(approved *bool, resolved *bool, comment string, selectionValue string) map[string]any {
+	targetPayload := map[string]any{}
+	if approved != nil {
+		targetPayload["approved"] = *approved
+	}
+	if resolved != nil {
+		targetPayload["resolved"] = *resolved
+	}
+	if text := strings.TrimSpace(comment); text != "" {
+		targetPayload["comment"] = text
+	}
+	if value := strings.TrimSpace(selectionValue); value != "" {
+		targetPayload["selection_value"] = value
+	}
+	return targetPayload
 }
 
 func normalizeIDList(ids []string) []string {

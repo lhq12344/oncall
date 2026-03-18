@@ -4,85 +4,90 @@ import (
 	"context"
 	"fmt"
 	"go_agent/utility/common"
-	"os"
 
 	cli "github.com/milvus-io/milvus-sdk-go/v2/client"
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
 )
 
-// getMilvusAddress 获取 Milvus 地址，优先使用环境变量
-func getMilvusAddress() string {
-	if addr := os.Getenv("MILVUS_ADDRESS"); addr != "" {
-		return addr
-	}
-	// 默认使用 localhost
-	return "localhost:31953"
-}
-
 func NewMilvusClient(ctx context.Context) (cli.Client, error) {
-	address := getMilvusAddress()
+	milvusConfig := common.LoadMilvusConfig(ctx)
+	address := milvusConfig.Address
+	database := milvusConfig.Database
+	collection := milvusConfig.Collection
+	timeout := milvusConfig.Timeout
+	if timeout <= 0 {
+		timeout = common.DefaultMilvusTimeout
+	}
+
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	// 1. 先连接default数据库
-	defaultClient, err := cli.NewClient(ctx, cli.Config{
+	defaultClient, err := cli.NewClient(runCtx, cli.Config{
 		Address: address,
 		DBName:  "default",
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to default database at %s: %w", address, err)
+		return nil, fmt.Errorf("failed to connect to default milvus database at %s within %s: %w", address, timeout, err)
 	}
+	defer defaultClient.Close()
 	// 2. 检查agent数据库是否存在，不存在则创建
-	databases, err := defaultClient.ListDatabases(ctx)
+	databases, err := defaultClient.ListDatabases(runCtx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list databases: %w", err)
+		return nil, fmt.Errorf("failed to list milvus databases within %s: %w", timeout, err)
 	}
-	agentDBExists := false
-	for _, db := range databases {
-		if db.Name == common.MilvusDBName {
-			agentDBExists = true
-			break
+	if database != "default" {
+		targetDBExists := false
+		for _, db := range databases {
+			if db.Name == database {
+				targetDBExists = true
+				break
+			}
 		}
-	}
-	if !agentDBExists {
-		err = defaultClient.CreateDatabase(ctx, common.MilvusDBName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create agent database: %w", err)
+		if !targetDBExists {
+			err = defaultClient.CreateDatabase(runCtx, database)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create milvus database %s: %w", database, err)
+			}
 		}
 	}
 
-	// 3. 创建连接到agent数据库的客户端
-	agentClient, err := cli.NewClient(ctx, cli.Config{
+	// 3. 创建连接到目标数据库的客户端
+	dbClient, err := cli.NewClient(runCtx, cli.Config{
 		Address: address,
-		DBName:  common.MilvusDBName,
+		DBName:  database,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to agent database: %w", err)
+		return nil, fmt.Errorf("failed to connect to milvus database %s at %s within %s: %w", database, address, timeout, err)
 	}
-	// 4. 检查biz collection是否存在，不存在则创建
-	collections, err := agentClient.ListCollections(ctx)
+	// 4. 检查默认知识 collection 是否存在，不存在则创建
+	collections, err := dbClient.ListCollections(runCtx)
 	if err != nil {
+		dbClient.Close()
 		return nil, fmt.Errorf("failed to list collections: %w", err)
 	}
 
-	bizCollectionExists := false
-	for _, collection := range collections {
-		if collection.Name == common.MilvusCollectionName {
-			bizCollectionExists = true
+	knowledgeCollectionExists := false
+	for _, item := range collections {
+		if item.Name == collection {
+			knowledgeCollectionExists = true
 			break
 		}
 	}
 
-	if !bizCollectionExists {
-		// 创建biz collection的schema
+	if !knowledgeCollectionExists {
+		// 创建默认知识 collection 的 schema
 		schema := &entity.Schema{
-			CollectionName:     common.MilvusCollectionName,
+			CollectionName:     collection,
 			Description:        "Business knowledge collection",
 			Fields:             fields,
 			EnableDynamicField: true, // 启用动态字段支持
 		}
 
-		err = agentClient.CreateCollection(ctx, schema, entity.DefaultShardNumber)
+		err = dbClient.CreateCollection(runCtx, schema, entity.DefaultShardNumber)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create biz collection: %w", err)
+			dbClient.Close()
+			return nil, fmt.Errorf("failed to create milvus collection %s: %w", collection, err)
 		}
 
 		// 为id字段创建autoindex索引
@@ -90,8 +95,9 @@ func NewMilvusClient(ctx context.Context) (cli.Client, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to create id index: %w", err)
 		}
-		err = agentClient.CreateIndex(ctx, common.MilvusCollectionName, "id", idIndex, false)
+		err = dbClient.CreateIndex(runCtx, collection, "id", idIndex, false)
 		if err != nil {
+			dbClient.Close()
 			return nil, fmt.Errorf("failed to create id index: %w", err)
 		}
 
@@ -100,8 +106,9 @@ func NewMilvusClient(ctx context.Context) (cli.Client, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to create content index: %w", err)
 		}
-		err = agentClient.CreateIndex(ctx, common.MilvusCollectionName, "content", contentIndex, false)
+		err = dbClient.CreateIndex(runCtx, collection, "content", contentIndex, false)
 		if err != nil {
+			dbClient.Close()
 			return nil, fmt.Errorf("failed to create content index: %w", err)
 		}
 
@@ -110,16 +117,14 @@ func NewMilvusClient(ctx context.Context) (cli.Client, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to create vector index: %w", err)
 		}
-		err = agentClient.CreateIndex(ctx, common.MilvusCollectionName, "vector", vectorIndex, false)
+		err = dbClient.CreateIndex(runCtx, collection, "vector", vectorIndex, false)
 		if err != nil {
+			dbClient.Close()
 			return nil, fmt.Errorf("failed to create vector index: %w", err)
 		}
 	}
 
-	// 关闭default数据库连接
-	defaultClient.Close()
-
-	return agentClient, nil
+	return dbClient, nil
 }
 
 var fields = []*entity.Field{

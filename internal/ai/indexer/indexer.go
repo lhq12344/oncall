@@ -14,7 +14,7 @@ import (
 )
 
 func NewMilvusIndexer(ctx context.Context) (*milvus.Indexer, error) {
-	return NewMilvusIndexerWithCollection(ctx, common.MilvusCollectionName)
+	return NewMilvusIndexerWithCollection(ctx, common.LoadMilvusConfig(ctx).Collection)
 }
 
 func NewMilvusIndexerWithCollection(ctx context.Context, collection string) (*milvus.Indexer, error) {
@@ -29,7 +29,7 @@ func NewMilvusIndexerWithCollection(ctx context.Context, collection string) (*mi
 	}
 	collection = strings.TrimSpace(collection)
 	if collection == "" {
-		collection = common.MilvusCollectionName
+		collection = common.LoadMilvusConfig(ctx).Collection
 	}
 
 	config := &milvus.IndexerConfig{

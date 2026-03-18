@@ -23,7 +23,7 @@ func f64ToF32(v []float64) []float32 {
 }
 
 func NewMilvusRetriever(ctx context.Context) (rtr retriever.Retriever, err error) {
-	return NewMilvusRetrieverWithCollection(ctx, common.MilvusCollectionName)
+	return NewMilvusRetrieverWithCollection(ctx, common.LoadMilvusConfig(ctx).Collection)
 }
 
 func NewMilvusRetrieverWithCollection(ctx context.Context, collection string) (rtr retriever.Retriever, err error) {
@@ -44,7 +44,7 @@ func NewMilvusRetrieverWithCollection(ctx context.Context, collection string) (r
 
 	collection = strings.TrimSpace(collection)
 	if collection == "" {
-		collection = common.MilvusCollectionName
+		collection = common.LoadMilvusConfig(ctx).Collection
 	}
 
 	if err := cli.LoadCollection(ctx, collection, false); err != nil {
@@ -69,8 +69,8 @@ func NewMilvusRetrieverWithCollection(ctx context.Context, collection string) (r
 		OutputFields:   outputFields,
 		MetricType:     entity.COSINE,
 		TopK:           3,
-		ScoreThreshold: 0.8, // 关键：必须为 0（否则可能走 range search）
-		Sp:             sp,  // 关键：不要带 radius/range_filter
+		ScoreThreshold: 0.8,
+		Sp:             sp,
 
 		Embedding: eb,
 

@@ -15,11 +15,25 @@ export interface BashApprovalRequest {
   raw_command: string;
 }
 
+export interface DetailOption {
+  label: string;
+  value: string;
+  description?: string;
+}
+
+export interface DetailRequest {
+  field: string;
+  question: string;
+  reason?: string;
+  options: DetailOption[];
+}
+
 export interface InterruptData {
   checkpoint_id: string;
   interrupt_contexts: InterruptContext[];
   message: string;
   bash_request?: BashApprovalRequest;
+  detail_request?: DetailRequest;
   handled?: boolean;
 }
 

@@ -144,6 +144,7 @@ func NewApplication(cfg *Config) (*Application, error) {
 	}
 
 	// 7. 初始化 Dialogue Agent（用于前端对话）
+	logger.Info("initializing dialogue chat agent")
 	dialogueAgent, err := dialogue.NewDialogueAgent(ctx, &dialogue.Config{
 		ChatModel:     chatModel,
 		Embedder:      dialogueEmbedder,
@@ -168,6 +169,7 @@ func NewApplication(cfg *Config) (*Application, error) {
 	}
 
 	// 8. 初始化 Knowledge Agent（用于前端上传）
+	logger.Info("initializing knowledge upload agent")
 	knowledgeAgent, err := knowledge.NewKnowledgeAgent(ctx, &knowledge.Config{
 		Logger: logger,
 	})
@@ -177,6 +179,7 @@ func NewApplication(cfg *Config) (*Application, error) {
 	logger.Info("knowledge upload agent initialized")
 
 	// 9. 初始化 Ops Agent（用于前端 ops 功能）
+	logger.Info("initializing incident workflow ops agent")
 	opsAgent, err := ops.NewIncidentWorkflowAgent(ctx, &ops.IncidentWorkflowConfig{
 		ChatModel:     chatModel,
 		KubeConfig:    cfg.KubeConfig,

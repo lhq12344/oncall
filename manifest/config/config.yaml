@@ -80,10 +80,11 @@ log_sync:
 
 # Milvus 向量数据库配置
 milvus:
-  address: "milvus.infra.svc:19530"        # K8s 集群内访问
-  # address: "127.0.0.1:31953"       # 集群外访问
+  address: "127.0.0.1:31953"       # 本地启动 oncall 时使用的集群外访问地址
+  # address: "milvus.infra.svc:19530"      # Pod 内运行 oncall 时使用的集群内访问地址
   database: "default"
   collection: "oncall_knowledge"
+  timeout: "8s"
 
 # 缓存配置
 cache:
