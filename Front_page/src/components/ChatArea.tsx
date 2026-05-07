@@ -332,9 +332,9 @@ export const ChatArea: React.FC = () => {
           animate={{ y: 0, opacity: 1 }}
           transition={{ delay: 0.1 }}
           className="text-2xl font-display font-black mb-2 tracking-tight uppercase glitch-text"
-          data-text="CyberOps AI"
+          data-text="Knowledge Chat"
         >
-          欢迎使用 <span className="text-cyber-neon glow-neon">CyberOps AI</span>
+          欢迎使用 <span className="text-cyber-neon glow-neon">Knowledge Chat</span>
         </motion.h2>
         <motion.p
           initial={{ y: 20, opacity: 0 }}
@@ -342,7 +342,7 @@ export const ChatArea: React.FC = () => {
           transition={{ delay: 0.2 }}
           className="max-w-md opacity-60 text-sm leading-relaxed"
         >
-          您的全自动 AI 运维助手。支持流式诊断、自动化脚本执行及知识库关联。
+          您的对话、知识库与网络搜索助手。支持流式回答、资料检索和上下文记忆。
           开始一个新会话或从左侧选择历史记录。
         </motion.p>
 
@@ -353,10 +353,10 @@ export const ChatArea: React.FC = () => {
           className="grid grid-cols-2 gap-4 mt-12 max-w-2xl w-full"
         >
           {[
-            { title: '诊断系统延迟', desc: '分析当前集群 QPS 与延迟波动', icon: Activity },
-            { title: '检查磁盘空间', desc: '扫描所有节点的存储占用情况', icon: Shield },
-            { title: '重启 Nginx', desc: '执行滚动重启并验证健康检查', icon: Cpu },
-            { title: '分析错误日志', desc: '从 ELK 提取最近 5 分钟的异常', icon: AlertCircle }
+            { title: '总结上传文档', desc: '从知识库资料中提炼重点', icon: Sparkles },
+            { title: '检索知识库', desc: '按当前问题查找相关片段', icon: Shield },
+            { title: '查询最新资料', desc: '通过网络搜索补充公开信息', icon: Activity },
+            { title: '生成行动清单', desc: '把回答整理成可执行步骤', icon: CheckCircle2 }
           ].map((item, index) => (
             <div
               key={index}
@@ -594,9 +594,7 @@ const MessageItem: React.FC<{ message: Message; isLast: boolean }> = ({ message,
 
         {message.interrupt && (
           <InterruptCard
-            messageId={message.id}
             interrupt={message.interrupt}
-            isOps={message.type === 'step'}
           />
         )}
 
@@ -628,54 +626,9 @@ const MessageItem: React.FC<{ message: Message; isLast: boolean }> = ({ message,
   );
 };
 
-// formatMessageContent 将 Bash 执行结果 JSON 转换为可读 Markdown，其余内容保持原样。
+// formatMessageContent 预留消息格式化入口，当前仅保持原始 Markdown。
 // 输入：原始消息文本。
 // 输出：适合 ReactMarkdown 渲染的 Markdown 文本。
 function formatMessageContent(content: string): string {
-  const trimmed = content.trim();
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
-    return content;
-  }
-
-  try {
-    const json = JSON.parse(trimmed);
-    const looksLikeBashResult =
-      typeof json?.command === 'string' &&
-      typeof json?.success === 'boolean' &&
-      ('executed' in json || 'output' in json || 'error' in json);
-    if (!looksLikeBashResult) {
-      return content;
-    }
-
-    const args = Array.isArray(json.args) ? json.args.map((arg: any) => String(arg)) : [];
-    const fullCommand = [json.command, ...args].join(' ').trim();
-    const executed = json.executed ? '已执行' : '未执行';
-    const status = json.success ? '成功' : '失败';
-    const timeout = Number.isFinite(json.timeout) ? `${json.timeout}s` : '-';
-    const exitCode = Number.isFinite(json.exit_code) ? String(json.exit_code) : '-';
-    const output = typeof json.output === 'string' ? json.output.trim() : '';
-    const error = typeof json.error === 'string' ? json.error.trim() : '';
-    const comment = typeof json.comment === 'string' ? json.comment.trim() : '';
-
-    const lines = [
-      '### Bash 执行结果',
-      `- 执行状态：${executed} / ${status}`,
-      `- 命令：\`${fullCommand || json.command}\``,
-      `- 超时：${timeout}`,
-      `- 退出码：${exitCode}`
-    ];
-
-    if (comment) {
-      lines.push(`- 备注：${comment}`);
-    }
-    if (output) {
-      lines.push('', '#### 输出', '```bash', output, '```');
-    }
-    if (error) {
-      lines.push('', '#### 错误', '```text', error, '```');
-    }
-    return lines.join('\n');
-  } catch (_) {
-    return content;
-  }
+  return content;
 }

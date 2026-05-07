@@ -7,14 +7,6 @@ export interface InterruptContext {
   is_root_cause: boolean;
 }
 
-export interface BashApprovalRequest {
-  command: string;
-  args: string[];
-  timeout: number;
-  reason?: string;
-  raw_command: string;
-}
-
 export interface DetailOption {
   label: string;
   value: string;
@@ -32,23 +24,14 @@ export interface InterruptData {
   checkpoint_id: string;
   interrupt_contexts: InterruptContext[];
   message: string;
-  bash_request?: BashApprovalRequest;
   detail_request?: DetailRequest;
   handled?: boolean;
 }
 
-export interface AIOpsStep {
+export interface ChatStep {
   step: number;
   content: string;
   status: 'pending' | 'completed' | 'error';
-}
-
-export interface OpsStep {
-  id: string;
-  toolName: string;
-  content: string;
-  status: 'pending' | 'completed' | 'error';
-  interrupt?: InterruptData;
 }
 
 export interface Message {
@@ -57,7 +40,7 @@ export interface Message {
   type: MessageType;
   content: string;
   timestamp: number;
-  steps?: AIOpsStep[];
+  steps?: ChatStep[];
   interrupt?: InterruptData;
 }
 

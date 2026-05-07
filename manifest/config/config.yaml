@@ -1,6 +1,6 @@
 # https://goframe.org/docs/web/server-config-file-template
 server:
-  address: ":8000"
+  address: ":6872"
   openapiPath: "/api.json"
   swaggerPath: "/swagger"
 
@@ -9,97 +9,40 @@ logger:
   level: "all"
   stdout: true
 
-ds_think_chat_model:
-  api_key: "sk-eHapaw8ZR7VJWAHwm76fmH2qwaxFeOQQv9kuuCJfws8V5A9O"
-  #base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  base_url: "http://newapi.200m.997555.xyz/v1"
-  #model: "doubao-seed-2-0-mini-260215"
-  model: "claude-sonnet-4-6-thinking"
+file_dir: "./docs/"
 
+# Chat model configuration.
+# Secrets should be provided through .env or the shell:
+# DS_QUICK_CHAT_MODEL_API_KEY, DS_QUICK_CHAT_MODEL_BASE_URL, DS_QUICK_CHAT_MODEL_MODEL
 ds_quick_chat_model:
-  api_key: "sk-eHapaw8ZR7VJWAHwm76fmH2qwaxFeOQQv9kuuCJfws8V5A9O"
-  base_url: "http://newapi.200m.997555.xyz/v1"
-  model: "claude-sonnet-4-6-thinking"
+  api_key: ""
+  base_url: ""
+  model: ""
 
+# Embedding model configuration.
+# Secrets should be provided through .env or the shell:
+# DOUBAO_EMBEDDING_MODEL_API_KEY, DOUBAO_EMBEDDING_MODEL_BASE_URL, DOUBAO_EMBEDDING_MODEL_MODEL
 doubao_embedding_model:
-  api_key: "c3b9d277-0f82-4ef0-970a-1f3b5607c861"
-  base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "doubao-embedding-vision-250615"  # Doubao Embedding vision-250615
-  dimensions: 2048  # vision-250615 使用 2048 维度
-
+  api_key: ""
+  base_url: ""
+  model: ""
+  api_type: "auto"
+  dimensions: 2048
 
 redis:
   addr: "localhost:31029"
   db: 0
   dialTimeout: 2
 
-# MySQL数据库配置
-mysql:
-  dsn: "root:123456@tcp(localhost:30306)/orm_test?charset=utf8mb4&parseTime=True&loc=Local&timeout=3s&readTimeout=5s&writeTimeout=5s"
-  max_open_conns: 50
-  max_idle_conns: 10
-  conn_max_lifetime: "30m"
-  conn_max_idle_time: "5m"
-  ping_timeout: "3s"
-  prepare_stmt: true
-  log_level: "warn"
-  slow_threshold: "500ms"
-
-#web
 web_search:
-  provider: "serper"  # 主配置来源：auto | serper | searxng；未配置时回退环境变量 WEB_SEARCH_PROVIDER
-  serper_api_key: "your-serper-api-key"  # 主配置来源；未配置时回退环境变量 SERPER_API_KEY
-  serper_base_url: "https://google.serper.dev/search"  # 主配置来源；未配置时回退环境变量 SERPER_BASE_URL
-  searxng_base_url: ""  # 主配置来源；未配置时回退环境变量 SEARXNG_BASE_URL
+  provider: "auto"
+  serper_api_key: ""
+  serper_base_url: "https://google.serper.dev/search"
+  searxng_base_url: ""
 
-# Prometheus 监控配置
-prometheus:
-  url: "http://127.0.0.1:30090"    # 集群外访问
-  # url: "http://prometheus.infra.svc:9090"  # K8s 集群内访问
-
-# K8s 配置
-kubeconfig: "/home/lihaoqian/.kube/config"  # K8s kubeconfig 路径
-
-# Elasticsearch 日志系统配置
-elasticsearch:
-  addresses:
-    - "http://localhost:30920"  # ES 集群地址（集群外访问）
-    # - "http://elasticsearch.infra.svc:9200"  # K8s 集群内访问
-  username: ""  # 用户名（可选）
-  password: ""  # 密码（可选）
-  timeout: "10s"  # 请求超时
-  tls_skip: true  # 跳过 TLS 验证（开发环境）
-
-log_sync:
-  enabled: true
-  namespaces:
-    - "infra"
-  interval: "30s"
-  tail_lines: 200
-  index_prefix: "logs-k8s"
-
-# Milvus 向量数据库配置
+# Milvus vector database; matches deploy/docker-compose.middleware.yml.
 milvus:
-  address: "127.0.0.1:31953"       # 本地启动 oncall 时使用的集群外访问地址
-  # address: "milvus.infra.svc:19530"      # Pod 内运行 oncall 时使用的集群内访问地址
+  address: "127.0.0.1:31953"
   database: "default"
   collection: "oncall_knowledge"
   timeout: "8s"
-
-# 缓存配置
-cache:
-  llm_ttl: "30m"          # LLM 响应缓存 30 分钟
-  vector_ttl: "1h"        # 向量检索缓存 1 小时
-  monitoring_ttl: "5m"    # 监控数据缓存 5 分钟
-
-# 并发配置
-concurrent:
-  max_concurrency: 10     # 最大并发数
-  timeout: "30s"          # 超时时间
-
-# 熔断器配置
-circuit_breaker:
-  failure_threshold: 5    # 连续失败 5 次触发熔断
-  failure_ratio: 0.5      # 失败率 50% 触发熔断
-  timeout: "60s"          # 熔断 60 秒后尝试恢复
-  min_request_count: 10   # 最小请求数（达到此数量才开始统计失败率）

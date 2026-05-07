@@ -214,7 +214,7 @@ export const Sidebar: React.FC = () => {
         "p-4 border-t text-xs opacity-50 min-w-[288px]",
         theme === 'dark' ? "border-cyber-neon/10" : "border-cyber-purple/10"
       )}>
-        v1.0.5-STABLE // AIOps Engine
+        v1.0.5-STABLE // Dialogue Engine
       </div>
     </motion.div>
   );

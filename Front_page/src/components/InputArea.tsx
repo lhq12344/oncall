@@ -118,7 +118,7 @@ export const InputArea: React.FC = () => {
                 handleSend();
               }
             }}
-            placeholder="输入运维指令或咨询问题..."
+            placeholder="输入问题、知识库检索或搜索请求..."
             className="flex-1 bg-transparent border-none outline-none py-3 px-2 resize-none max-h-40 min-h-[44px] text-sm"
             rows={1}
           />
@@ -138,7 +138,7 @@ export const InputArea: React.FC = () => {
         </div>
       </div>
       <p className="text-center text-[10px] mt-3 opacity-30 font-mono uppercase tracking-widest">
-        Secure Channel // End-to-End Encrypted // AI-Ops Node 0x7F
+        Secure Channel // End-to-End Encrypted // Dialogue Node 0x7F
       </p>
     </div>
   );

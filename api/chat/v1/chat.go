@@ -41,39 +41,3 @@ type FileUploadRes struct {
 	FilePath string `json:"filePath" dc:"文件保存路径"`
 	FileSize int64  `json:"fileSize" dc:"文件大小(字节)"`
 }
-
-type AIOpsStreamReq struct {
-	g.Meta `path:"/ai_ops_stream" method:"post" summary:"AI运维流式"`
-}
-
-type AIOpsStreamRes struct{}
-
-type AIOpsResumeStreamReq struct {
-	g.Meta       `path:"/ai_ops_resume_stream" method:"post" summary:"AI运维流式恢复中断"`
-	CheckpointID string   `json:"checkpoint_id" v:"required"`
-	InterruptIDs []string `json:"interrupt_ids,omitempty"`
-	Approved     *bool    `json:"approved,omitempty"`
-	Resolved     *bool    `json:"resolved,omitempty"`
-	Comment      string   `json:"comment,omitempty"`
-}
-
-type AIOpsResumeStreamRes struct{}
-
-type MonitoringReq struct {
-	g.Meta `path:"/monitoring" method:"get" summary:"监控统计"`
-}
-
-type MonitoringRes struct {
-	CacheHitRate    float64                `json:"cache_hit_rate" dc:"缓存命中率"`
-	CacheHits       int64                  `json:"cache_hits" dc:"缓存命中次数"`
-	CacheMisses     int64                  `json:"cache_misses" dc:"缓存未命中次数"`
-	CircuitBreakers []CircuitBreakerStatus `json:"circuit_breakers" dc:"熔断器状态"`
-}
-
-type CircuitBreakerStatus struct {
-	Name      string `json:"name" dc:"熔断器名称"`
-	State     string `json:"state" dc:"状态: closed/open/half_open"`
-	Requests  uint32 `json:"requests" dc:"总请求数"`
-	Successes uint32 `json:"successes" dc:"成功次数"`
-	Failures  uint32 `json:"failures" dc:"失败次数"`
-}

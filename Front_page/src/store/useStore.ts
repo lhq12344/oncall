@@ -1,25 +1,11 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import { Message, Session, AIOpsStep, InterruptData, OpsStep } from '../types';
-
-// inferOpsStepTitle 依据内容推断步骤标题，避免无 step 事件时内容丢失。
-// 输入：SSE content 文本。
-// 输出：步骤标题。
-function inferOpsStepTitle(content: string): string {
-  const text = (content || '').trim();
-  if (!text) {
-    return '流程输出';
-  }
-  if (text.includes('运维技术报告') || text.includes('最终状态') || text.includes('是否已解决')) {
-    return '输出最终技术报告';
-  }
-  return '流程输出';
-}
+import { Message, Session, ChatStep, InterruptData } from '../types';
 
 // mergeMessageSteps 合并消息步骤，优先按 step 编号更新已有项，避免恢复执行时覆盖历史步骤。
 // 输入：existing 现有步骤、incoming 新步骤。
 // 输出：合并后的步骤列表。
-function mergeMessageSteps(existing: AIOpsStep[] = [], incoming: AIOpsStep[] = []): AIOpsStep[] {
+function mergeMessageSteps(existing: ChatStep[] = [], incoming: ChatStep[] = []): ChatStep[] {
   const merged = [...existing];
   for (const step of incoming) {
     const index = merged.findIndex((item) => item.step === step.step);
@@ -38,12 +24,6 @@ interface AppState {
   currentSessionId: string | null;
   isStreaming: boolean;
   connectionStatus: 'idle' | 'connecting' | 'streaming' | 'error';
-  
-  // Ops Panel State
-  isOpsPanelOpen: boolean;
-  opsSteps: OpsStep[];
-  currentOpsTask: string;
-  isOpsRunning: boolean;
   isRehydrated: boolean;
   isSidebarOpen: boolean;
 
@@ -55,21 +35,13 @@ interface AppState {
   renameSession: (id: string, title: string) => void;
   setCurrentSession: (id: string) => void;
   addMessage: (sessionId: string, message: Omit<Message, 'id' | 'timestamp'>) => string;
-  updateLastMessage: (sessionId: string, content: string, steps?: AIOpsStep[], interrupt?: InterruptData) => void;
-  appendStepToLastMessage: (sessionId: string, step: AIOpsStep) => void;
-  setLastMessageStepStatus: (sessionId: string, status: AIOpsStep['status']) => void;
+  updateLastMessage: (sessionId: string, content: string, steps?: ChatStep[], interrupt?: InterruptData) => void;
+  appendStepToLastMessage: (sessionId: string, step: ChatStep) => void;
+  setLastMessageStepStatus: (sessionId: string, status: ChatStep['status']) => void;
   setStreaming: (isStreaming: boolean) => void;
   setConnectionStatus: (status: AppState['connectionStatus']) => void;
   sendMessage: (sessionId: string, content: string) => Promise<void>;
 
-  // Ops Actions
-  setOpsPanelOpen: (isOpen: boolean) => void;
-  runOps: (taskName: string) => Promise<void>;
-  clearOps: () => void;
-  addOpsStep: (toolName: string, content?: string, status?: OpsStep['status'], interrupt?: InterruptData) => string;
-  updateOpsStep: (id: string, content?: string, status?: OpsStep['status'], interrupt?: InterruptData) => void;
-  markOpsInterruptHandled: (id: string, handled: boolean) => void;
-  setOpsRunning: (isRunning: boolean) => void;
   setRehydrated: (val: boolean) => void;
 }
 
@@ -82,10 +54,6 @@ export const useStore = create<AppState>()(
       isStreaming: false,
       connectionStatus: 'idle',
 
-      isOpsPanelOpen: false,
-      opsSteps: [],
-      currentOpsTask: '',
-      isOpsRunning: false,
       isRehydrated: false,
       isSidebarOpen: true,
 
@@ -211,103 +179,6 @@ export const useStore = create<AppState>()(
       setStreaming: (isStreaming) => set({ isStreaming }),
       setConnectionStatus: (status) => set({ connectionStatus: status }),
 
-      setOpsPanelOpen: (isOpen) => set({ isOpsPanelOpen: isOpen }),
-      clearOps: () => set({ opsSteps: [], currentOpsTask: '', isOpsRunning: false }),
-      addOpsStep: (toolName, content = '', status = 'pending', interrupt) => {
-        const id = crypto.randomUUID();
-        set((state) => ({
-          opsSteps: [...state.opsSteps, {
-            id,
-            toolName,
-            content,
-            status,
-            interrupt
-          }]
-        }));
-        return id;
-      },
-
-      updateOpsStep: (id, content, status, interrupt) => set((state) => ({
-        opsSteps: state.opsSteps.map((step) => 
-          step.id === id 
-            ? { 
-                ...step, 
-                content: content !== undefined ? step.content + content : step.content,
-                status: status || step.status,
-                interrupt: interrupt || step.interrupt
-              } 
-            : step
-        )
-      })),
-      markOpsInterruptHandled: (id, handled) => set((state) => ({
-        opsSteps: state.opsSteps.map((step) =>
-          step.id === id
-            ? {
-                ...step,
-                interrupt: step.interrupt ? { ...step.interrupt, handled } : step.interrupt
-              }
-            : step
-        )
-      })),
-      setOpsRunning: (isRunning) => set({ isOpsRunning: isRunning }),
-
-      runOps: async (taskName) => {
-        const { updateOpsStep, clearOps, addOpsStep } = get();
-        clearOps();
-        set({ isOpsPanelOpen: true, isOpsRunning: true, currentOpsTask: taskName });
-
-        const { streamOps } = await import('../services/api');
-
-        let currentStepId = '';
-        let pausedByInterrupt = false;
-        const createOpsStep = (toolName: string): string => {
-          const id = addOpsStep(toolName);
-          currentStepId = id;
-          return id;
-        };
-
-        await streamOps({
-          onStep: (step) => {
-            // Mark previous step as completed if exists
-            if (currentStepId) {
-              updateOpsStep(currentStepId, undefined, 'completed');
-            }
-
-            createOpsStep(step.content); // backend sends tool name in content for type: step
-          },
-          onContent: (content) => {
-            const normalized = (content || '').trim();
-            if (!normalized) {
-              return;
-            }
-            if (!currentStepId) {
-              createOpsStep(inferOpsStepTitle(normalized));
-            }
-            updateOpsStep(currentStepId, content);
-          },
-          onInterrupt: (interrupt) => {
-            pausedByInterrupt = true;
-            if (!currentStepId) {
-              createOpsStep(interrupt.bash_request?.raw_command ? '执行确认' : '人工确认');
-            }
-            updateOpsStep(currentStepId, undefined, undefined, interrupt);
-          },
-          onDone: () => {
-            if (currentStepId) {
-              updateOpsStep(currentStepId, undefined, 'completed');
-            }
-            set({ isOpsRunning: pausedByInterrupt });
-          },
-          onError: (err) => {
-            if (!currentStepId) {
-              createOpsStep('流程异常');
-            }
-            updateOpsStep(currentStepId, `\n\nError: ${err}`, 'error');
-            set({ isOpsRunning: false });
-          }
-        });
-      },
-
       sendMessage: async (sessionId, content) => {
         const {
           addMessage,
@@ -366,8 +237,6 @@ export const useStore = create<AppState>()(
       partialize: (state) => ({ 
         sessions: state.sessions.slice(0, 50),
         theme: state.theme,
-        opsSteps: state.opsSteps,
-        currentOpsTask: state.currentOpsTask,
         isSidebarOpen: state.isSidebarOpen
       }),
       onRehydrateStorage: (state) => {
