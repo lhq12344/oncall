@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"go_agent/internal/logic/agent/dialogue"
@@ -118,6 +119,7 @@ func NewApplication(cfg *Config) (*Application, error) {
 	dialogueAgent, err := dialogue.NewDialogueAgent(ctx, &dialogue.Config{
 		ChatModel: chatModel,
 		Embedder:  dialogueEmbedder,
+		SkillsDir: os.Getenv("EINO_EXT_SKILLS_DIR"),
 		Logger:    logger,
 	})
 	if err != nil {

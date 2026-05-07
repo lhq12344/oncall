@@ -33,10 +33,11 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
   const [lastAction, setLastAction] = useState('');
   const [selectedValue, setSelectedValue] = useState('');
   const detailRequest = interrupt.detail_request;
+  const commandApproval = interrupt.command_approval;
   const checkpointId = interrupt.checkpoint_id;
   const contexts = interrupt.interrupt_contexts || [];
   const isDetailSelection = Boolean(detailRequest?.question && detailRequest?.options?.length);
-  const approvalPurpose = detailRequest?.reason?.trim() || extractInterruptPurpose(interrupt.message, contexts);
+  const approvalPurpose = detailRequest?.reason?.trim() || commandApproval?.reason?.trim() || extractInterruptPurpose(interrupt.message, contexts);
   const cardTitle = isDetailSelection ? '补充细节' : '等待确认';
 
   useEffect(() => {
@@ -194,6 +195,33 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
             <span className="opacity-60 mr-2">{isDetailSelection ? '补充原因：' : '确认事项：'}</span>
             <span className="opacity-90">{approvalPurpose}</span>
           </div>
+        </div>
+      )}
+
+      {!isDetailSelection && commandApproval && (
+        <div className="mb-4 space-y-2 text-xs rounded-lg border border-white/10 bg-black/50 p-3 font-mono">
+          <div>
+            <span className="opacity-60 mr-2">命令：</span>
+            <span className="opacity-95 break-all">{commandApproval.command}</span>
+          </div>
+          {commandApproval.args && commandApproval.args.length > 0 && (
+            <div>
+              <span className="opacity-60 mr-2">参数：</span>
+              <span className="opacity-95 break-all">{commandApproval.args.join(' ')}</span>
+            </div>
+          )}
+          {commandApproval.script && (
+            <div>
+              <span className="opacity-60 mr-2">脚本：</span>
+              <span className="opacity-95 whitespace-pre-wrap break-all">{commandApproval.script}</span>
+            </div>
+          )}
+          {typeof commandApproval.timeout === 'number' && (
+            <div>
+              <span className="opacity-60 mr-2">超时：</span>
+              <span className="opacity-95">{commandApproval.timeout}s</span>
+            </div>
+          )}
         </div>
       )}
 

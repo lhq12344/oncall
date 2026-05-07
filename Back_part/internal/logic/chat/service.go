@@ -172,6 +172,7 @@ func (c *Service) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (res *v
 	)
 
 	var fullAnswer strings.Builder
+	var intermediateMessages []*schema.Message
 	interrupted := false
 	eventCount := 0
 	contentChunkCount := 0
@@ -199,6 +200,11 @@ func (c *Service) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (res *v
 			lastEventRole = string(msg.Role)
 			lastEventContentLen = len([]rune(strings.TrimSpace(msg.Content)))
 			lastEventToolCalls = len(msg.ToolCalls)
+			// 收集工具调用/结果消息，用于记忆持久化
+			if msg.Role == schema.Tool ||
+				(msg.Role == schema.Assistant && len(msg.ToolCalls) > 0) {
+				intermediateMessages = append(intermediateMessages, msg)
+			}
 		}
 
 		if event.Action != nil && event.Action.Interrupted != nil {
@@ -238,7 +244,7 @@ func (c *Service) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (res *v
 		}
 	}
 	if answer != "" && !interrupted {
-		c.sessionMemory.SaveTurn(context.Background(), sessionID, question, answer, messages)
+		c.sessionMemory.SaveTurnWithSource(context.Background(), sessionID, question, answer, intermediateMessages, messages, "chat_stream")
 	}
 
 	return &v1.ChatStreamRes{}, nil
@@ -357,7 +363,7 @@ func (c *Service) ChatResumeStream(ctx context.Context, req *v1.ChatResumeStream
 			comment,
 			selectionValue,
 		)
-		c.sessionMemory.SaveTurn(context.Background(), sessionID, resumeInput, answer, nil)
+		c.sessionMemory.SaveTurnWithSource(context.Background(), sessionID, resumeInput, answer, nil, nil, "chat_resume_stream")
 	}
 
 	return &v1.ChatResumeStreamRes{}, nil

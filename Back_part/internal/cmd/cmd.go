@@ -3,6 +3,11 @@ package cmd
 import (
 	"context"
 	"log"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"go_agent/internal/controller/chat"
@@ -24,8 +29,10 @@ type command struct{}
 
 // Run initializes dependencies, binds GoFrame routes, and starts the HTTP server.
 func (command) Run(ctx context.Context) {
-	if err := godotenv.Load(); err != nil {
-		log.Println("Error loading .env file, using system default env")
+	if envPath, err := loadDotEnv(); err != nil {
+		log.Printf("No .env file loaded, using system default env: %v", err)
+	} else {
+		log.Printf("Loaded .env file: %s", envPath)
 	}
 
 	fileDir, err := g.Cfg().Get(ctx, "file_dir")
@@ -83,6 +90,75 @@ func (command) Run(ctx context.Context) {
 			v1Group.Bind(chatController)
 		})
 	})
-	s.SetPort(6872)
+	s.SetPort(readServerPort(ctx))
 	s.Run()
+}
+
+func loadDotEnv() (string, error) {
+	for _, path := range dotEnvCandidates() {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		if err := godotenv.Load(path); err != nil {
+			return "", err
+		}
+		return path, nil
+	}
+	return "", os.ErrNotExist
+}
+
+func dotEnvCandidates() []string {
+	var candidates []string
+	if explicit := strings.TrimSpace(os.Getenv("ENV_FILE")); explicit != "" {
+		candidates = append(candidates, explicit)
+	}
+
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(cwd, ".env"),
+			filepath.Join(cwd, "Back_part", ".env"),
+		)
+	}
+
+	seen := make(map[string]struct{}, len(candidates))
+	unique := candidates[:0]
+	for _, candidate := range candidates {
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		unique = append(unique, candidate)
+	}
+	return unique
+}
+
+func readServerPort(ctx context.Context) int {
+	if port := parsePort(os.Getenv("BACKEND_PORT")); port > 0 {
+		return port
+	}
+	if value, err := g.Cfg().Get(ctx, "server.address"); err == nil && value != nil {
+		if port := parsePort(value.String()); port > 0 {
+			return port
+		}
+	}
+	return 6872
+}
+
+func parsePort(value string) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if strings.Contains(value, ":") {
+		if _, port, err := net.SplitHostPort(value); err == nil {
+			value = port
+		} else {
+			value = strings.TrimPrefix(value, ":")
+		}
+	}
+	port, err := strconv.Atoi(value)
+	if err != nil || port <= 0 || port > 65535 {
+		return 0
+	}
+	return port
 }

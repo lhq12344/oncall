@@ -14,6 +14,7 @@
 # 说明：
 #   - start 会先通过 Docker Compose 启动 Redis 和 Milvus 等中间件，再启动后端(:6872)和前端(:3100)。
 #   - stop 会关闭本地应用进程和中间件容器，默认保留 Docker volume 数据。
+#   - restart 只重启后端和前端，不重启中间件容器。
 #   - clean-volumes 会在明确确认后删除 Redis / Milvus 的持久化数据。
 #   - 如果 Docker 需要 sudo，请先执行 `sudo -v`，再运行 start / status / logs / stop。
 #
@@ -37,7 +38,8 @@ FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"
 BACKEND_LOG="$RUN_DIR/backend.log"
 FRONTEND_LOG="$RUN_DIR/frontend.log"
 BACKEND_BIN="$RUN_DIR/backend-bin"
-FRONTEND_PORT=3100
+BACKEND_PORT="${BACKEND_PORT:-6872}"
+FRONTEND_PORT="${FRONTEND_PORT:-3100}"
 DOCKER_CMD=(docker)
 
 mkdir -p "$RUN_DIR"
@@ -213,6 +215,9 @@ stop_orphan_listener() {
     if port_is_listening "$port"; then
       fuser -k -KILL "${port}/tcp" >/dev/null 2>&1 || true
     fi
+    if port_is_listening "$port"; then
+      echo "[dev] WARNING: could not stop orphaned $name listener on port $port."
+    fi
   else
     echo "[dev] WARNING: fuser is not available; cannot clean orphaned $name listener on port $port."
   fi
@@ -247,13 +252,22 @@ wait_for_redis() {
 }
 
 cmd_start() {
+  local skip_middleware="${1:-}"
+
   require_command go "Install Go or add it to PATH before starting the backend."
   require_command npm "Install Node.js/npm before starting the frontend."
   require_backend_model_config
-  require_docker
 
-  echo "[dev] Starting middleware..."
-  "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" up -d
+  if [ "$skip_middleware" = "--skip-middleware" ]; then
+    echo "[dev] Skipping middleware startup; using already-running middleware."
+  else
+    if configure_docker; then
+      echo "[dev] Starting middleware..."
+      "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" up -d
+    else
+      echo "[dev] WARNING: Docker is unavailable; using already-running middleware if reachable."
+    fi
+  fi
 
   echo "[dev] Waiting for Redis on 31029..."
   if ! wait_for_redis; then
@@ -292,19 +306,22 @@ cmd_start() {
     echo "[dev] Backend already running (PID $(cat "$BACKEND_PID_FILE"))."
   else
     rm -f "$BACKEND_PID_FILE"
-    if port_is_listening 6872; then
-      echo "[dev] ERROR: backend port 6872 is already in use, but $BACKEND_PID_FILE is not running."
-      echo "[dev] Stop the existing process or free the port before starting."
+    if port_is_listening "$BACKEND_PORT"; then
+      stop_orphan_listener "$BACKEND_PORT" "backend"
+    fi
+    if port_is_listening "$BACKEND_PORT"; then
+      echo "[dev] ERROR: backend port $BACKEND_PORT is already in use, but $BACKEND_PID_FILE is not running."
+      echo "[dev] Stop the existing process, free the port, or start with BACKEND_PORT=<free-port>."
       exit 1
     fi
     echo "[dev] Building backend..."
     go build -o "$BACKEND_BIN" main.go
     echo "[dev] Starting backend..."
-    nohup setsid "$BACKEND_BIN" >"$BACKEND_LOG" 2>&1 &
+    nohup setsid env BACKEND_PORT="$BACKEND_PORT" "$BACKEND_BIN" >"$BACKEND_LOG" 2>&1 &
     echo $! >"$BACKEND_PID_FILE"
     echo "[dev] Backend PID: $(cat "$BACKEND_PID_FILE")"
-    echo "[dev] Waiting for backend on 6872..."
-    if ! wait_for_tcp 127.0.0.1 6872 90; then
+    echo "[dev] Waiting for backend on $BACKEND_PORT..."
+    if ! wait_for_tcp 127.0.0.1 "$BACKEND_PORT" 90; then
       echo "[dev] ERROR: backend did not become ready after 90s."
       tail -n 40 "$BACKEND_LOG" || true
       stop_process_group "$BACKEND_PID_FILE" "backend"
@@ -317,12 +334,15 @@ cmd_start() {
   else
     rm -f "$FRONTEND_PID_FILE"
     if port_is_listening "$FRONTEND_PORT"; then
+      stop_orphan_listener "$FRONTEND_PORT" "frontend"
+    fi
+    if port_is_listening "$FRONTEND_PORT"; then
       echo "[dev] ERROR: frontend port $FRONTEND_PORT is already in use, but $FRONTEND_PID_FILE is not running."
       echo "[dev] Stop the existing process or free the port before starting."
       exit 1
     fi
     echo "[dev] Starting frontend..."
-    nohup setsid bash -c 'cd "$1" && exec npm run dev' bash "$FRONTEND_ROOT" >"$FRONTEND_LOG" 2>&1 &
+    nohup setsid env VITE_API_BASE_URL="${VITE_API_BASE_URL:-}" VITE_BACKEND_PORT="$BACKEND_PORT" bash -c 'cd "$1" && exec ./node_modules/.bin/vite --port="$2" --host=0.0.0.0' bash "$FRONTEND_ROOT" "$FRONTEND_PORT" >"$FRONTEND_LOG" 2>&1 &
     echo $! >"$FRONTEND_PID_FILE"
     echo "[dev] Frontend PID: $(cat "$FRONTEND_PID_FILE")"
     echo "[dev] Waiting for frontend on $FRONTEND_PORT..."
@@ -336,42 +356,44 @@ cmd_start() {
 
   echo ""
   echo "[dev] All services started."
-  echo "  Backend:  http://localhost:6872"
+  echo "  Backend:  http://localhost:$BACKEND_PORT"
   echo "  Frontend: http://localhost:$FRONTEND_PORT"
   echo "  Logs:     $BACKEND_LOG / $FRONTEND_LOG"
 }
 
-cmd_stop() {
+stop_app_processes() {
   echo "[dev] Stopping backend and frontend..."
   stop_process_group "$BACKEND_PID_FILE" "backend"
   stop_process_group "$FRONTEND_PID_FILE" "frontend"
+  stop_orphan_listener "$BACKEND_PORT" "backend"
+  stop_orphan_listener "$FRONTEND_PORT" "frontend"
+}
+
+cmd_stop() {
+  stop_app_processes
 
   echo "[dev] Stopping middleware containers..."
   if ! configure_docker; then
     echo "[dev] WARNING: Docker is unavailable, so middleware containers were not stopped."
     echo "[dev] Local backend/frontend processes have been stopped."
-    stop_orphan_listener 6872 "backend"
-    stop_orphan_listener "$FRONTEND_PORT" "frontend"
     return 0
   fi
   "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" down
-  stop_orphan_listener 6872 "backend"
-  stop_orphan_listener "$FRONTEND_PORT" "frontend"
   echo "[dev] Done. Data volumes preserved."
 }
 
 cmd_restart() {
-  cmd_stop
+  stop_app_processes
   sleep 2
-  cmd_start
+  cmd_start --skip-middleware
 }
 
 cmd_status() {
   echo "=== Backend ==="
   if is_running "$BACKEND_PID_FILE"; then
     echo "  RUNNING (PID $(cat "$BACKEND_PID_FILE"))"
-  elif port_is_listening 6872; then
-    echo "  UNKNOWN (port 6872 is listening, but $BACKEND_PID_FILE is stale or missing)"
+  elif port_is_listening "$BACKEND_PORT"; then
+    echo "  UNKNOWN (port $BACKEND_PORT is listening, but $BACKEND_PID_FILE is stale or missing)"
   else
     rm -f "$BACKEND_PID_FILE"
     echo "  STOPPED"

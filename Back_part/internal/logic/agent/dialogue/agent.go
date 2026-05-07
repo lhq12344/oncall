@@ -3,6 +3,8 @@ package dialogue
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	airetriever "go_agent/internal/logic/ai/retriever"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/middlewares/skill"
 	"github.com/cloudwego/eino/adk/middlewares/summarization"
 	"github.com/cloudwego/eino/components/embedding"
 	einoretriever "github.com/cloudwego/eino/components/retriever"
@@ -27,6 +30,7 @@ type Config struct {
 	ChatModel     *models.ChatModel
 	Embedder      embedding.Embedder // 用于语义相似度计算
 	EnableToolLLM bool               // 工具内部是否允许二次 LLM 调用，默认 false
+	SkillsDir     string             // Eino skill 目录，为空或不存在时降级为无 skill 能力
 	Logger        *zap.Logger
 }
 
@@ -79,6 +83,15 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 		return nil, fmt.Errorf("failed to create dialogue summarization middleware: %w", err)
 	}
 
+	handlers := []adk.ChatModelAgentMiddleware{summaryHandler}
+	skillHandler, err := newDialogueSkillMiddleware(ctx, cfg.SkillsDir, cfg.Logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create dialogue skill middleware: %w", err)
+	}
+	if skillHandler != nil {
+		handlers = append(handlers, skillHandler)
+	}
+
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:          "dialogue_agent",
 		Description:   "面向对话、知识库检索和网络搜索的通用智能助手",
@@ -89,7 +102,7 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 				Tools: toolsList,
 			},
 		},
-		Handlers: []adk.ChatModelAgentMiddleware{summaryHandler},
+		Handlers: handlers,
 		Instruction: `你是一个面向对话、知识库检索和网络搜索的智能助手。
 
 你的目标是准确理解用户问题，结合会话记忆、已上传知识库和必要的外部网络检索，给出简洁、可靠、可执行的回答。
@@ -121,6 +134,63 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 	return agent, nil
 }
 
+// newDialogueSkillMiddleware 基于 EINO_EXT_SKILLS_DIR 对应目录创建 Eino skill 中间件。
+// 输入：ctx、skillsDir、logger。
+// 输出：可追加到 ChatModelAgent Handlers 的 middleware；未配置或目录不可用时返回 nil。
+func newDialogueSkillMiddleware(ctx context.Context, skillsDir string, logger *zap.Logger) (adk.ChatModelAgentMiddleware, error) {
+	skillsDir = strings.TrimSpace(skillsDir)
+	if skillsDir == "" {
+		return nil, nil
+	}
+
+	absSkillsDir, err := filepath.Abs(skillsDir)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("failed to resolve dialogue skill directory, skill middleware disabled",
+				zap.String("skills_dir", skillsDir),
+				zap.Error(err))
+		}
+		return nil, nil
+	}
+
+	info, err := os.Stat(absSkillsDir)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("dialogue skill directory unavailable, skill middleware disabled",
+				zap.String("skills_dir", absSkillsDir),
+				zap.Error(err))
+		}
+		return nil, nil
+	}
+	if !info.IsDir() {
+		if logger != nil {
+			logger.Warn("dialogue skill path is not a directory, skill middleware disabled",
+				zap.String("skills_dir", absSkillsDir))
+		}
+		return nil, nil
+	}
+
+	backend, err := skill.NewBackendFromFilesystem(ctx, &skill.BackendFromFilesystemConfig{
+		Backend: newReadOnlySkillFilesystemBackend(absSkillsDir),
+		BaseDir: absSkillsDir,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	middleware, err := skill.NewMiddleware(ctx, &skill.Config{
+		Backend: backend,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if logger != nil {
+		logger.Info("dialogue skill middleware enabled", zap.String("skills_dir", absSkillsDir))
+	}
+	return middleware, nil
+}
+
 // noFormatGenModelInput 构建模型输入消息，不对 instruction 执行 FString 变量替换。
 // 输入：instruction 系统提示词，input 用户/历史消息。
 // 输出：拼接后的模型消息列表（system + input.Messages）。
@@ -143,6 +213,6 @@ func buildDialogueTools(cfg *Config, knowledgeRetriever einoretriever.Retriever)
 		tools.NewIntentAnalysisTool(cfg.ChatModel, cfg.Embedder, cfg.Logger, cfg.EnableToolLLM),
 		tools.NewDetailSelectionTool(cfg.Logger),
 		tools.NewKnowledgeRetrieveTool(knowledgeRetriever, cfg.Logger),
-		//tools.NewWebSearchTool(cfg.Logger),
+		tools.NewWebSearchTool(cfg.Logger),
 	}
 }

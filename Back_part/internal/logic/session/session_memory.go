@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"time"
 
@@ -50,8 +51,9 @@ func DefaultSessionMemoryConfig() SessionMemoryConfig {
 // - 保存对话轮次到 Redis
 // - 控制历史长度和总结策略
 type SessionMemory struct {
-	cfg    SessionMemoryConfig
-	logger *zap.Logger
+	cfg          SessionMemoryConfig
+	logger       *zap.Logger
+	fileRecorder *FileSessionRecorder
 }
 
 // NewSessionMemory 创建会话内存管理器。
@@ -79,8 +81,9 @@ func NewSessionMemory(cfg *SessionMemoryConfig, logger *zap.Logger) *SessionMemo
 		}
 	}
 	return &SessionMemory{
-		cfg:    base,
-		logger: logger,
+		cfg:          base,
+		logger:       logger,
+		fileRecorder: newSessionFileRecorderFromEnv(),
 	}
 }
 
@@ -149,6 +152,19 @@ func (s *SessionMemory) SaveTurn(
 	answer string,
 	promptMessages []*schema.Message,
 ) {
+	s.SaveTurnWithSource(ctx, sessionID, question, answer, nil, promptMessages, "chat")
+}
+
+// SaveTurnWithSource 保存对话轮次。旁路文件记录仅在显式启用时追加用户可见消息。
+func (s *SessionMemory) SaveTurnWithSource(
+	ctx context.Context,
+	sessionID string,
+	question string,
+	answer string,
+	intermediateMessages []*schema.Message,
+	promptMessages []*schema.Message,
+	source string,
+) {
 	answer = strings.TrimSpace(answer)
 	if answer == "" {
 		return
@@ -198,5 +214,34 @@ func (s *SessionMemory) SaveTurn(
 		s.logger.Warn("failed to compact session memory",
 			zap.String("session_id", sessionID),
 			zap.Error(compactErr))
+	}
+
+	if s.fileRecorder == nil {
+		return
+	}
+
+	recordCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.fileRecorder.AppendTurn(recordCtx, sessionID, strings.TrimSpace(source), userMsg, assistantMsg); err != nil && s.logger != nil {
+		s.logger.Warn("failed to append session file record",
+			zap.String("session_id", sessionID),
+			zap.String("source", strings.TrimSpace(source)),
+			zap.Error(err))
+	}
+}
+
+func newSessionFileRecorderFromEnv() *FileSessionRecorder {
+	if !isTruthyEnv(os.Getenv("SESSION_FILE_RECORD_ENABLED")) {
+		return nil
+	}
+	return NewFileSessionRecorder(os.Getenv("SESSION_FILE_RECORD_DIR"))
+}
+
+func isTruthyEnv(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on", "enabled":
+		return true
+	default:
+		return false
 	}
 }

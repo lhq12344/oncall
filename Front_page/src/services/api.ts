@@ -1,4 +1,4 @@
-import { InterruptData, ChatStep, InterruptContext, DetailOption, DetailRequest } from '../types';
+import { InterruptData, ChatStep, InterruptContext, DetailOption, DetailRequest, CommandApprovalData } from '../types';
 
 const DEFAULT_BACKEND_PORT = '6872';
 const API_BASE_PATH = '/api/v1';
@@ -7,20 +7,54 @@ const BASE_URL = resolveApiBaseUrl();
 function resolveApiBaseUrl() {
   const configured = getViteEnv('VITE_API_BASE_URL')?.trim();
   if (configured) {
-    return trimTrailingSlash(configured);
+    return resolveConfiguredApiBaseUrl(configured);
   }
 
+  const backendPort = resolveBackendPort();
   if (typeof window === 'undefined') {
-    return `http://127.0.0.1:${DEFAULT_BACKEND_PORT}${API_BASE_PATH}`;
+    return `http://127.0.0.1:${backendPort}${API_BASE_PATH}`;
   }
 
   const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
   const hostname = window.location.hostname || '127.0.0.1';
-  return `${protocol}//${hostname}:${DEFAULT_BACKEND_PORT}${API_BASE_PATH}`;
+  return `${protocol}//${hostname}:${backendPort}${API_BASE_PATH}`;
 }
 
 function getViteEnv(key: string) {
   return (import.meta as unknown as { env?: Record<string, string | undefined> }).env?.[key];
+}
+
+function resolveBackendPort() {
+  const configured = getViteEnv('VITE_BACKEND_PORT')?.trim();
+  return configured || DEFAULT_BACKEND_PORT;
+}
+
+function resolveConfiguredApiBaseUrl(value: string) {
+  const trimmed = trimTrailingSlash(value);
+  if (typeof window === 'undefined') {
+    return trimmed;
+  }
+
+  const pageHostname = window.location.hostname;
+  if (!pageHostname || isLoopbackHost(pageHostname)) {
+    return trimmed;
+  }
+
+  try {
+    const url = new URL(trimmed);
+    if (!isLoopbackHost(url.hostname)) {
+      return trimmed;
+    }
+    url.hostname = pageHostname;
+    url.protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+    return trimTrailingSlash(url.toString());
+  } catch {
+    return trimmed;
+  }
+}
+
+function isLoopbackHost(hostname: string) {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
 }
 
 function trimTrailingSlash(value: string) {
@@ -176,7 +210,7 @@ async function streamRequest(url: string, body: any, options: StreamOptions) {
 
 function formatStreamError(error: unknown, url: string) {
   if (error instanceof TypeError && error.message === 'Failed to fetch') {
-    return `Failed to fetch ${url}. Backend is unreachable from this browser origin; check that port ${DEFAULT_BACKEND_PORT} is running or set VITE_API_BASE_URL.`;
+    return `Failed to fetch ${url}. Backend is unreachable from this browser origin; check that port ${resolveBackendPort()} is running or set VITE_API_BASE_URL.`;
   }
   return error instanceof Error ? error.message : String(error);
 }
@@ -186,12 +220,16 @@ function mapInterruptData(raw: any): InterruptData {
   const message = typeof raw?.message === 'string' ? raw.message : '';
   const interrupt_contexts = normalizeInterruptContexts(raw?.interrupt_contexts);
   const detail_request = extractDetailRequest(raw);
+  const interrupt_data = raw?.interrupt_data;
+  const command_approval = extractCommandApproval(raw);
 
   return {
     checkpoint_id,
     message,
     interrupt_contexts,
-    detail_request
+    detail_request,
+    command_approval,
+    interrupt_data
   };
 }
 
@@ -224,6 +262,40 @@ function extractDetailRequest(raw: any): DetailRequest | undefined {
   return undefined;
 }
 
+function extractCommandApproval(raw: any): CommandApprovalData | undefined {
+  const structuredCandidates = [
+    raw?.command_approval,
+    raw?.interrupt_data,
+    raw?.data
+  ];
+  for (const candidate of structuredCandidates) {
+    const parsed = parseCommandApprovalFromUnknown(candidate);
+    if (parsed) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function parseCommandApprovalFromUnknown(input: unknown): CommandApprovalData | undefined {
+  if (!input || typeof input !== 'object') {
+    return undefined;
+  }
+
+  const value = input as Record<string, any>;
+  const command = normalizeOptionalString(value.command);
+  if (!command) {
+    return undefined;
+  }
+  return {
+    command,
+    args: normalizeStringArray(value.args),
+    script: normalizeOptionalString(value.script),
+    timeout: normalizeOptionalNumber(value.timeout),
+    reason: normalizeOptionalString(value.reason)
+  };
+}
+
 function parseDetailRequestFromUnknown(input: unknown): DetailRequest | undefined {
   if (!input || typeof input !== 'object') {
     return undefined;
@@ -253,6 +325,23 @@ function normalizeOptionalString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed || undefined;
+}
+
+function normalizeOptionalNumber(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return value;
+}
+
+function normalizeStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const result = value
+    .map((item) => normalizeOptionalString(item))
+    .filter((item): item is string => Boolean(item));
+  return result.length > 0 ? result : undefined;
 }
 
 function normalizeDetailOptions(value: unknown): DetailOption[] {

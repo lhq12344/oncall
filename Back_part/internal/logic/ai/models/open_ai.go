@@ -62,7 +62,7 @@ type ChatModel struct {
 // GetChatModel 获取默认的 ChatModel
 func GetChatModel() (*ChatModel, error) {
 	ctx := context.Background()
-	client, err := OpenAIForDeepSeekV3Quick(ctx)
+	client, err := OpenAIForDeepSeekV3Quick(ctx) //返回一个chatmodel
 	if err != nil {
 		return nil, err
 	}
@@ -76,9 +76,9 @@ func newRetryHTTPClient(timeout time.Duration, apiKeyHeader string, apiKey strin
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &retryRoundTripper{
-			base:        http.DefaultTransport,
-			maxRetries:  defaultChatModelMaxRetries,
-			baseBackoff: defaultChatModelRetryInterval,
+			base:         http.DefaultTransport,
+			maxRetries:   defaultChatModelMaxRetries,
+			baseBackoff:  defaultChatModelRetryInterval,
 			apiKeyHeader: strings.TrimSpace(apiKeyHeader),
 			apiKey:       strings.TrimSpace(apiKey),
 		},
@@ -87,9 +87,9 @@ func newRetryHTTPClient(timeout time.Duration, apiKeyHeader string, apiKey strin
 
 // retryRoundTripper 在上游模型服务出现瞬时故障时做有限次重试。
 type retryRoundTripper struct {
-	base        http.RoundTripper
-	maxRetries  int
-	baseBackoff time.Duration
+	base         http.RoundTripper
+	maxRetries   int
+	baseBackoff  time.Duration
 	apiKeyHeader string
 	apiKey       string
 }

@@ -20,11 +20,21 @@ export interface DetailRequest {
   options: DetailOption[];
 }
 
+export interface CommandApprovalData {
+  command: string;
+  args?: string[];
+  script?: string;
+  timeout?: number;
+  reason?: string;
+}
+
 export interface InterruptData {
   checkpoint_id: string;
   interrupt_contexts: InterruptContext[];
   message: string;
   detail_request?: DetailRequest;
+  command_approval?: CommandApprovalData;
+  interrupt_data?: unknown;
   handled?: boolean;
 }
 

@@ -1,8 +1,7 @@
-//go:build legacy_ops
-
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/gob"
 	"encoding/json"
@@ -22,6 +21,33 @@ const (
 	maxBashOutputRunes        = 8000
 )
 
+type bashApprovalArgs struct {
+	Command string   `json:"command"`
+	Args    []string `json:"args"`
+	Script  string   `json:"script"`
+	Timeout int      `json:"timeout"`
+	Reason  string   `json:"reason"`
+}
+
+var readOnlyBashCommands = map[string]struct{}{
+	"ls":         {},
+	"cat":        {},
+	"tail":       {},
+	"head":       {},
+	"grep":       {},
+	"ps":         {},
+	"top":        {},
+	"free":       {},
+	"df":         {},
+	"du":         {},
+	"uptime":     {},
+	"date":       {},
+	"echo":       {},
+	"netstat":    {},
+	"ss":         {},
+	"journalctl": {},
+}
+
 // 需要将BashApprovalInterruptInfo 注册到 gob 中，以支持 Eino 的工具中断机制正确序列化和反序列化审批信息。
 func init() {
 	gob.Register(&BashApprovalInterruptInfo{})
@@ -37,6 +63,7 @@ type BashApprovalTool struct {
 type BashApprovalInterruptInfo struct {
 	Command string   `json:"command"`
 	Args    []string `json:"args,omitempty"`
+	Script  string   `json:"script,omitempty"`
 	Timeout int      `json:"timeout"`
 	Reason  string   `json:"reason,omitempty"`
 }
@@ -46,6 +73,9 @@ func (i *BashApprovalInterruptInfo) String() string {
 		return "检测到高风险操作，等待用户确认。"
 	}
 	commandLine := strings.TrimSpace(i.Command + " " + strings.Join(i.Args, " "))
+	if strings.TrimSpace(i.Script) != "" {
+		commandLine = strings.TrimSpace(i.Script)
+	}
 	if commandLine == "" {
 		commandLine = "(empty)"
 	}
@@ -63,6 +93,7 @@ type BashExecuteResult struct {
 	Success    bool     `json:"success"`
 	Command    string   `json:"command"`
 	Args       []string `json:"args,omitempty"`
+	Script     string   `json:"script,omitempty"`
 	Timeout    int      `json:"timeout"`
 	Output     string   `json:"output,omitempty"`
 	Error      string   `json:"error,omitempty"`
@@ -75,31 +106,9 @@ type BashExecuteResult struct {
 // 输入：logger（可为空）。
 // 输出：可注册到 Eino Agent 的 tool.BaseTool。
 func NewBashApprovalTool(logger *zap.Logger) tool.BaseTool {
-	allowed := map[string]struct{}{
-		"kubectl":    {},
-		"ls":         {},
-		"cat":        {},
-		"tail":       {},
-		"head":       {},
-		"grep":       {},
-		"awk":        {},
-		"sed":        {},
-		"ps":         {},
-		"top":        {},
-		"free":       {},
-		"df":         {},
-		"du":         {},
-		"uptime":     {},
-		"date":       {},
-		"echo":       {},
-		"curl":       {},
-		"wget":       {},
-		"ping":       {},
-		"netstat":    {},
-		"ss":         {},
-		"journalctl": {},
-		"docker":     {},
-		"systemctl":  {},
+	allowed := make(map[string]struct{}, len(readOnlyBashCommands))
+	for command := range readOnlyBashCommands {
+		allowed[command] = struct{}{}
 	}
 
 	return &BashApprovalTool{
@@ -111,17 +120,22 @@ func NewBashApprovalTool(logger *zap.Logger) tool.BaseTool {
 func (t *BashApprovalTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: "bash_execute_with_approval",
-		Desc: "执行 Bash 命令（执行前会触发中断并等待用户审批）。适用于需要人工确认的运维命令。",
+		Desc: "执行结构化只读诊断命令（执行前会触发中断并等待用户审批）。不支持自由 shell 脚本、写操作或外部网络请求。",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"command": {
 				Type:     schema.String,
-				Desc:     "要执行的命令（白名单内）",
+				Desc:     "要执行的只读命令（白名单内）",
 				Required: true,
 			},
 			"args": {
 				Type:     schema.Array,
 				ElemInfo: &schema.ParameterInfo{Type: schema.String},
 				Desc:     "命令参数数组",
+				Required: false,
+			},
+			"script": {
+				Type:     schema.String,
+				Desc:     "已禁用。请使用 command 和 args 传入结构化只读命令",
 				Required: false,
 			},
 			"timeout": {
@@ -139,22 +153,22 @@ func (t *BashApprovalTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 }
 
 func (t *BashApprovalTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
-	type args struct {
-		Command string   `json:"command"`
-		Args    []string `json:"args"`
-		Timeout int      `json:"timeout"`
-		Reason  string   `json:"reason"`
-	}
-
-	var in args
-	if err := json.Unmarshal([]byte(argumentsInJSON), &in); err != nil {
+	in, err := parseBashApprovalArgs(argumentsInJSON)
+	if err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
 	in.Command = strings.TrimSpace(in.Command)
+	in.Script = strings.TrimSpace(in.Script)
 	in.Reason = strings.TrimSpace(in.Reason)
 	if in.Command == "" {
 		return "", fmt.Errorf("command is required")
+	}
+	if in.Script != "" {
+		return "", fmt.Errorf("script execution is disabled; use command and args")
+	}
+	if strings.ContainsAny(in.Command, " \t\r\n") {
+		return "", fmt.Errorf("command must be a single executable name")
 	}
 	if in.Timeout <= 0 {
 		in.Timeout = defaultBashTimeoutSeconds
@@ -176,6 +190,7 @@ func (t *BashApprovalTool) InvokableRun(ctx context.Context, argumentsInJSON str
 		return "", tool.Interrupt(ctx, &BashApprovalInterruptInfo{
 			Command: in.Command,
 			Args:    in.Args,
+			Script:  in.Script,
 			Timeout: in.Timeout,
 			Reason:  in.Reason,
 		})
@@ -187,6 +202,7 @@ func (t *BashApprovalTool) InvokableRun(ctx context.Context, argumentsInJSON str
 		return "", tool.Interrupt(ctx, &BashApprovalInterruptInfo{
 			Command: in.Command,
 			Args:    in.Args,
+			Script:  in.Script,
 			Timeout: in.Timeout,
 			Reason:  in.Reason,
 		})
@@ -203,6 +219,7 @@ func (t *BashApprovalTool) InvokableRun(ctx context.Context, argumentsInJSON str
 			Success:  true,
 			Command:  in.Command,
 			Args:     in.Args,
+			Script:   in.Script,
 			Timeout:  in.Timeout,
 			ExitCode: 0,
 			Comment:  comment,
@@ -219,6 +236,7 @@ func (t *BashApprovalTool) InvokableRun(ctx context.Context, argumentsInJSON str
 			Success:  false,
 			Command:  in.Command,
 			Args:     in.Args,
+			Script:   in.Script,
 			Timeout:  in.Timeout,
 			Error:    "command execution rejected by user",
 			ExitCode: -1,
@@ -241,6 +259,81 @@ func (t *BashApprovalTool) InvokableRun(ctx context.Context, argumentsInJSON str
 			zap.Int("duration_ms", result.DurationMS))
 	}
 	return marshalBashExecuteResult(result)
+}
+
+func parseBashApprovalArgs(payload string) (bashApprovalArgs, error) {
+	payload = strings.TrimSpace(payload)
+	if payload == "" || payload == "{}" || strings.EqualFold(payload, "null") {
+		return bashApprovalArgs{}, nil
+	}
+
+	var in bashApprovalArgs
+	if err := json.Unmarshal([]byte(payload), &in); err == nil {
+		return in, nil
+	}
+
+	decoder := json.NewDecoder(strings.NewReader(payload))
+	merged := bashApprovalArgs{}
+	decodedAny := false
+	for {
+		var next bashApprovalArgs
+		err := decoder.Decode(&next)
+		if err == nil {
+			mergeBashApprovalArgs(&merged, next)
+			decodedAny = true
+			continue
+		}
+		if err.Error() == "EOF" {
+			break
+		}
+		if !decodedAny {
+			return bashApprovalArgs{}, err
+		}
+
+		remaining := strings.TrimSpace(readDecoderRemainder(decoder))
+		if remaining == "" {
+			break
+		}
+		return bashApprovalArgs{}, err
+	}
+	if !decodedAny {
+		return bashApprovalArgs{}, fmt.Errorf("empty arguments")
+	}
+	return merged, nil
+}
+
+func mergeBashApprovalArgs(target *bashApprovalArgs, next bashApprovalArgs) {
+	if target == nil {
+		return
+	}
+	if strings.TrimSpace(next.Command) != "" {
+		target.Command = next.Command
+	}
+	if len(next.Args) > 0 {
+		target.Args = next.Args
+	}
+	if strings.TrimSpace(next.Script) != "" {
+		target.Script = next.Script
+	}
+	if next.Timeout > 0 {
+		target.Timeout = next.Timeout
+	}
+	if strings.TrimSpace(next.Reason) != "" {
+		target.Reason = next.Reason
+	}
+}
+
+func readDecoderRemainder(decoder *json.Decoder) string {
+	if decoder == nil {
+		return ""
+	}
+	buffered := decoder.Buffered()
+	if buffered == nil {
+		return ""
+	}
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(buffered)
+	return buf.String()
 }
 
 // validateArgs 执行参数安全校验。
