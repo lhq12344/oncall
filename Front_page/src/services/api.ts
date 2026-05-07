@@ -1,6 +1,31 @@
 import { InterruptData, ChatStep, InterruptContext, DetailOption, DetailRequest } from '../types';
 
-const BASE_URL = 'http://127.0.0.1:6872/api/v1';
+const DEFAULT_BACKEND_PORT = '6872';
+const API_BASE_PATH = '/api/v1';
+const BASE_URL = resolveApiBaseUrl();
+
+function resolveApiBaseUrl() {
+  const configured = getViteEnv('VITE_API_BASE_URL')?.trim();
+  if (configured) {
+    return trimTrailingSlash(configured);
+  }
+
+  if (typeof window === 'undefined') {
+    return `http://127.0.0.1:${DEFAULT_BACKEND_PORT}${API_BASE_PATH}`;
+  }
+
+  const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+  const hostname = window.location.hostname || '127.0.0.1';
+  return `${protocol}//${hostname}:${DEFAULT_BACKEND_PORT}${API_BASE_PATH}`;
+}
+
+function getViteEnv(key: string) {
+  return (import.meta as unknown as { env?: Record<string, string | undefined> }).env?.[key];
+}
+
+function trimTrailingSlash(value: string) {
+  return value.replace(/\/+$/, '');
+}
 
 export async function uploadFile(file: File) {
   const formData = new FormData();
@@ -145,8 +170,15 @@ async function streamRequest(url: string, body: any, options: StreamOptions) {
       }
     }
   } catch (error) {
-    onError?.(error instanceof Error ? error.message : String(error));
+    onError?.(formatStreamError(error, url));
   }
+}
+
+function formatStreamError(error: unknown, url: string) {
+  if (error instanceof TypeError && error.message === 'Failed to fetch') {
+    return `Failed to fetch ${url}. Backend is unreachable from this browser origin; check that port ${DEFAULT_BACKEND_PORT} is running or set VITE_API_BASE_URL.`;
+  }
+  return error instanceof Error ? error.message : String(error);
 }
 
 function mapInterruptData(raw: any): InterruptData {

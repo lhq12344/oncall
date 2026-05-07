@@ -1,0 +1,25 @@
+# https://goframe.org/docs/web/server-config-file-template
+server:
+  address: ":6872"
+  openapiPath: "/api.json"
+  swaggerPath: "/swagger"
+
+# https://goframe.org/docs/core/glog-config
+logger:
+  level: "all"
+  stdout: true
+
+file_dir: "./docs/"
+
+
+redis:
+  addr: "localhost:31029"
+  db: 0
+  dialTimeout: 2
+
+# Milvus vector database; matches deploy/docker-compose.middleware.yml.
+milvus:
+  address: "127.0.0.1:31953"
+  database: "default"
+  collection: "oncall_knowledge"
+  timeout: "60s"
