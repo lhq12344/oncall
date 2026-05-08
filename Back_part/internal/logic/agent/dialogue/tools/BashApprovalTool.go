@@ -152,6 +152,8 @@ func (t *BashApprovalTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 	}, nil
 }
 
+// InvokableRun 执行已通过白名单校验的命令并返回结构化结果。
+// 中断/审批逻辑由 ApprovalMiddleware 在调用此方法前处理，此处仅负责纯执行。
 func (t *BashApprovalTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
 	in, err := parseBashApprovalArgs(argumentsInJSON)
 	if err != nil {
@@ -184,75 +186,12 @@ func (t *BashApprovalTool) InvokableRun(ctx context.Context, argumentsInJSON str
 		return "", err
 	}
 
-	// 首次执行：强制中断，等待前端通过 chat_resume_stream 提交审批结果。
-	wasInterrupted, _, _ := tool.GetInterruptState[any](ctx)
-	if !wasInterrupted {
-		return "", tool.Interrupt(ctx, &BashApprovalInterruptInfo{
-			Command: in.Command,
-			Args:    in.Args,
-			Script:  in.Script,
-			Timeout: in.Timeout,
-			Reason:  in.Reason,
-		})
-	}
-
-	// 恢复执行：仅当当前工具是 Resume 目标，且携带了审批数据，才允许继续。
-	isResumeTarget, hasData, resumeData := tool.GetResumeContext[map[string]any](ctx)
-	if !isResumeTarget || !hasData {
-		return "", tool.Interrupt(ctx, &BashApprovalInterruptInfo{
-			Command: in.Command,
-			Args:    in.Args,
-			Script:  in.Script,
-			Timeout: in.Timeout,
-			Reason:  in.Reason,
-		})
-	}
-
-	approved, resolved, comment := parseBashApprovalDecision(resumeData)
-
-	// 用户标记“已修复”时，按业务语义直接跳过命令执行并返回说明。
-	if resolved {
-		result := BashExecuteResult{
-			Approved: true,
-			Resolved: true,
-			Executed: false,
-			Success:  true,
-			Command:  in.Command,
-			Args:     in.Args,
-			Script:   in.Script,
-			Timeout:  in.Timeout,
-			ExitCode: 0,
-			Comment:  comment,
-		}
-		return marshalBashExecuteResult(result)
-	}
-
-	// 用户未批准时，不执行命令，直接返回拒绝结果。
-	if !approved {
-		result := BashExecuteResult{
-			Approved: false,
-			Resolved: false,
-			Executed: false,
-			Success:  false,
-			Command:  in.Command,
-			Args:     in.Args,
-			Script:   in.Script,
-			Timeout:  in.Timeout,
-			Error:    "command execution rejected by user",
-			ExitCode: -1,
-			Comment:  comment,
-		}
-		return marshalBashExecuteResult(result)
-	}
-
 	result := t.executeCommand(ctx, in.Command, in.Args, in.Timeout)
 	result.Approved = true
-	result.Resolved = false
 	result.Executed = true
-	result.Comment = comment
 
 	if t.logger != nil {
-		t.logger.Info("dialogue bash command executed",
+		t.logger.Info("bash command executed",
 			zap.String("command", in.Command),
 			zap.Int("args_count", len(in.Args)),
 			zap.Bool("success", result.Success),

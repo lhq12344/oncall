@@ -144,43 +144,22 @@ func (t *DetailSelectionTool) InvokableRun(ctx context.Context, argumentsInJSON 
 		return "", fmt.Errorf("question is required")
 	}
 
-	info := &DetailSelectionInterruptInfo{
-		Field:    in.Field,
-		Question: in.Question,
-		Reason:   in.Reason,
-		Options:  in.Options,
-	}
-
-	wasInterrupted, _, _ := tool.GetInterruptState[any](ctx)
-	if !wasInterrupted {
-		return "", tool.Interrupt(ctx, info)
-	}
-
-	isResumeTarget, hasData, resumeData := tool.GetResumeContext[map[string]any](ctx)
-	if !isResumeTarget || !hasData {
-		return "", tool.Interrupt(ctx, info)
-	}
-
-	selectionValue := parseDetailSelectionValue(resumeData)
-	selectedOption, ok := findDetailSelectionOption(in.Options, selectionValue)
-	if !ok {
-		if t.logger != nil {
-			t.logger.Warn("detail selection resume missing or invalid option",
-				zap.String("field", in.Field),
-				zap.String("selection_value", selectionValue))
-		}
-		return "", tool.Interrupt(ctx, info)
-	}
-
-	result := DetailSelectionResult{
-		Field:         in.Field,
-		Question:      in.Question,
-		SelectedValue: selectedOption.Value,
-		SelectedLabel: selectedOption.Label,
-	}
-	out, err := json.Marshal(result)
+	out, err := json.Marshal(map[string]any{
+		"field":    in.Field,
+		"question": in.Question,
+		"reason":   in.Reason,
+		"options":  in.Options,
+		"status":   "awaiting_selection",
+	})
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal detail selection result: %w", err)
+		return "", fmt.Errorf("failed to marshal options: %w", err)
+	}
+
+	if t.logger != nil {
+		t.logger.Info("detail_selection_triggered",
+			zap.String("field", in.Field),
+			zap.String("question", in.Question),
+			zap.Int("option_count", len(in.Options)))
 	}
 	return string(out), nil
 }
