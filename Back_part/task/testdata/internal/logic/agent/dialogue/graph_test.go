@@ -80,14 +80,14 @@ func TestPrepareLeafAgentMessagesAppendsUserHandoff(t *testing.T) {
 	}
 }
 
-func TestAppendMandatoryAnalysisMessageAppendsInternalSystemContext(t *testing.T) {
+func TestAppendAnalysisNodeMessageAppendsInternalSystemContext(t *testing.T) {
 	msgs := []*schema.Message{
 		schema.UserMessage("我充值扣费了但是钻石不到账，急死了"),
 	}
 
-	prepared, err := appendMandatoryAnalysisMessage(context.Background(), &Config{}, msgs)
+	prepared, err := appendAnalysisNodeMessage(context.Background(), &Config{}, msgs)
 	if err != nil {
-		t.Fatalf("appendMandatoryAnalysisMessage returned error: %v", err)
+		t.Fatalf("appendAnalysisNodeMessage returned error: %v", err)
 	}
 	if len(prepared) != len(msgs)+1 {
 		t.Fatalf("len(prepared) = %d, want %d", len(prepared), len(msgs)+1)
@@ -97,7 +97,7 @@ func TestAppendMandatoryAnalysisMessageAppendsInternalSystemContext(t *testing.T
 	if last.Role != schema.System {
 		t.Fatalf("last role = %s, want system", last.Role)
 	}
-	for _, want := range []string{"内部客服分析结果", "intent_analysis=", "player_emotion_analysis=", "payment_issue", "urgent"} {
+	for _, want := range []string{"内部客服分析结果", "intent_analysis=", "player_emotion_analysis=", "payment_issue", "urgent", "analysis_degraded=false"} {
 		if !strings.Contains(last.Content, want) {
 			t.Fatalf("analysis system message missing %q: %s", want, last.Content)
 		}
@@ -105,9 +105,20 @@ func TestAppendMandatoryAnalysisMessageAppendsInternalSystemContext(t *testing.T
 }
 
 func TestRunAnalysisToolFallsBackOnFailure(t *testing.T) {
-	got := runAnalysisTool(context.Background(), failingAnalysisTool{}, "充值不到账", fallbackIntentAnalysis())
+	got, err := runAnalysisTool(context.Background(), failingAnalysisTool{}, "充值不到账", fallbackIntentAnalysis())
+	if err == nil {
+		t.Fatalf("expected fallback error")
+	}
 	if !strings.Contains(got, `"intent_type":"other"`) {
 		t.Fatalf("fallback intent analysis not returned: %s", got)
+	}
+}
+
+func TestGateInstructionDoesNotMandateIntentEmotionTools(t *testing.T) {
+	for _, forbidden := range []string{"调用 intent_analysis", "调用 player_emotion_analysis"} {
+		if strings.Contains(gateAgentInstruction, forbidden) {
+			t.Fatalf("gate instruction still mandates %q: %s", forbidden, gateAgentInstruction)
+		}
 	}
 }
 
