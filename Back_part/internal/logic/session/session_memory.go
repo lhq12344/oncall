@@ -52,7 +52,8 @@ func DefaultSessionMemoryConfig() SessionMemoryConfig {
 // - 根据 token 预算构建消息历史
 // - 保存对话轮次到 Redis
 // - 控制历史长度和总结策略
-// - 异步写入 MySQL 作为持久化备份（SESSION_MYSQL_DSN 配置时启用）
+// - 从会话 JSONL 文件恢复 Redis TTL 过期后的最近历史
+// - 异步写入 MySQL 作为可选持久化备份（SESSION_MYSQL_DSN 配置时启用）
 type SessionMemory struct {
 	cfg          SessionMemoryConfig
 	logger       *zap.Logger
@@ -127,9 +128,9 @@ func (s *SessionMemory) BuildMessages(ctx context.Context, sessionID, question s
 		return []*schema.Message{schema.UserMessage(question)}, nil
 	}
 
-	// Redis 为空（TTL 过期）且 MySQL 写入器可用时，尝试从 MySQL 恢复历史。
-	if len(messages) <= 1 && s.mysqlWriter != nil {
-		if recovered := s.recoverFromMySQL(ctx, sessionID, question); len(recovered) > 1 {
+	// Redis 为空（TTL 过期）且文件记录可用时，从 JSONL 末尾恢复最近历史。
+	if len(messages) <= 1 && s.fileRecorder != nil {
+		if recovered := s.recoverFromFile(ctx, sessionID, question); len(recovered) > 1 {
 			return recovered, nil
 		}
 	}
@@ -140,13 +141,13 @@ func (s *SessionMemory) BuildMessages(ctx context.Context, sessionID, question s
 	return messages, nil
 }
 
-// recoverFromMySQL 从 MySQL 加载历史消息，回写 Redis，再重新构建带 token 预算的消息列表。
+// recoverFromFile 从 JSONL 文件末尾加载最近消息，回写 Redis，再重新构建带 token 预算的消息列表。
 // 仅在 Redis 为空（TTL 过期）时调用，失败时静默降级（返回 nil）。
-func (s *SessionMemory) recoverFromMySQL(ctx context.Context, sessionID, question string) []*schema.Message {
-	historical, err := s.mysqlWriter.LoadTurnsBySession(ctx, sessionID)
+func (s *SessionMemory) recoverFromFile(ctx context.Context, sessionID, question string) []*schema.Message {
+	historical, err := s.fileRecorder.LoadRecentMessages(ctx, sessionID, defaultSessionRecoveryLines)
 	if err != nil {
 		if s.logger != nil {
-			s.logger.Warn("mysql_recovery: failed to load history",
+			s.logger.Warn("file_recovery: failed to load history",
 				zap.String("session_id", sessionID),
 				zap.Error(err))
 		}
@@ -156,26 +157,27 @@ func (s *SessionMemory) recoverFromMySQL(ctx context.Context, sessionID, questio
 		return nil
 	}
 
-	// 将历史消息按 user/assistant 配对回写 Redis。
-	// historical 已按 turn_seq ASC 排序，每两条为一轮（user + assistant）。
+	// 将 JSONL 中的可见消息按 user/assistant 配对回写 Redis。
 	memory := mem.GetSimpleMemory(sessionID)
-	for i := 0; i+1 < len(historical); i += 2 {
+	for i := 0; i+1 < len(historical); {
 		u := historical[i]
 		a := historical[i+1]
 		if u.Role != schema.User || a.Role != schema.Assistant {
 			// 非标准配对（system/tool 消息），跳过整对。
+			i++
 			continue
 		}
 		if err := memory.SetMessages(ctx, u, a, nil, 0, 0); err != nil && s.logger != nil {
-			s.logger.Warn("mysql_recovery: failed to replay turn into redis",
+			s.logger.Warn("file_recovery: failed to replay turn into redis",
 				zap.String("session_id", sessionID),
 				zap.Int("turn_index", i),
 				zap.Error(err))
 		}
+		i += 2
 	}
 
 	if s.logger != nil {
-		s.logger.Info("mysql_recovery: replayed history into redis",
+		s.logger.Info("file_recovery: replayed history into redis",
 			zap.String("session_id", sessionID),
 			zap.Int("historical_msgs", len(historical)))
 	}
@@ -184,7 +186,7 @@ func (s *SessionMemory) recoverFromMySQL(ctx context.Context, sessionID, questio
 	rebuilt, err := mem.GetMessagesForRequest(ctx, sessionID, schema.UserMessage(question), s.cfg.ReserveToolTokens)
 	if err != nil {
 		if s.logger != nil {
-			s.logger.Warn("mysql_recovery: failed to rebuild messages after replay",
+			s.logger.Warn("file_recovery: failed to rebuild messages after replay",
 				zap.String("session_id", sessionID),
 				zap.Error(err))
 		}

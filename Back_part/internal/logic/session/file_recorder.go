@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 )
 
 const defaultSessionRecordDir = ".run/sessions"
+const defaultSessionRecoveryLines = 10
 
 // FileSessionRecorder appends session turns to per-session JSONL files.
 type FileSessionRecorder struct {
@@ -124,6 +126,49 @@ func (r *FileSessionRecorder) AppendTurnWithPrompt(
 	return writer.Flush()
 }
 
+// LoadRecentMessages loads visible conversation messages from the last n JSONL rows.
+func (r *FileSessionRecorder) LoadRecentMessages(ctx context.Context, sessionID string, n int) ([]*schema.Message, error) {
+	if r == nil {
+		return nil, nil
+	}
+	if err := ctxErr(ctx); err != nil {
+		return nil, err
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, fmt.Errorf("session id is required")
+	}
+	if n <= 0 {
+		n = defaultSessionRecoveryLines
+	}
+
+	path := filepath.Join(r.dir, safeSessionRecordFileName(sessionID)+".jsonl")
+	lines, err := readLastLines(path, n)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	messages := make([]*schema.Message, 0, len(lines))
+	for _, line := range lines {
+		if err := ctxErr(ctx); err != nil {
+			return nil, err
+		}
+		var record sessionRecordLine
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			return nil, err
+		}
+		msg := record.toVisibleMessage(sessionID)
+		if msg == nil {
+			continue
+		}
+		messages = append(messages, msg)
+	}
+	return messages, nil
+}
+
 func buildMessageRecord(recordType string, sessionID string, turnID string, source string, msg *schema.Message, index int, now time.Time) sessionRecordLine {
 	role := ""
 	content := ""
@@ -151,6 +196,75 @@ func buildMessageRecord(recordType string, sessionID string, turnID string, sour
 		Index:      index,
 		Timestamp:  now.Format(time.RFC3339Nano),
 	}
+}
+
+func (r sessionRecordLine) toVisibleMessage(sessionID string) *schema.Message {
+	if r.Type != "message" || r.SessionID != sessionID {
+		return nil
+	}
+	msg := &schema.Message{
+		Role:       schema.RoleType(r.Role),
+		Content:    r.Content,
+		ToolCallID: r.ToolCallID,
+	}
+	if len(r.ToolCalls) > 0 {
+		_ = json.Unmarshal(r.ToolCalls, &msg.ToolCalls)
+	}
+	switch msg.Role {
+	case schema.User, schema.Assistant, schema.Tool:
+		return msg
+	default:
+		return nil
+	}
+}
+
+func readLastLines(path string, n int) ([]string, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() == 0 {
+		return nil, nil
+	}
+
+	var (
+		pos      = info.Size()
+		buffer   []byte
+		tmp      = make([]byte, 4096)
+		newlines int
+	)
+	for pos > 0 && newlines <= n {
+		readSize := int64(len(tmp))
+		if pos < readSize {
+			readSize = pos
+		}
+		pos -= readSize
+		chunk := tmp[:readSize]
+		if _, err := file.ReadAt(chunk, pos); err != nil && err != io.EOF {
+			return nil, err
+		}
+		for i := len(chunk) - 1; i >= 0; i-- {
+			if chunk[i] == '\n' {
+				newlines++
+			}
+		}
+		buffer = append(append([]byte(nil), chunk...), buffer...)
+	}
+
+	parts := strings.Split(strings.TrimRight(string(buffer), "\n"), "\n")
+	if len(parts) > n {
+		parts = parts[len(parts)-n:]
+	}
+	return parts, nil
 }
 
 func fileNeedsSessionHeader(path string) (bool, error) {

@@ -56,7 +56,7 @@ func (command) Run(ctx context.Context) {
 		ReserveOutputTokens:    8192,
 		ReserveToolsDefault:    20000,
 		SafetyTokens:           2048,
-		TTL:                    2 * time.Hour,
+		TTL:                    30 * time.Minute,
 		KeepReasoningInContext: false,
 	}); err != nil {
 		panic(err)

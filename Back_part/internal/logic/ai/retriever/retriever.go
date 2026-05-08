@@ -2,6 +2,7 @@ package retriever
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	clientutil "go_agent/internal/logic/ai/client"
 	"go_agent/internal/logic/ai/common"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/cloudwego/eino-ext/components/retriever/milvus"
 	"github.com/cloudwego/eino/components/retriever"
+	"github.com/cloudwego/eino/schema"
 	milvusclient "github.com/milvus-io/milvus-sdk-go/v2/client"
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
 )
@@ -36,11 +38,19 @@ func NewMilvusRetrieverWithCollection(ctx context.Context, collection string) (r
 		return nil, err
 	}
 
-	// 用默认的 AUTOINDEX 搜索参数（不要 AddRadius / AddRangeFilter）
+	const (
+		defaultTopK           = 3
+		defaultScoreThreshold = 0.8
+	)
+
+	// 使用 AUTOINDEX 搜索参数，并显式设置 range_filter。
+	// 说明：eino-ext retriever 仅从 Sp.Params()["range_filter"] 读取实际阈值；
+	// 若未设置该参数，ScoreThreshold 会被重置为 0（等同无阈值过滤）。
 	sp, err := entity.NewIndexAUTOINDEXSearchParam(1)
 	if err != nil {
 		return nil, err
 	}
+	sp.AddRangeFilter(defaultScoreThreshold)
 
 	collection = strings.TrimSpace(collection)
 	if collection == "" {
@@ -63,14 +73,15 @@ func NewMilvusRetrieverWithCollection(ctx context.Context, collection string) (r
 	}
 
 	r, err := milvus.NewRetriever(ctx, &milvus.RetrieverConfig{
-		Client:         cli,
-		Collection:     collection,
-		VectorField:    "vector",
-		OutputFields:   outputFields,
-		MetricType:     entity.COSINE,
-		TopK:           3,
-		ScoreThreshold: 0.8,
-		Sp:             sp,
+		Client:            cli,
+		Collection:        collection,
+		VectorField:       "vector",
+		OutputFields:      outputFields,
+		DocumentConverter: documentConverterWithScore,
+		MetricType:        entity.COSINE,
+		TopK:              defaultTopK,
+		ScoreThreshold:    defaultScoreThreshold,
+		Sp:                sp,
 
 		Embedding: eb,
 
@@ -89,6 +100,65 @@ func NewMilvusRetrieverWithCollection(ctx context.Context, collection string) (r
 		return nil, err
 	}
 	return r, nil
+}
+
+func documentConverterWithScore(_ context.Context, result milvusclient.SearchResult) ([]*schema.Document, error) {
+	count := result.IDs.Len()
+	docs := make([]*schema.Document, count)
+	for i := 0; i < count; i++ {
+		docs[i] = &schema.Document{
+			MetaData: make(map[string]any),
+		}
+		if i < len(result.Scores) {
+			docs[i].WithScore(float64(result.Scores[i]))
+		}
+	}
+
+	for _, field := range result.Fields {
+		switch field.Name() {
+		case "id":
+			for i := range docs {
+				id, err := result.IDs.GetAsString(i)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get id: %w", err)
+				}
+				docs[i].ID = id
+			}
+		case "content":
+			for i := range docs {
+				content, err := field.GetAsString(i)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get content: %w", err)
+				}
+				docs[i].Content = content
+			}
+		case "metadata":
+			for i := range docs {
+				raw, err := field.Get(i)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get metadata: %w", err)
+				}
+				bytes, ok := raw.([]byte)
+				if !ok {
+					docs[i].MetaData[field.Name()] = raw
+					continue
+				}
+				if err := json.Unmarshal(bytes, &docs[i].MetaData); err != nil {
+					return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+				}
+			}
+		default:
+			for i := range docs {
+				value, err := field.Get(i)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get field %s: %w", field.Name(), err)
+				}
+				docs[i].MetaData[field.Name()] = value
+			}
+		}
+	}
+
+	return docs, nil
 }
 
 func resolveOutputFields(ctx context.Context, cli milvusclient.Client, collection string) ([]string, error) {

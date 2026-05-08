@@ -23,7 +23,7 @@ import (
 - ReserveToolsDefault: 20000（你暂时不用工具可以传 8000 或 0）
 - ReserveUserTokens: 4000（本轮用户输入固定预留；因为 Get 阶段拿不到真实 user tokens）
 - SafetyTokens: 2048（协议开销、波动、不可控 token）
-- TTL: 2h（滑动过期）
+- TTL: 30m（滑动过期）
 */
 type Config struct {
 	MaxInputTokens         int
@@ -317,7 +317,8 @@ func (m *SimpleMemory) CompactHistory(ctx context.Context, compactBatchTurns, tr
 // 返回: (裁剪后的 turns) + userMsg(附加在末尾; 不会写入 Redis)
 func (m *SimpleMemory) GetMessagesForRequest(ctx context.Context, userMsg *schema.Message, reserveToolsTokens int) ([]*schema.Message, error) {
 	if !inited || rdb == nil {
-		return nil, errors.New("mem: redis not initialized, call InitRedis first")	}
+		return nil, errors.New("mem: redis not initialized, call InitRedis first")
+	}
 
 	// 1) 加载历史摘要
 	summaryMsg, summaryTokens, err := m.loadSummaryMessage(ctx)
