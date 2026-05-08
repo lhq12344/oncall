@@ -116,14 +116,32 @@ func (t *WebSearchTool) InvokableRun(ctx context.Context, argumentsInJSON string
 		return t.degradedResponse(in.Query, in.TimeRange, "", cfgErr.Error())
 	}
 
+	var result string
+	var err error
 	switch provider {
 	case webSearchProviderSerper:
-		return t.searchWithSerper(ctx, cfg, in.Query, in.TimeRange, in.TopK)
+		result, err = t.searchWithSerper(ctx, cfg, in.Query, in.TimeRange, in.TopK)
 	case webSearchProviderSearXNG:
-		return t.searchWithSearXNG(ctx, cfg, in.Query, in.TimeRange, in.TopK)
+		result, err = t.searchWithSearXNG(ctx, cfg, in.Query, in.TimeRange, in.TopK)
 	default:
 		return t.degradedResponse(in.Query, in.TimeRange, provider, "no available web search provider configured")
 	}
+
+	if err == nil && t.logger != nil {
+		var resp map[string]any
+		resultCount := 0
+		if jsonErr := json.Unmarshal([]byte(result), &resp); jsonErr == nil {
+			if n, ok := resp["result_count"].(float64); ok {
+				resultCount = int(n)
+			}
+		}
+		t.logger.Info("web_search_completed",
+			zap.String("query", in.Query),
+			zap.String("provider", provider),
+			zap.String("time_range", in.TimeRange),
+			zap.Int("result_count", resultCount))
+	}
+	return result, err
 }
 
 type serperSearchResponse struct {
