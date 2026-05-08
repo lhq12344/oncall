@@ -19,9 +19,15 @@ func DoubaoEmbedding(ctx context.Context) (embedding.Embedder, error) {
 	apiKey := readEmbeddingSetting(ctx, "doubao_embedding_model.api_key", "DOUBAO_EMBEDDING_MODEL_API_KEY")
 	baseURL := readEmbeddingSetting(ctx, "doubao_embedding_model.base_url", "DOUBAO_EMBEDDING_MODEL_BASE_URL")
 
-	// 可选配置：api_type=text|multi_modal。未配置时根据模型名自动推断。
+	// 可选配置：api_type=text|multi_modal。支持 config.yaml（doubao_embedding_model.api_type）
+	// 和环境变量 DOUBAO_EMBEDDING_MODEL_API_TYPE，未配置时根据模型名自动推断。
+	// 注意：模型名含 vision/multimodal 会自动推断为 multi_modal，若代理不支持该端点需显式设为 text。
 	apiTypeCfg, _ := g.Cfg().Get(ctx, "doubao_embedding_model.api_type")
-	apiType, err := resolveAPIType(model, apiTypeCfg.String())
+	apiTypeSrc := apiTypeCfg.String()
+	if strings.TrimSpace(apiTypeSrc) == "" {
+		apiTypeSrc = strings.TrimSpace(os.Getenv("DOUBAO_EMBEDDING_MODEL_API_TYPE"))
+	}
+	apiType, err := resolveAPIType(model, apiTypeSrc)
 	if err != nil {
 		return nil, err
 	}
