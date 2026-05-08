@@ -52,6 +52,16 @@ services:
       - minio
     restart: unless-stopped
 
+  attu:
+    image: zilliz/attu:v2.4.12
+    ports:
+      - "127.0.0.1:${ATTU_PORT:-8000}:3000"
+    environment:
+      MILVUS_URL: milvus:19530
+    depends_on:
+      - milvus
+    restart: unless-stopped
+
 volumes:
   redis_data:
   etcd_data:

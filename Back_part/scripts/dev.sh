@@ -12,7 +12,7 @@
 #   ./scripts/dev.sh clean-volumes
 #
 # 说明：
-#   - start 会先通过 Docker Compose 启动 Redis 和 Milvus 等中间件，再启动后端(:6872)和前端(:3100)。
+#   - start 会先通过 Docker Compose 启动 Redis、Milvus、Attu 等中间件，再启动后端(:6872)和前端(:3100)。
 #   - stop 会关闭本地应用进程和中间件容器，默认保留 Docker volume 数据。
 #   - restart 只重启后端和前端，不重启中间件容器。
 #   - clean-volumes 会在明确确认后删除 Redis / Milvus 的持久化数据。
@@ -40,7 +40,9 @@ FRONTEND_LOG="$RUN_DIR/frontend.log"
 BACKEND_BIN="$RUN_DIR/backend-bin"
 BACKEND_PORT="${BACKEND_PORT:-6872}"
 FRONTEND_PORT="${FRONTEND_PORT:-3100}"
+ATTU_PORT="${ATTU_PORT:-8000}"
 DOCKER_CMD=(docker)
+export ATTU_PORT
 
 mkdir -p "$RUN_DIR"
 
@@ -253,6 +255,7 @@ wait_for_redis() {
 
 cmd_start() {
   local skip_middleware="${1:-}"
+  local attu_ready=0
 
   require_command go "Install Go or add it to PATH before starting the backend."
   require_command npm "Install Node.js/npm before starting the frontend."
@@ -287,6 +290,15 @@ cmd_start() {
       echo "[dev] Set ALLOW_MILVUS_DEGRADED=1 to start without Milvus for chat-only debugging."
       exit 1
     fi
+  fi
+
+  echo "[dev] Waiting for Attu on $ATTU_PORT (up to 60s)..."
+  if wait_for_tcp 127.0.0.1 "$ATTU_PORT" 60; then
+    echo "[dev] Attu ready."
+    attu_ready=1
+  else
+    echo "[dev] WARNING: Attu is not ready after 60s."
+    echo "[dev] Run './scripts/dev.sh start' after Docker access is available, or check middleware logs."
   fi
 
   if [ ! -d "$FRONTEND_ROOT" ]; then
@@ -358,6 +370,11 @@ cmd_start() {
   echo "[dev] All services started."
   echo "  Backend:  http://localhost:$BACKEND_PORT"
   echo "  Frontend: http://localhost:$FRONTEND_PORT"
+  if [ "$attu_ready" -eq 1 ]; then
+    echo "  Attu:     http://localhost:$ATTU_PORT"
+  else
+    echo "  Attu:     not ready on localhost:$ATTU_PORT"
+  fi
   echo "  Logs:     $BACKEND_LOG / $FRONTEND_LOG"
 }
 
@@ -414,6 +431,13 @@ cmd_status() {
     "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" ps
   else
     echo "  UNKNOWN (Docker unavailable)"
+  fi
+
+  echo "=== Attu ==="
+  if port_is_listening "$ATTU_PORT"; then
+    echo "  RUNNING (http://localhost:$ATTU_PORT)"
+  else
+    echo "  STOPPED (port $ATTU_PORT is not listening)"
   fi
 }
 
