@@ -41,7 +41,7 @@ var defaultCfg = Config{
 	ReserveToolsDefault:    20000,
 	ReserveUserTokens:      4000,
 	SafetyTokens:           2048,
-	TTL:                    2 * time.Hour,
+	TTL:                    30 * time.Minute,
 	KeepReasoningInContext: false,
 }
 
@@ -295,7 +295,6 @@ func (m *SimpleMemory) CompactHistory(ctx context.Context, compactBatchTurns, tr
 					"updated_at":   now,
 				})
 				pipe.Expire(ctx, m.keyMeta(), cfg.TTL)
-				pipe.Expire(ctx, m.keySys(), cfg.TTL)
 				return nil
 			})
 			return err
@@ -314,25 +313,19 @@ func (m *SimpleMemory) CompactHistory(ctx context.Context, compactBatchTurns, tr
 
 // ------------------- Get：请求级裁剪（不估算 user token，改为固定预留） -------------------
 
-// GetMessagesForRequest：在 get 时做“请求级裁剪”
-// 返回：sys +（裁剪后的 turns）+ userMsg（附加在末尾；不会写入 Redis）
+// GetMessagesForRequest：在 get 时做"请求级裁剪"
+// 返回: (裁剪后的 turns) + userMsg(附加在末尾; 不会写入 Redis)
 func (m *SimpleMemory) GetMessagesForRequest(ctx context.Context, userMsg *schema.Message, reserveToolsTokens int) ([]*schema.Message, error) {
 	if !inited || rdb == nil {
-		return nil, errors.New("mem: redis not initialized, call InitRedis first")
-	}
+		return nil, errors.New("mem: redis not initialized, call InitRedis first")	}
 
-	// 1) 读取 sys（永远保留）
-	sysMsgs, sysTokens, err := m.loadSystem(ctx)
-	if err != nil {
-		return nil, err
-	}
+	// 1) 加载历史摘要
 	summaryMsg, summaryTokens, err := m.loadSummaryMessage(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2) 本轮 user tokens 无法在 Get 阶段从 usage 得到（usage 是 Invoke 之后才有）
-	//    因此使用固定预留 ReserveUserTokens（商业常用）
+	// 2) 本轮 user tokens 固定预留
 	userTokensReserve := cfg.ReserveUserTokens
 	var appendedUser *schema.Message
 	if userMsg != nil {
@@ -342,36 +335,34 @@ func (m *SimpleMemory) GetMessagesForRequest(ctx context.Context, userMsg *schem
 		}
 	}
 
-	// 3) tools/RAG 预估（同样是预留）
+	// 3) tools/RAG 预估
 	if reserveToolsTokens <= 0 {
 		reserveToolsTokens = cfg.ReserveToolsDefault
 	}
 
-	// 4) 动态 turns budget（不估算 user，使用固定预留）
+	// 4) 动态 turns budget
 	turnsBudget := cfg.MaxInputTokens -
 		cfg.ReserveOutputTokens -
 		reserveToolsTokens -
 		userTokensReserve -
 		cfg.SafetyTokens -
-		sysTokens -
 		summaryTokens
 	if turnsBudget < 0 {
 		turnsBudget = 0
 	}
 
-	// 5) 在 Redis 里把 turns 裁剪到 turnsBudget（原子 Lua，按 turn 丢弃）
+	// 5) 裁剪 turns 到 budget
 	if err := m.trimTurnsToBudget(ctx, turnsBudget); err != nil {
 		return nil, err
 	}
 
-	// 6) 读取 turns 并拼装 messages
+	// 6) 拼装消息
 	turnMsgs, err := m.loadTurnsMessages(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	out := make([]*schema.Message, 0, len(sysMsgs)+len(turnMsgs)+2)
-	out = append(out, sysMsgs...)
+	out := make([]*schema.Message, 0, len(turnMsgs)+2)
 	if summaryMsg != nil {
 		out = append(out, summaryMsg)
 	}
@@ -380,15 +371,11 @@ func (m *SimpleMemory) GetMessagesForRequest(ctx context.Context, userMsg *schem
 		out = append(out, appendedUser)
 	}
 
-	// 7) 刷新 TTL（滑动过期）
-	_ = m.refreshTTL(ctx)
-
 	return out, nil
 }
 
 // ------------------- Redis Key 设计 -------------------
 
-func (m *SimpleMemory) keySys() string { return "aiagent:ctx:" + m.ID + ":sys" }
 func (m *SimpleMemory) keySummary() string {
 	return "aiagent:ctx:" + m.ID + ":summary"
 }
@@ -396,12 +383,6 @@ func (m *SimpleMemory) keyTurns() string { return "aiagent:ctx:" + m.ID + ":turn
 func (m *SimpleMemory) keyMeta() string  { return "aiagent:ctx:" + m.ID + ":meta" }
 
 // ------------------- 存储结构：System Item / Turn -------------------
-
-// sys 列表中存 {t, msg}，避免 meta 丢失时无法回算（不使用估算）
-type storedSysItem struct {
-	T   int             `json:"t"`
-	Msg *schema.Message `json:"msg"`
-}
 
 type storedTurn struct {
 	T    int               `json:"t"`    // tokens for this turn
@@ -412,56 +393,6 @@ type storedTurn struct {
 type storedSummaryItem struct {
 	T       int    `json:"t"`
 	Summary string `json:"summary"`
-}
-
-// ------------------- system 写入/读取 -------------------
-
-func (m *SimpleMemory) loadSystem(ctx context.Context) ([]*schema.Message, int, error) {
-	sysTokens, _ := rdb.HGet(ctx, m.keyMeta(), "sys_tokens").Int()
-
-	raw, err := rdb.LRange(ctx, m.keySys(), 0, -1).Result()
-	if err != nil && err != redis.Nil {
-		return nil, 0, err
-	}
-
-	sysMsgs := make([]*schema.Message, 0, len(raw))
-	if len(raw) == 0 {
-		return sysMsgs, 0, nil
-	}
-
-	// 如果 meta 没有 sys_tokens（或为 0），使用 sys 列表中 item.T 回算（不估算）
-	if sysTokens <= 0 {
-		recalc := 0
-		for _, item := range raw {
-			var it storedSysItem
-			if e := json.Unmarshal([]byte(item), &it); e == nil && it.Msg != nil {
-				sysMsgs = append(sysMsgs, sanitizeForContext(it.Msg, cfg.KeepReasoningInContext))
-				recalc += it.T
-				continue
-			}
-			// 兼容旧数据：如果存的是 schema.Message（无 token），只能按 0 处理
-			var old schema.Message
-			if e := json.Unmarshal([]byte(item), &old); e == nil {
-				sysMsgs = append(sysMsgs, sanitizeForContext(&old, cfg.KeepReasoningInContext))
-			}
-		}
-		_ = rdb.HSet(ctx, m.keyMeta(), "sys_tokens", recalc).Err()
-		return sysMsgs, recalc, nil
-	}
-
-	for _, item := range raw {
-		var it storedSysItem
-		if e := json.Unmarshal([]byte(item), &it); e == nil && it.Msg != nil {
-			sysMsgs = append(sysMsgs, sanitizeForContext(it.Msg, cfg.KeepReasoningInContext))
-			continue
-		}
-		// 兼容旧数据
-		var old schema.Message
-		if e := json.Unmarshal([]byte(item), &old); e == nil {
-			sysMsgs = append(sysMsgs, sanitizeForContext(&old, cfg.KeepReasoningInContext))
-		}
-	}
-	return sysMsgs, sysTokens, nil
 }
 
 func (m *SimpleMemory) loadSummaryMessage(ctx context.Context) (*schema.Message, int, error) {
@@ -577,7 +508,6 @@ func (m *SimpleMemory) appendTurnMessage(ctx context.Context, msg *schema.Messag
 		now,
 	).Result()
 
-	_ = rdb.Expire(ctx, m.keySys(), cfg.TTL).Err()
 	return err
 }
 
@@ -649,17 +579,6 @@ func (m *SimpleMemory) loadTurnsMessages(ctx context.Context) ([]*schema.Message
 		}
 	}
 	return out, nil
-}
-
-// 刷新 TTL（滑动过期）
-func (m *SimpleMemory) refreshTTL(ctx context.Context) error {
-	pipe := rdb.Pipeline()
-	pipe.Expire(ctx, m.keySys(), cfg.TTL)
-	pipe.Expire(ctx, m.keySummary(), cfg.TTL)
-	pipe.Expire(ctx, m.keyTurns(), cfg.TTL)
-	pipe.Expire(ctx, m.keyMeta(), cfg.TTL)
-	_, err := pipe.Exec(ctx)
-	return err
 }
 
 func decodeStoredTurns(raw []string) ([]storedTurn, error) {
