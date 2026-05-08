@@ -22,7 +22,6 @@ My_oncall/
 | Model 层 | `internal/model/` | 内部业务输入/输出模型，不直接承载 HTTP 协议。 |
 | Utility 层 | `utility/` | 跨层复用的基础设施工具，如 HTTP middleware。 |
 | 配置与部署 | `manifest/`, `deploy/`, `scripts/` | 本地配置、Docker Compose 中间件、开发启停脚本。 |
-| 归档区 | `internal/legacy/opsworkflow/` | 旧运维工作流归档代码，不属于当前主启动路径。 |
 
 ## 根目录文件
 
@@ -80,9 +79,6 @@ My_oncall/
 | `internal/logic/agent/dialogue/tools/KnowledgeRetrieveTool.go` | 知识库检索工具，从 Milvus 检索相关知识片段。 |
 | `internal/logic/agent/dialogue/tools/WebSearchTool.go` | 网络搜索工具，用于外部资料或时效信息检索。 |
 | `internal/logic/agent/dialogue/tools/BashApprovalTool.go` | 命令审批工具，归档/运维场景下用于高风险命令审批。 |
-| `internal/logic/agent/dialogue/tools/K8sMonitorTool.go` | Kubernetes 监控工具包装，复用 legacy ops 工具能力。 |
-| `internal/logic/agent/dialogue/tools/MetricsCollectorTool.go` | 指标采集工具包装，复用 legacy ops 指标能力。 |
-| `internal/logic/agent/dialogue/tools/OpsCaseRetrieveTool.go` | 运维案例检索工具，用于检索历史 ops case。 |
 
 ## Knowledge Agent
 
@@ -102,7 +98,7 @@ My_oncall/
 | --- | --- |
 | `internal/logic/ai/models/open_ai.go` | OpenAI 兼容 ChatModel 初始化，读取模型 API Key、Base URL、模型名等配置。 |
 | `internal/logic/ai/models/open_ai_test.go` | 模型配置解析测试。 |
-| `internal/logic/ai/embedder/embedder.go` | Doubao/兼容 Embedding 模型初始化。 |
+| `internal/logic/ai/embedder/embedder.go` | 阿里云百炼 DashScope Embedding 模型初始化。 |
 | `internal/logic/ai/client/client.go` | Milvus 客户端初始化，负责数据库、collection、索引创建和启动期重试。 |
 | `internal/logic/ai/client/client_test.go` | Milvus 启动期可重试错误判断测试。 |
 | `internal/logic/ai/common/common.go` | AI 公共常量，如默认数据库、collection、文件目录。 |
@@ -125,18 +121,6 @@ My_oncall/
 | `internal/logic/session/session_memory.go` | Chat 对话上下文构建与历史保存。 |
 | `internal/logic/session/mem/mem.go` | Redis memory 工具，负责长上下文裁剪、摘要、TTL 和 token 预算。 |
 | `internal/logic/session/mem/mem_test.go` | Redis memory 工具测试。 |
-
-## Legacy Ops Workflow
-
-`internal/legacy/opsworkflow/` 是归档区，当前主启动路径不应依赖其工作流入口。目录职责如下：
-
-| 路径 | 作用 |
-| --- | --- |
-| `internal/legacy/opsworkflow/ops/` | 旧故障处理主编排、状态桥接、事件解析和 Kubernetes/Prometheus/ES 工具接入。 |
-| `internal/legacy/opsworkflow/rca/` | 旧根因分析 Agent 和工具。 |
-| `internal/legacy/opsworkflow/execution/` | 旧修复计划生成、校验、执行、回滚工具。 |
-| `internal/legacy/opsworkflow/strategy/` | 旧复盘策略、知识更新和优化建议工具。 |
-| `internal/legacy/opsworkflow/infra/` | 旧 MySQL、Elasticsearch 客户端封装。 |
 
 ## 中间件、配置与脚本
 
@@ -161,7 +145,6 @@ My_oncall/
 
 | 路径 | 作用 |
 | --- | --- |
-| `logs/ops_reports/*.md` | 旧 ops workflow 产生的报告样例/历史产物。 |
 | `.run/` | 本地 dev 脚本 PID、日志、二进制输出目录。应保持忽略。 |
 
 ## 当前结构建议
@@ -170,4 +153,3 @@ My_oncall/
 2. `Front_page/` 当前与 `Back_part/` 同级，后端脚本如果要统一启动前端，应显式使用 `../Front_page`。
 3. `api/chat/v1/chat.go` 是接口契约权威来源；`api/chat/chat.go` 是生成文件，不应手改业务逻辑。
 4. `internal/controller` 保持薄转发，核心 SSE、resume、上传逻辑应继续放在 `internal/logic/chat`。
-5. `internal/legacy/opsworkflow` 作为归档区保留时，应避免新增主链路依赖；后续可单独评估删除或拆模块。

@@ -17,6 +17,7 @@ func NewMilvusClient(ctx context.Context) (cli.Client, error) {
 	database := milvusConfig.Database
 	collection := milvusConfig.Collection
 	timeout := milvusConfig.Timeout
+	dimension := common.LoadEmbeddingDimension(ctx)
 	if timeout <= 0 {
 		timeout = common.DefaultMilvusTimeout
 	}
@@ -26,7 +27,7 @@ func NewMilvusClient(ctx context.Context) (cli.Client, error) {
 
 	var lastErr error
 	for {
-		dbClient, err := newMilvusClientOnce(runCtx, address, database, collection, timeout)
+		dbClient, err := newMilvusClientOnce(runCtx, address, database, collection, dimension, timeout)
 		if err == nil {
 			return dbClient, nil
 		}
@@ -45,7 +46,7 @@ func NewMilvusClient(ctx context.Context) (cli.Client, error) {
 	}
 }
 
-func newMilvusClientOnce(ctx context.Context, address, database, collection string, timeout time.Duration) (cli.Client, error) {
+func newMilvusClientOnce(ctx context.Context, address, database, collection string, dimension int, timeout time.Duration) (cli.Client, error) {
 	// 1. 先连接default数据库
 	defaultClient, err := cli.NewClient(ctx, cli.Config{
 		Address: address,
@@ -104,7 +105,7 @@ func newMilvusClientOnce(ctx context.Context, address, database, collection stri
 		schema := &entity.Schema{
 			CollectionName:     collection,
 			Description:        "Business knowledge collection",
-			Fields:             fields,
+			Fields:             fields(dimension),
 			EnableDynamicField: true, // 启用动态字段支持
 		}
 
@@ -165,31 +166,36 @@ func isRetryableMilvusStartupError(err error) bool {
 		strings.Contains(message, "deadline exceeded")
 }
 
-var fields = []*entity.Field{
-	{
-		Name:     "id",
-		DataType: entity.FieldTypeVarChar,
-		TypeParams: map[string]string{
-			"max_length": "256",
+func fields(dimension int) []*entity.Field {
+	if dimension <= 0 {
+		dimension = common.DefaultEmbeddingDimension
+	}
+	return []*entity.Field{
+		{
+			Name:     "id",
+			DataType: entity.FieldTypeVarChar,
+			TypeParams: map[string]string{
+				"max_length": "256",
+			},
+			PrimaryKey: true,
 		},
-		PrimaryKey: true,
-	},
-	{
-		Name:     "vector", // 确保字段名匹配
-		DataType: entity.FieldTypeFloatVector,
-		TypeParams: map[string]string{
-			"dim": "2048",
+		{
+			Name:     "vector", // 确保字段名匹配
+			DataType: entity.FieldTypeFloatVector,
+			TypeParams: map[string]string{
+				"dim": fmt.Sprintf("%d", dimension),
+			},
 		},
-	},
-	{
-		Name:     "content",
-		DataType: entity.FieldTypeVarChar,
-		TypeParams: map[string]string{
-			"max_length": "8192",
+		{
+			Name:     "content",
+			DataType: entity.FieldTypeVarChar,
+			TypeParams: map[string]string{
+				"max_length": "8192",
+			},
 		},
-	},
-	{
-		Name:     "metadata",
-		DataType: entity.FieldTypeJSON,
-	},
+		{
+			Name:     "metadata",
+			DataType: entity.FieldTypeJSON,
+		},
+	}
 }

@@ -23,3 +23,6 @@ milvus:
   database: "default"
   collection: "oncall_knowledge"
   timeout: "60s"
+
+doubao_embedding_model:
+  dimensions: 2048

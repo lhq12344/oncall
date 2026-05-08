@@ -31,10 +31,12 @@ const (
 )
 
 type Service struct {
-	orchGraph      compose.Runnable[[]*schema.Message, *schema.Message]
-	sessionMemory  *appcontext.SessionMemory
-	logger         *zap.Logger
-	knowledgeAgent adk.Agent
+	orchGraph        compose.Runnable[[]*schema.Message, *schema.Message]
+	sessionMemory    *appcontext.SessionMemory
+	pendingTurnStore appcontext.PendingTurnStore
+	traceRecorder    appcontext.OrchestrationTraceRecorder
+	logger           *zap.Logger
+	knowledgeAgent   adk.Agent
 }
 
 // NewService 创建聊天业务服务。
@@ -53,11 +55,19 @@ func NewService(
 	redisClient *redis.Client,
 	knowledgeAgent adk.Agent,
 ) *Service {
+	var pendingStore appcontext.PendingTurnStore = appcontext.NewMemoryPendingTurnStore()
+	traceRecorder := appcontext.OrchestrationTraceRecorder(appcontext.NoopOrchestrationTraceRecorder{})
+	if redisClient != nil {
+		pendingStore = appcontext.NewRedisPendingTurnStore(redisClient, "oncall", dialogue.RunCheckpointTTL)
+		traceRecorder = appcontext.NewRedisOrchestrationTraceRecorder(redisClient, "oncall", dialogue.RunCheckpointTTL)
+	}
 	return &Service{
-		orchGraph:      orchGraph,
-		sessionMemory:  appcontext.NewSessionMemory(nil, logger),
-		logger:         logger,
-		knowledgeAgent: knowledgeAgent,
+		orchGraph:        orchGraph,
+		sessionMemory:    appcontext.NewSessionMemory(nil, appcontext.NewMySQLWriterFromEnv(logger), logger),
+		pendingTurnStore: pendingStore,
+		traceRecorder:    traceRecorder,
+		logger:           logger,
+		knowledgeAgent:   knowledgeAgent,
 	}
 }
 
@@ -129,18 +139,47 @@ func (c *Service) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (res *v
 	}
 
 	checkpointID := generateCheckpointID(sessionID)
+	turnID := uuid.NewString()
+	source := "chat_stream_graph"
+	c.savePendingTurn(ctx, appcontext.PendingTurn{
+		CheckpointID:     checkpointID,
+		SessionID:        sessionID,
+		TurnID:           turnID,
+		OriginalQuestion: question,
+		Source:           source,
+	})
+	streamCtx := dialogue.WithTraceMetadata(ctx, dialogue.TraceMetadata{
+		SessionID:    sessionID,
+		TurnID:       turnID,
+		CheckpointID: checkpointID,
+		Source:       source,
+	})
 	if c.logger != nil {
 		c.logger.Info("chat_stream orchestration started",
 			zap.String("session_id", sessionID),
+			zap.String("turn_id", turnID),
 			zap.Int("question_len", len([]rune(question))),
 			zap.String("checkpoint_id", checkpointID))
 	}
 
-	stream, streamErr := c.orchGraph.Stream(ctx, messages, compose.WithCheckPointID(checkpointID))
+	// 将原始问题写入 OrchState 并随 checkpoint 持久化，供 ChatResumeStream 在
+	// pendingTurnStore 记录缺失时恢复 visible-turn 保存所需的问题文本。
+	capturedQuestion := question
+	stream, streamErr := c.orchGraph.Stream(streamCtx, messages,
+		compose.WithCheckPointID(checkpointID),
+		compose.WithStateModifier(func(_ context.Context, _ compose.NodePath, state any) error {
+			if s, ok := state.(*dialogue.OrchState); ok && s.OriginalQuestion == "" {
+				s.OriginalQuestion = capturedQuestion
+			}
+			return nil
+		}),
+	)
 	if streamErr != nil {
 		if interruptData, ok := compose.IsInterruptRerunError(streamErr); ok {
+			c.recordTraceEvent(sessionID, turnID, checkpointID, source, "graph", "interrupt", "compose", "interrupted", "", "")
 			return c.handleGraphInterrupt(r, checkpointID, interruptData)
 		}
+		c.recordTraceEvent(sessionID, turnID, checkpointID, source, "graph", "error", "compose", "error", "", streamErr.Error())
 		writeSSEData(r, "[ERROR] "+streamErr.Error())
 		return nil, nil
 	}
@@ -157,10 +196,12 @@ func (c *Service) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (res *v
 		}
 		if interruptData, ok := compose.IsInterruptRerunError(recvErr); ok {
 			interrupted = true
+			c.recordTraceEvent(sessionID, turnID, checkpointID, source, "graph", "interrupt", "compose", "interrupted", "", "")
 			c.handleGraphInterrupt(r, checkpointID, interruptData) //nolint
 			break
 		}
 		if recvErr != nil {
+			c.recordTraceEvent(sessionID, turnID, checkpointID, source, "graph", "error", "compose", "error", "", recvErr.Error())
 			writeSSEData(r, "[ERROR] "+recvErr.Error())
 			return nil, nil
 		}
@@ -186,7 +227,7 @@ func (c *Service) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (res *v
 			zap.Int("answer_len", len([]rune(answer))))
 	}
 	if answer != "" && !interrupted {
-		c.sessionMemory.SaveTurnWithSource(context.Background(), sessionID, question, answer, nil, messages, "chat_stream_graph")
+		c.saveVisibleTurnOnce(context.Background(), checkpointID, sessionID, turnID, source, question, answer, messages)
 	}
 
 	return &v1.ChatStreamRes{}, nil
@@ -204,6 +245,7 @@ func (c *Service) ChatResumeStream(ctx context.Context, req *v1.ChatResumeStream
 		return nil, fmt.Errorf("id is required")
 	}
 	sessionID := normalizeSessionID(req.Id)
+	checkpointID := strings.TrimSpace(req.CheckpointID)
 
 	if c.orchGraph == nil {
 		return nil, fmt.Errorf("orchestration graph is not initialized")
@@ -214,8 +256,41 @@ func (c *Service) ChatResumeStream(ctx context.Context, req *v1.ChatResumeStream
 		return nil, err
 	}
 
+	pendingTurn, pendingErr := c.pendingTurnStore.GetPendingTurn(ctx, checkpointID)
+	if pendingErr != nil && c.logger != nil {
+		c.logger.Warn("failed to load pending turn for resume",
+			zap.String("checkpoint_id", checkpointID),
+			zap.Error(pendingErr))
+	}
+	turnID := uuid.NewString()
+	source := "chat_resume_stream_graph"
+	originalQuestion := ""
+	if pendingTurn != nil {
+		turnID = strings.TrimSpace(pendingTurn.TurnID)
+		if turnID == "" {
+			turnID = uuid.NewString()
+		}
+		source = strings.TrimSpace(pendingTurn.Source)
+		if source == "" {
+			source = "chat_stream_graph"
+		}
+		originalQuestion = strings.TrimSpace(pendingTurn.OriginalQuestion)
+	}
+	resumeCtx := dialogue.WithTraceMetadata(ctx, dialogue.TraceMetadata{
+		SessionID:    sessionID,
+		TurnID:       turnID,
+		CheckpointID: checkpointID,
+		Source:       "chat_resume_stream_graph",
+	})
+
 	// 构建审批/选择数据，通过 StateModifier 注入图状态供 complex_node 读取。
+	// 同时从已加载的 checkpoint 状态中读取 OriginalQuestion，作为 pendingTurnStore
+	// 记录缺失时的兜底（TTL 过期或 Redis 驱逐导致 sidecar 丢失）。
 	resumeData := buildResumeTargetPayload(req.Approved, req.Resolved, req.Comment, req.SelectionValue)
+	if payload, marshalErr := json.Marshal(resumeData); marshalErr == nil {
+		c.recordTraceEvent(sessionID, turnID, checkpointID, "chat_resume_stream_graph", "resume", "resume_payload", "chat_service", "success", string(payload), "")
+	}
+
 	interruptIDs := normalizeIDList(req.InterruptIDs)
 	if len(interruptIDs) == 0 {
 		// interruptIDs 为空时无法精确定位恢复目标，complex_node 会触发无限中断循环。
@@ -225,21 +300,30 @@ func (c *Service) ChatResumeStream(ctx context.Context, req *v1.ChatResumeStream
 		return &v1.ChatResumeStreamRes{}, nil
 	}
 
-	stream, streamErr := c.orchGraph.Stream(ctx, nil,
-		compose.WithCheckPointID(req.CheckpointID),
+	// stateOriginalQuestion 由 StateModifier 从 checkpoint 加载时填充，
+	// 用于在 pendingTurnStore sidecar 缺失时恢复 originalQuestion。
+	var stateOriginalQuestion string
+	stream, streamErr := c.orchGraph.Stream(resumeCtx, nil,
+		compose.WithCheckPointID(checkpointID),
 		compose.WithStateModifier(func(_ context.Context, _ compose.NodePath, state any) error {
 			if s, ok := state.(*dialogue.OrchState); ok {
 				s.ResumeData = resumeData
 				s.ResumeInterruptIDs = interruptIDs
+				// 读取 ChatStream 写入的原始问题（checkpoint 加载时已填充）
+				if stateOriginalQuestion == "" && s.OriginalQuestion != "" {
+					stateOriginalQuestion = s.OriginalQuestion
+				}
 			}
 			return nil
 		}),
 	)
 	if streamErr != nil {
 		if interruptData, ok := compose.IsInterruptRerunError(streamErr); ok {
-			c.handleGraphInterrupt(r, req.CheckpointID, interruptData) //nolint
+			c.recordTraceEvent(sessionID, turnID, checkpointID, "chat_resume_stream_graph", "graph", "interrupt", "compose", "interrupted", "", "")
+			c.handleGraphInterrupt(r, checkpointID, interruptData) //nolint
 			return &v1.ChatResumeStreamRes{}, nil
 		}
+		c.recordTraceEvent(sessionID, turnID, checkpointID, "chat_resume_stream_graph", "graph", "error", "compose", "error", "", streamErr.Error())
 		writeSSEData(r, "[ERROR] "+streamErr.Error())
 		return nil, nil
 	}
@@ -255,10 +339,12 @@ func (c *Service) ChatResumeStream(ctx context.Context, req *v1.ChatResumeStream
 		}
 		if interruptData, ok := compose.IsInterruptRerunError(recvErr); ok {
 			interrupted = true
-			c.handleGraphInterrupt(r, req.CheckpointID, interruptData) //nolint
+			c.recordTraceEvent(sessionID, turnID, checkpointID, "chat_resume_stream_graph", "graph", "interrupt", "compose", "interrupted", "", "")
+			c.handleGraphInterrupt(r, checkpointID, interruptData) //nolint
 			break
 		}
 		if recvErr != nil {
+			c.recordTraceEvent(sessionID, turnID, checkpointID, "chat_resume_stream_graph", "graph", "error", "compose", "error", "", recvErr.Error())
 			writeSSEData(r, "[ERROR] "+recvErr.Error())
 			return nil, nil
 		}
@@ -276,8 +362,25 @@ func (c *Service) ChatResumeStream(ctx context.Context, req *v1.ChatResumeStream
 
 	answer := strings.TrimSpace(fullAnswer.String())
 	if answer != "" && !interrupted {
-		resumeInput := fmt.Sprintf("恢复执行确认：checkpoint_id=%s", strings.TrimSpace(req.CheckpointID))
-		c.sessionMemory.SaveTurnWithSource(context.Background(), sessionID, resumeInput, answer, nil, nil, "chat_resume_stream_graph")
+		// 优先使用 pendingTurnStore sidecar 中的原始问题；
+		// 若 sidecar 缺失（TTL 过期/Redis 驱逐），回退到 checkpoint 中持久化的 OriginalQuestion。
+		effectiveQuestion := originalQuestion
+		if effectiveQuestion == "" {
+			effectiveQuestion = stateOriginalQuestion
+		}
+		if effectiveQuestion == "" {
+			errMsg := "original question not found in pending turn or checkpoint state; skip visible resume save"
+			c.recordTraceEvent(sessionID, turnID, checkpointID, "chat_resume_stream_graph", "persistence", "final_save", "session_memory", "error", "", errMsg)
+			if c.logger != nil {
+				c.logger.Warn(errMsg, zap.String("checkpoint_id", checkpointID))
+			}
+		} else {
+			if originalQuestion == "" && c.logger != nil {
+				c.logger.Warn("pending turn sidecar missing; recovered original question from checkpoint state",
+					zap.String("checkpoint_id", checkpointID))
+			}
+			c.saveVisibleTurnOnce(context.Background(), checkpointID, sessionID, turnID, source, effectiveQuestion, answer, nil)
+		}
 	}
 
 	return &v1.ChatResumeStreamRes{}, nil
@@ -313,6 +416,98 @@ func cleanRoutingMarkers(content string) string {
 	content = strings.ReplaceAll(content, "[RESOLVED]", "")
 	content = strings.ReplaceAll(content, "[TO_COMPLEX]", "")
 	return content
+}
+
+func (c *Service) savePendingTurn(ctx context.Context, turn appcontext.PendingTurn) {
+	if c.pendingTurnStore == nil {
+		return
+	}
+	saveCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := c.pendingTurnStore.SavePendingTurn(saveCtx, turn); err != nil && c.logger != nil {
+		c.logger.Warn("failed to save pending turn",
+			zap.String("checkpoint_id", turn.CheckpointID),
+			zap.String("session_id", turn.SessionID),
+			zap.Error(err))
+	}
+}
+
+func (c *Service) saveVisibleTurnOnce(
+	ctx context.Context,
+	checkpointID string,
+	sessionID string,
+	turnID string,
+	source string,
+	question string,
+	answer string,
+	promptMessages []*schema.Message,
+) {
+	if c.pendingTurnStore == nil {
+		if saveErr := c.sessionMemory.SaveTurnWithSource(ctx, sessionID, question, answer, nil, promptMessages, source); saveErr != nil {
+			c.recordTraceEvent(sessionID, turnID, checkpointID, source, "persistence", "final_save", "session_memory", "error", "", saveErr.Error())
+			if c.logger != nil {
+				c.logger.Warn("failed to save visible turn (no pending store)",
+					zap.String("session_id", sessionID),
+					zap.Error(saveErr))
+			}
+		}
+		return
+	}
+	saveCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	ok, err := c.pendingTurnStore.MarkSavedOnce(saveCtx, checkpointID)
+	if err != nil {
+		c.recordTraceEvent(sessionID, turnID, checkpointID, source, "persistence", "final_save", "session_memory", "error", "", err.Error())
+		if c.logger != nil {
+			c.logger.Warn("failed to mark pending turn saved",
+				zap.String("checkpoint_id", checkpointID),
+				zap.String("session_id", sessionID),
+				zap.Error(err))
+		}
+		return
+	}
+	if !ok {
+		c.recordTraceEvent(sessionID, turnID, checkpointID, source, "persistence", "final_save", "session_memory", "skipped", "already_saved", "")
+		return
+	}
+	if saveErr := c.sessionMemory.SaveTurnWithSource(ctx, sessionID, question, answer, nil, promptMessages, source); saveErr != nil {
+		c.recordTraceEvent(sessionID, turnID, checkpointID, source, "persistence", "final_save", "session_memory", "error", "", saveErr.Error())
+		if c.logger != nil {
+			c.logger.Warn("failed to save visible turn",
+				zap.String("checkpoint_id", checkpointID),
+				zap.String("session_id", sessionID),
+				zap.Error(saveErr))
+		}
+		return
+	}
+	c.recordTraceEvent(sessionID, turnID, checkpointID, source, "persistence", "final_save", "session_memory", "success", "visible turn saved", "")
+}
+
+func (c *Service) recordTraceEvent(sessionID, turnID, checkpointID, source, node, eventType, agentOrTool, status, payload, errSummary string) {
+	if c.traceRecorder == nil {
+		return
+	}
+	recordCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := c.traceRecorder.RecordEvent(recordCtx, appcontext.OrchestrationTraceEvent{
+		SessionID:      sessionID,
+		TurnID:         turnID,
+		CheckpointID:   checkpointID,
+		Source:         source,
+		Node:           node,
+		EventType:      eventType,
+		AgentOrTool:    agentOrTool,
+		Status:         status,
+		CompactPayload: payload,
+		ErrorSummary:   errSummary,
+	}); err != nil && c.logger != nil {
+		c.logger.Warn("failed to record orchestration trace event",
+			zap.String("session_id", sessionID),
+			zap.String("turn_id", turnID),
+			zap.String("node", node),
+			zap.String("event_type", eventType),
+			zap.Error(err))
+	}
 }
 
 func (c *Service) FileUpload(ctx context.Context, req *v1.FileUploadReq) (res *v1.FileUploadRes, err error) {

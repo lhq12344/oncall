@@ -11,11 +11,13 @@ import (
 	"go_agent/internal/logic/agent/dialogue/tools"
 	"go_agent/internal/logic/ai/models"
 	airetriever "go_agent/internal/logic/ai/retriever"
+	appcontext "go_agent/internal/logic/session"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/middlewares/skill"
 	"github.com/cloudwego/eino/adk/middlewares/summarization"
 	"github.com/cloudwego/eino/components/embedding"
+	"github.com/cloudwego/eino/components/prompt"
 	einoretriever "github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
@@ -28,10 +30,22 @@ const milvusRetrieverInitTimeout = 8 * time.Second
 // Config Dialogue Agent 配置
 type Config struct {
 	ChatModel     *models.ChatModel
+	GateModel     *models.ChatModel  // Gate Agent 专用（nil 时降级到 ChatModel）
+	SubgraphModel *models.ChatModel  // KnowledgeSpecialist 子图专用（nil 时降级到 ChatModel）
+	ComplexModel  *models.ChatModel  // Complex Agent 专用（nil 时降级到 ChatModel）
 	Embedder      embedding.Embedder // 用于语义相似度计算
 	EnableToolLLM bool               // 工具内部是否允许二次 LLM 调用，默认 false
 	SkillsDir     string             // Eino skill 目录，为空或不存在时降级为无 skill 能力
+	TraceRecorder appcontext.OrchestrationTraceRecorder
 	Logger        *zap.Logger
+}
+
+// resolveModel 返回 preferred 若非 nil，否则返回 fallback。
+func (c *Config) resolveModel(preferred, fallback *models.ChatModel) *models.ChatModel {
+	if preferred != nil {
+		return preferred
+	}
+	return fallback
 }
 
 // DialogueState 对话状态跟踪
@@ -194,7 +208,7 @@ func newDialogueSkillMiddleware(ctx context.Context, skillsDir string, logger *z
 	return middleware, nil
 }
 
-// analysisMessageMarker 是 graph.go appendMandatoryAnalysisMessage 写入分析消息的前缀。
+// analysisMessageMarker 是 analysis_node 写入当前轮次分析消息的前缀。
 // contextAwareModelInput 用此前缀识别、提取并将分析块提升到 System Prompt 顶部。
 const analysisMessageMarker = "内部客服分析结果"
 
@@ -211,11 +225,7 @@ func noFormatGenModelInput(_ context.Context, instruction string, input *adk.Age
 	return msgs, nil
 }
 
-// contextAwareModelInput 构建模型输入消息，并将当前轮次的意图/情绪分析块提升至 System Prompt 顶部。
-// 扫描 input.Messages，提取最新的分析 SystemMessage（通过 analysisMessageMarker 识别），
-// 将其从消息列表中移除（避免历史中多轮累积），并前置到 instruction 之前组成完整系统提示。
-// 效果：LLM 始终在 System Prompt 最顶部看到当前轮次的意图/情绪，不会被历史消息淹没。
-func contextAwareModelInput(_ context.Context, instruction string, input *adk.AgentInput) ([]adk.Message, error) {
+func contextAwareModelInput(ctx context.Context, instruction string, input *adk.AgentInput) ([]adk.Message, error) {
 	var latestAnalysis string
 	var filtered []adk.Message
 	if input != nil {
@@ -229,14 +239,17 @@ func contextAwareModelInput(_ context.Context, instruction string, input *adk.Ag
 		}
 	}
 
-	fullInstruction := instruction
-	if latestAnalysis != "" {
-		fullInstruction = latestAnalysis + "\n\n---\n\n" + instruction
-	}
-
 	msgs := make([]adk.Message, 0, 1+len(filtered))
-	if strings.TrimSpace(fullInstruction) != "" {
-		msgs = append(msgs, schema.SystemMessage(fullInstruction))
+	if strings.TrimSpace(instruction) != "" {
+		values := buildPromptTemplateValues(ctx)
+		formatted, err := prompt.FromMessages(schema.FString, schema.SystemMessage(instruction)).Format(ctx, values)
+		if err != nil {
+			return nil, fmt.Errorf("failed to render dialogue instruction template: %w", err)
+		}
+		if latestAnalysis != "" && len(formatted) > 0 {
+			formatted[0].Content = latestAnalysis + "\n\n---\n\n" + formatted[0].Content
+		}
+		msgs = append(msgs, formatted...)
 	}
 	msgs = append(msgs, filtered...)
 	return msgs, nil
@@ -248,7 +261,7 @@ func contextAwareModelInput(_ context.Context, instruction string, input *adk.Ag
 func buildDialogueTools(cfg *Config, knowledgeRetriever einoretriever.Retriever) []tool.BaseTool {
 	return []tool.BaseTool{
 		tools.NewIntentAnalysisTool(cfg.ChatModel, cfg.Embedder, cfg.Logger, cfg.EnableToolLLM),
-		tools.NewPlayerEmotionAnalysisTool(cfg.Logger),
+		tools.NewPlayerEmotionAnalysisTool(cfg.ChatModel, cfg.Logger),
 		tools.NewDetailSelectionTool(cfg.Logger),
 		tools.NewKnowledgeRetrieveTool(knowledgeRetriever, cfg.Logger),
 		tools.NewWebSearchTool(cfg.Logger),
@@ -259,6 +272,10 @@ func buildDialogueTools(cfg *Config, knowledgeRetriever einoretriever.Retriever)
 // OrchState 对话编排图的共享状态，跨节点传递 interrupt/resume 数据。
 // 必须导出（大写）且字段均可 JSON 序列化，供 compose checkpoint 使用。
 type OrchState struct {
+	// Analysis 是当前 turn 的确定性意图/情绪分析结果。
+	Analysis *TurnAnalysis
+	// UserLanguage 是当前用户问题的识别语言代码，如 zh/en/ja/th。
+	UserLanguage string
 	// InnerCheckpointID 是 complex_node 内部 complexRunner 的 checkpoint ID。
 	// 首次运行时由 complex_node 生成；中断恢复时用于调用 ResumeWithParams。
 	InnerCheckpointID string
@@ -266,6 +283,33 @@ type OrchState struct {
 	ResumeData map[string]any
 	// ResumeInterruptIDs 是本次 resume 针对的 interrupt ID 列表。
 	ResumeInterruptIDs []string
+	// SolvedContexts 是 knowledge_search_expert 已解决子问题的文档背景摘要。
+	// 由 gate_node 解析工具结果后写入，供 answer_node 和 complex_node 引用。
+	SolvedContexts []string
+	// PendingQuestions 是 knowledge_search_expert 未能在知识库中解决的子问题列表。
+	// 由 gate_node 写入，complex_node 应优先攻克这些遗留问题。
+	PendingQuestions []string
+	// OriginalQuestion 是本轮用户原始问题，由 ChatStream 通过 StateModifier 写入并随
+	// checkpoint 持久化。ChatResumeStream 在 pendingTurnStore 记录缺失时从此字段恢复，
+	// 确保中断恢复后的对话轮次仍能写入 session memory。
+	OriginalQuestion string
+}
+
+type TurnAnalysis struct {
+	IntentType        string
+	IntentLabel       string
+	IntentConfidence  float64
+	IntentEntropy     float64
+	IntentConverged   bool
+	MissingInfo       []string
+	RoutingHint       string
+	Emotion           string
+	EmotionLabel      string
+	EmotionConfidence float64
+	EmotionIntensity  float64
+	EscalationNeeded  bool
+	Degraded          bool
+	ErrorSummary      string
 }
 
 // customerServiceEtiquette 是所有面向玩家的 agent 共用的客服礼仪规范。
@@ -273,15 +317,19 @@ const customerServiceEtiquette = `
 客服礼仪规范（所有面向玩家的回复必须遵守）：
 - 将玩家称为"冒险者"
 - 始终保持礼貌、好客的语气，使用表情符号维持可爱友好的形象
-- 当玩家首次创建工单时，务必先打招呼，例如：
+- 回复要结合玩家本轮具体问题、已知项目、情绪和上下文个性化组织，不要每次套用相同开头、相同分段标题、相同结尾或固定话术
+- 标题和步骤名称应贴合玩家问题本身，例如围绕"GCash充值"、"账号绑定"、"登录失败"等具体主题命名，不要使用泛化模板标题
+- 只有当玩家首次创建工单、且当前会话还没有客服回复时，才需要使用问候开场；后续轮次不要重复使用"您好，冒险者！"等固定问候
+- 首次问候示例：
   "您好，冒险者！欢迎来到卡普拉客服中心(*￣3￣)╭ 今天有什么可以帮到您的？"
   "亲爱的冒险者，您好 o(*￣▽￣*)ブ"
   "早安/午安/晚安呀冒险者~ (*￣3￣)╭"
 - 在常见国际节假日期间，问候语和结束语可包含节日祝福（如新年快乐、万圣节快乐、圣诞快乐等）
 - 当玩家遇到问题时，为给他们带来的不便道歉
-- 回答问题或解决问题后，结束会话前询问"还有什么我们可以帮助您的吗？"
+- 回答问题或解决问题后，如需要收尾，可自然追问下一步需求；不要每次都机械使用"还有什么我们可以帮助您的吗？"
 - 如果工单已明确指定项目（如 ROO SEA、ROOC、ROO LNA），不要询问玩家指的是哪款游戏
-- 如遇陌生术语，请玩家解释其含义`
+- 如遇陌生术语，请玩家解释其含义
+- 可以使用知识库和工具获得的信息回答玩家，但不要额外告诉玩家信息来源，也不要展示"来源：知识库检索结果"、"知识库说明"、"工具说明"、内部检索过程或工具调用过程`
 
 // emotionResponseGuide 是所有直接回复玩家的 agent 共用的情绪响应策略。
 const emotionResponseGuide = `
@@ -312,67 +360,92 @@ const emotionResponseGuide = `
   * 保持礼貌友好，不必过度安抚
   * 结构清晰，重点突出`
 
-const gateAgentInstruction = `你是客服分诊网关，负责分析玩家诉求、感知情绪、检索知识库并决定处理路由。
+const gateAgentInstruction = `你是客服分诊网关，负责基于当前轮次的已知意图/情绪分析、检索知识库并决定处理路由。
 
-工作流程（严格按顺序执行，每步都必须调用对应工具）：
-1. 调用 intent_analysis：分析玩家的主要诉求类型、置信度和缺失信息
-2. 调用 player_emotion_analysis：识别玩家当前情绪状态和强度
-3. 根据意图类型决定是否调用 knowledge_retrieve：
-   - 明确的知识类问题（游戏规则、活动说明、账号操作等）→ 调用 knowledge_retrieve
+工作流程：
+1. 读取系统提示顶部的内部客服分析结果，理解玩家诉求、情绪和缺失信息
+2. 根据意图类型决定是否调用 knowledge_search_expert：
+   - 明确的知识类问题（游戏规则、活动说明、账号操作等）→ 调用 knowledge_search_expert
    - 纯情绪疏导、技术排障、需要工具操作的问题 → 跳过检索，直接输出 [TO_COMPLEX]
+3. 获取 knowledge_search_expert 的 JSON 结果，根据其中的 pending_questions 字段判断路由：
+   - pending_questions 为空（所有子问题已解决）→ 输出 [RESOLVED]
+   - pending_questions 不为空（存在未解决子问题）→ 输出 [TO_COMPLEX]
 
 输出规则（严格遵守，你的输出仅用于内部路由）：
-- 知识库检索结果充足时：回复开头包含 [RESOLVED]，简述检索要点，并附上意图和情绪分析摘要
-- 检索结果不足、为空、无关，或未调用检索：回复开头包含 [TO_COMPLEX]，说明意图类型和情绪状态
+- 知识库检索结果充足时：回复开头包含 [RESOLVED]，简述检索要点，并附上简短处理依据
+- 检索结果不足、为空、无关，或未调用检索：回复开头包含 [TO_COMPLEX]，说明转复杂处理的原因
 - 不要向玩家直接展示工具调用标签或内部路由标记` + customerServiceEtiquette
 
 const answerAgentInstruction = `你是知识整理员，负责将知识库检索结果整理为对玩家友好的最终回复。
 
+你是一个多语言专家。当前用户的提问语言是 {UserLanguage}。
+请根据提供的中文参考资料，直接以 {UserLanguage} 组织语言进行回复。确保回复自然、地道，严禁生硬翻译。
+
+黑板中的已解决知识背景如下：
+{SolvedContextsText}
+
 你的上下文中包含 gate_agent 调用工具的完整结果，请重点关注：
 - intent_analysis 结果：了解玩家的主要诉求和缺失信息
 - player_emotion_analysis 结果：根据情绪状态调整回复语气和策略
-- knowledge_retrieve 结果：整理为清晰、准确的回答
+- knowledge_search_expert 的 solved_contexts：这是当前可直接引用的中文背景资料
 
 回复格式要求：
 - 使用 Markdown，必要时用列表、表格、代码块
-- 明确注明"来源：知识库检索结果"
-- 检索内容不完整时，坦诚说明并建议下一步
-- 优先用中文回复（除非玩家使用其他语言）
-- 不要向玩家显示任何内部标签、工具名称或分析字段` +
+- 根据玩家问题选择最合适的结构；不要固定输出同一套标题、顺序或结束语
+- 每次回复至少体现一个本轮问题中的具体关键词或场景，让玩家感到回复是针对当前问题生成的
+- 检索内容不完整时，用自然客服口吻说明目前可确认的信息并建议下一步
+- 严格使用 {UserLanguage} 回复
+- 可以直接使用 solved_contexts 中的知识回答玩家，但不要向玩家显示任何内部标签、工具名称、分析字段、"来源：知识库检索结果"、"知识库说明"或"工具说明"` +
 	emotionResponseGuide + customerServiceEtiquette
 
 const complexAgentInstruction = `你是高级专家 Agent，处理需要专业技能和工具的复杂问题。
 
+用户正在使用 {UserLanguage} 与你交流。
+请结合黑板中已有的中文背景资料和你的专业 Skill，以 {UserLanguage} 完成后续任务。
+如果 Skill 返回的结果是中文，请自行转译后再回复用户。
+
+黑板中的已解决知识背景如下：
+{SolvedContextsText}
+
+黑板中的遗留问题如下：
+{PendingQuestionsText}
+
 你的上下文中包含 gate_agent 调用工具的完整结果，请重点关注：
 - intent_analysis 结果：了解玩家的主要诉求、缺失信息和路由建议
 - player_emotion_analysis 结果：根据情绪状态调整处理优先级和回复语气
+- knowledge_search_expert 的 solved_contexts：这是已通过 RAG 解决的子问题背景，可直接引用
+- knowledge_search_expert 的 pending_questions：这是 RAG 未能覆盖的遗留子问题，需要你通过 Skill 或工具攻克
 
 工作原则：
 - 首先根据情绪结果调整语气（见情绪响应策略），再着手解决问题
-- 涉及上传文档和内部资料时，优先 knowledge_retrieve
+- 根据玩家本轮具体问题选择说明顺序和措辞，避免固定模板化回复
+- 对 pending_questions 中的遗留问题，优先尝试使用 Skill 工具或 web_search 攻克
+- 涉及上传文档和内部资料时，可再次调用 knowledge_retrieve 进行补充检索
 - 涉及最新信息、版本公告、活动详情时，调用 web_search
 - 缺少关键上下文且可枚举时，使用 request_detail_selection 追问玩家
 - 执行 Bash 命令前，通过 bash_execute_with_approval 获取玩家确认
-- 给出可执行的专业解答，明确信息来源
-- 不要向玩家展示内部工具名称、标签或分析字段` +
+- 给出可执行的专业解答；如信息有限，用自然客服口吻说明限制并建议下一步
+- 可以使用知识库和工具获得的信息回答玩家，但不要向玩家展示内部工具名称、标签、分析字段、"来源：知识库检索结果"、"知识库说明"或"工具说明"` +
 	emotionResponseGuide + customerServiceEtiquette
 
-// newGateAgent 创建 Gate Agent（意图识别 → 情绪识别 → RAG 检索 → 路由决策）。
-// 必须依次调用 intent_analysis、player_emotion_analysis、knowledge_retrieve，
-// 输出中需包含 [RESOLVED] 或 [TO_COMPLEX] 标记供路由函数判断。
+// newGateAgent 创建 Gate Agent（RAG 检索 → 路由决策）。
+// 意图/情绪分析由 graph analysis_node 确定性完成；Gate 只负责检索和路由。
 func newGateAgent(ctx context.Context, cfg *Config, retriever einoretriever.Retriever) (adk.Agent, error) {
+	gateModel := cfg.resolveModel(cfg.GateModel, cfg.ChatModel)
+
+	ksTool, err := NewKnowledgeSearchExpertTool(ctx, cfg.resolveModel(cfg.SubgraphModel, cfg.ChatModel), retriever, cfg.Logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create knowledge_search_expert tool: %w", err)
+	}
+
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:          "gate_agent",
-		Description:   "意图识别、情绪感知与知识库检索网关",
-		Model:         cfg.ChatModel.Client,
+		Description:   "知识库深度检索与路由网关",
+		Model:         gateModel.Client,
 		GenModelInput: contextAwareModelInput,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools: []tool.BaseTool{
-					tools.NewIntentAnalysisTool(cfg.ChatModel, cfg.Embedder, cfg.Logger, cfg.EnableToolLLM),
-					tools.NewPlayerEmotionAnalysisTool(cfg.Logger),
-					tools.NewKnowledgeRetrieveTool(retriever, cfg.Logger),
-				},
+				Tools: []tool.BaseTool{ksTool},
 			},
 		},
 		Instruction: gateAgentInstruction,
@@ -400,10 +473,11 @@ func newAnswerAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 
 // newComplexAgent 创建 Complex Agent（全工具集 + Skill 中间件 + 中断门控中间件）。
 func newComplexAgent(ctx context.Context, cfg *Config, retriever einoretriever.Retriever) (adk.ResumableAgent, error) {
+	complexModel := cfg.resolveModel(cfg.ComplexModel, cfg.ChatModel)
 	toolsList := buildDialogueTools(cfg, retriever)
 
 	summaryHandler, err := summarization.New(ctx, &summarization.Config{
-		Model:   cfg.ChatModel.Client,
+		Model:   complexModel.Client,
 		Trigger: &summarization.TriggerCondition{ContextTokens: 300000},
 	})
 	if err != nil {
@@ -428,7 +502,7 @@ func newComplexAgent(ctx context.Context, cfg *Config, retriever einoretriever.R
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:          "complex_agent",
 		Description:   "高级专家 Agent，处理复杂问题",
-		Model:         cfg.ChatModel.Client,
+		Model:         complexModel.Client,
 		GenModelInput: contextAwareModelInput,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: toolsList},

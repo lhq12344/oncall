@@ -3,6 +3,7 @@ package common
 import (
 	"context"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,12 +12,30 @@ import (
 
 const DefaultMilvusAddress = "localhost:31953"
 const DefaultMilvusTimeout = 60 * time.Second
+const DefaultEmbeddingDimension = 2048
 
 type MilvusConfig struct {
 	Address    string
 	Database   string
 	Collection string
 	Timeout    time.Duration
+}
+
+// LoadEmbeddingDimension reads the vector dimension expected by Milvus schema.
+func LoadEmbeddingDimension(ctx context.Context) int {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return resolvePositiveInt(
+		[]string{
+			readMilvusConfigString(ctx, "doubao_embedding_model.dimensions"),
+			readMilvusConfigString(ctx, "doubao_embedding_model.dimension"),
+			os.Getenv("DOUBAO_EMBEDDING_MODEL_DIMENSIONS"),
+			os.Getenv("DOUBAO_EMBEDDING_MODEL_DIMENSION"),
+			os.Getenv("MILVUS_VECTOR_DIM"),
+		},
+		DefaultEmbeddingDimension,
+	)
 }
 
 // LoadMilvusConfig 读取 Milvus 配置。
@@ -73,6 +92,20 @@ func resolveMilvusDuration(configValue, envValue string, defaultValue time.Durat
 			if parsed, err := time.ParseDuration(value); err == nil && parsed > 0 {
 				return parsed
 			}
+		}
+	}
+	return defaultValue
+}
+
+func resolvePositiveInt(candidates []string, defaultValue int) int {
+	for _, candidate := range candidates {
+		value := strings.TrimSpace(candidate)
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.Atoi(value)
+		if err == nil && parsed > 0 {
+			return parsed
 		}
 	}
 	return defaultValue

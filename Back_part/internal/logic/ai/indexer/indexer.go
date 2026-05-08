@@ -35,7 +35,7 @@ func NewMilvusIndexerWithCollection(ctx context.Context, collection string) (*mi
 	config := &milvus.IndexerConfig{
 		Client:            cli,
 		Collection:        collection,
-		Fields:            fields,
+		Fields:            fields(common.LoadEmbeddingDimension(ctx)),
 		Embedding:         eb,
 		MetricType:        milvus.MetricType(entity.COSINE),
 		DocumentConverter: docConverterFloatVector("vector"),
@@ -74,31 +74,36 @@ func docConverterFloatVector(vectorField string) func(ctx context.Context, docs 
 	}
 }
 
-var fields = []*entity.Field{
-	{
-		Name:     "id",
-		DataType: entity.FieldTypeVarChar,
-		TypeParams: map[string]string{
-			"max_length": "255",
+func fields(dimension int) []*entity.Field {
+	if dimension <= 0 {
+		dimension = common.DefaultEmbeddingDimension
+	}
+	return []*entity.Field{
+		{
+			Name:     "id",
+			DataType: entity.FieldTypeVarChar,
+			TypeParams: map[string]string{
+				"max_length": "255",
+			},
+			PrimaryKey: true,
 		},
-		PrimaryKey: true,
-	},
-	{
-		Name:     "vector", // 确保字段名匹配
-		DataType: entity.FieldTypeFloatVector,
-		TypeParams: map[string]string{
-			"dim": "2048",
+		{
+			Name:     "vector", // 确保字段名匹配
+			DataType: entity.FieldTypeFloatVector,
+			TypeParams: map[string]string{
+				"dim": fmt.Sprintf("%d", dimension),
+			},
 		},
-	},
-	{
-		Name:     "content",
-		DataType: entity.FieldTypeVarChar,
-		TypeParams: map[string]string{
-			"max_length": "8192",
+		{
+			Name:     "content",
+			DataType: entity.FieldTypeVarChar,
+			TypeParams: map[string]string{
+				"max_length": "8192",
+			},
 		},
-	},
-	{
-		Name:     "metadata",
-		DataType: entity.FieldTypeJSON,
-	},
+		{
+			Name:     "metadata",
+			DataType: entity.FieldTypeJSON,
+		},
+	}
 }

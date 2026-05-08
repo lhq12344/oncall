@@ -93,3 +93,40 @@ func TestResolveMilvusDuration(t *testing.T) {
 		})
 	}
 }
+
+func TestResolvePositiveInt(t *testing.T) {
+	tests := []struct {
+		name         string
+		candidates   []string
+		defaultValue int
+		expected     int
+	}{
+		{
+			name:         "first positive integer",
+			candidates:   []string{"", "2048", "1024"},
+			defaultValue: DefaultEmbeddingDimension,
+			expected:     2048,
+		},
+		{
+			name:         "trim whitespace",
+			candidates:   []string{" 1024 "},
+			defaultValue: DefaultEmbeddingDimension,
+			expected:     1024,
+		},
+		{
+			name:         "invalid falls back",
+			candidates:   []string{"bad", "0", "-1"},
+			defaultValue: DefaultEmbeddingDimension,
+			expected:     DefaultEmbeddingDimension,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			actual := resolvePositiveInt(tc.candidates, tc.defaultValue)
+			if actual != tc.expected {
+				t.Fatalf("expected %d, got %d", tc.expected, actual)
+			}
+		})
+	}
+}

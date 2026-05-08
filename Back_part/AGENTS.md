@@ -6,7 +6,6 @@ OnCall is a GoFrame + Eino ADK multi-agent operations system with a Go backend a
 - `api/chat/v1/` holds editable API contracts; `api/chat/chat.go` is generated.
 - `internal/` contains backend application code: `cmd/`, `controller/`, `logic/`, `model/`, and service wiring.
 - `internal/controller/` is the protocol boundary: validate request parameters, call services/runners, emit SSE, and return API results only.
-- `internal/legacy/opsworkflow/` contains legacy AIOps workflow code; keep dialogue, knowledge, and operations responsibilities separated.
 - `utility/` contains shared infrastructure such as middleware, clients, and helpers.
 - `manifest/` stores runtime config and Kubernetes scripts; treat config values as sensitive.
 - The frontend lives at sibling path `../Front_page/`, not under `Back_part/`.
@@ -27,7 +26,7 @@ OnCall is a GoFrame + Eino ADK multi-agent operations system with a Go backend a
 Use `gofmt` for Go code and keep package names short, lowercase, and domain-oriented. Keep controllers thin: validate parameters, orchestrate services, stream SSE, and persist state only through the service layer. Do not mix dialogue, knowledge, and operations agent responsibilities. For frontend code, use TypeScript/React components in PascalCase and keep shared API parsing in `../Front_page/src/services/api.ts`.
 
 ## Testing Guidelines
-Place Go tests beside implementation files using `*_test.go` and descriptive names such as `TestSessionMemoryTrim`. For SSE or interrupt/resume work, validate both the interrupt trigger path and resume path. Preserve SSE event semantics: `content`, `step`, `interrupt`, `error`, and `done`. If a change affects generated API contracts, update `api/chat/v1/` first, regenerate when required, and verify controller/frontend parsing stays consistent.
+Place all Go test files under `task/testdata/` using the same mirrored package path as the implementation, with `*_test.go` and descriptive names such as `TestSessionMemoryTrim`. Do not add new test files beside implementation files under `internal/`. For SSE or interrupt/resume work, validate both the interrupt trigger path and resume path. Preserve SSE event semantics: `content`, `step`, `interrupt`, `error`, and `done`. If a change affects generated API contracts, update `api/chat/v1/` first, regenerate when required, and verify controller/frontend parsing stays consistent.
 
 ## Commit & Pull Request Guidelines
 Recent history uses short Chinese commit subjects, often `fix`; prefer clearer intent-based subjects such as `修复 SSE 中断恢复状态丢失`. Commit messages should follow the Lore protocol when requested by the active workflow: intent line first, then useful trailers such as `Constraint:`, `Rejected:`, `Confidence:`, `Scope-risk:`, `Tested:`, and `Not-tested:`. PRs should include a concise summary, affected backend/frontend paths, test evidence, linked issues when available, and screenshots or recordings for UI changes.

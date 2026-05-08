@@ -4,6 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	"go_agent/internal/logic/ai/models"
+
+	einomodel "github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 )
 
 func TestPlayerEmotionAnalysisToolClassifiesEmotion(t *testing.T) {
@@ -39,7 +44,7 @@ func TestPlayerEmotionAnalysisToolClassifiesEmotion(t *testing.T) {
 		},
 	}
 
-	tool := NewPlayerEmotionAnalysisTool(nil).(*PlayerEmotionAnalysisTool)
+	tool := NewPlayerEmotionAnalysisTool(nil, nil).(*PlayerEmotionAnalysisTool)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := runEmotionAnalysisForTest(t, tool, tt.input)
@@ -50,6 +55,27 @@ func TestPlayerEmotionAnalysisToolClassifiesEmotion(t *testing.T) {
 				t.Fatalf("escalation_needed = %v, want %v; result=%v", got, tt.wantEscalation, result)
 			}
 		})
+	}
+}
+
+func TestPlayerEmotionAnalysisToolUsesLLMResult(t *testing.T) {
+	t.Parallel()
+
+	tool := NewPlayerEmotionAnalysisTool(&models.ChatModel{
+		Client: &fakeEmotionChatModel{
+			content: `{"emotion":"disappointed","label":"失望","intensity":0.74,"confidence":0.91,"escalation_needed":false,"reasoning":"玩家用讽刺表达对体验不满","keywords":["真是好游戏"]}`,
+		},
+	}, nil).(*PlayerEmotionAnalysisTool)
+
+	result := runEmotionAnalysisForTest(t, tool, "真是好游戏，我服了")
+	if got, _ := result["emotion"].(string); got != "disappointed" {
+		t.Fatalf("emotion = %q, want disappointed; result=%v", got, result)
+	}
+	if got, _ := result["emotion_label"].(string); got != "失望" {
+		t.Fatalf("emotion_label = %q, want 失望; result=%v", got, result)
+	}
+	if got, _ := result["source"].(string); got != "llm" {
+		t.Fatalf("source = %q, want llm; result=%v", got, result)
 	}
 }
 
@@ -65,4 +91,20 @@ func runEmotionAnalysisForTest(t *testing.T, tool *PlayerEmotionAnalysisTool, in
 		t.Fatalf("failed to parse result %q: %v", out, err)
 	}
 	return result
+}
+
+type fakeEmotionChatModel struct {
+	content string
+}
+
+func (m *fakeEmotionChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
+	return schema.AssistantMessage(m.content, nil), nil
+}
+
+func (m *fakeEmotionChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
+	return nil, nil
+}
+
+func (m *fakeEmotionChatModel) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCallingChatModel, error) {
+	return m, nil
 }

@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -65,6 +66,37 @@ func GetChatModel() (*ChatModel, error) {
 	client, err := OpenAIForDeepSeekV3Quick(ctx) //返回一个chatmodel
 	if err != nil {
 		return nil, err
+	}
+	return &ChatModel{Client: client}, nil
+}
+
+// GetChatModelForRole 按角色获取专用 ChatModel，未配置时降级到默认模型。
+// role 取值：gate、subgraph、complex。
+// 对应配置键前缀：ds_{role}_model.{field} / DS_{ROLE}_MODEL_{FIELD}。
+func GetChatModelForRole(role string) (*ChatModel, error) {
+	ctx := context.Background()
+	prefix := "ds_" + role + "_model"
+	envPrefix := "DS_" + strings.ToUpper(role) + "_MODEL"
+
+	modelName := readChatModelSetting(ctx, prefix+".model", envPrefix+"_MODEL")
+	apiKey := readChatModelSetting(ctx, prefix+".api_key", envPrefix+"_API_KEY")
+	baseURL := readChatModelSetting(ctx, prefix+".base_url", envPrefix+"_BASE_URL")
+	apiKeyHeader := readChatModelSetting(ctx, prefix+".api_key_header", envPrefix+"_API_KEY_HEADER")
+
+	if modelName == "" || apiKey == "" || baseURL == "" {
+		return GetChatModel()
+	}
+
+	config := &openai.ChatModelConfig{
+		Model:      modelName,
+		APIKey:     apiKey,
+		BaseURL:    baseURL,
+		Timeout:    defaultChatModelTimeout,
+		HTTPClient: newRetryHTTPClient(defaultChatModelTimeout, apiKeyHeader, apiKey),
+	}
+	client, err := openai.NewChatModel(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create chat model for role %s: %w", role, err)
 	}
 	return &ChatModel{Client: client}, nil
 }

@@ -16,21 +16,24 @@ import (
 
 const defaultSessionRecordDir = ".run/sessions"
 
-// FileSessionRecorder appends user-visible session turns to per-session JSONL files.
+// FileSessionRecorder appends session turns to per-session JSONL files.
 type FileSessionRecorder struct {
 	dir string
 	mu  sync.Mutex
 }
 
 type sessionRecordLine struct {
-	Type      string `json:"type"`
-	SessionID string `json:"session_id"`
-	CreatedAt string `json:"created_at,omitempty"`
-	TurnID    string `json:"turn_id,omitempty"`
-	Source    string `json:"source,omitempty"`
-	Role      string `json:"role,omitempty"`
-	Content   string `json:"content,omitempty"`
-	Timestamp string `json:"timestamp,omitempty"`
+	Type       string          `json:"type"`
+	SessionID  string          `json:"session_id"`
+	CreatedAt  string          `json:"created_at,omitempty"`
+	TurnID     string          `json:"turn_id,omitempty"`
+	Source     string          `json:"source,omitempty"`
+	Role       string          `json:"role,omitempty"`
+	Content    string          `json:"content,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	ToolCalls  json.RawMessage `json:"tool_calls,omitempty"`
+	Index      int             `json:"index,omitempty"`
+	Timestamp  string          `json:"timestamp,omitempty"`
 }
 
 // NewFileSessionRecorder creates an append-only file recorder.
@@ -44,6 +47,18 @@ func NewFileSessionRecorder(dir string) *FileSessionRecorder {
 
 // AppendTurn appends one user/assistant turn to a session JSONL file.
 func (r *FileSessionRecorder) AppendTurn(ctx context.Context, sessionID string, source string, userMsg *schema.Message, assistantMsg *schema.Message) error {
+	return r.AppendTurnWithPrompt(ctx, sessionID, source, nil, userMsg, assistantMsg)
+}
+
+// AppendTurnWithPrompt appends the actual prompt snapshot plus the visible user/assistant turn.
+func (r *FileSessionRecorder) AppendTurnWithPrompt(
+	ctx context.Context,
+	sessionID string,
+	source string,
+	promptMessages []*schema.Message,
+	userMsg *schema.Message,
+	assistantMsg *schema.Message,
+) error {
 	if r == nil {
 		return nil
 	}
@@ -65,10 +80,17 @@ func (r *FileSessionRecorder) AppendTurn(ctx context.Context, sessionID string, 
 	path := filepath.Join(r.dir, safeSessionRecordFileName(sessionID)+".jsonl")
 	now := time.Now().UTC()
 	turnID := fmt.Sprintf("%d", now.UnixNano())
-	lines := []sessionRecordLine{
-		buildMessageRecord(sessionID, turnID, source, userMsg, now),
-		buildMessageRecord(sessionID, turnID, source, assistantMsg, now),
+	lines := make([]sessionRecordLine, 0, len(promptMessages)+2)
+	for index, msg := range promptMessages {
+		if msg == nil {
+			continue
+		}
+		lines = append(lines, buildMessageRecord("prompt_message", sessionID, turnID, source, msg, index+1, now))
 	}
+	lines = append(lines,
+		buildMessageRecord("message", sessionID, turnID, source, userMsg, 0, now),
+		buildMessageRecord("message", sessionID, turnID, source, assistantMsg, 0, now),
+	)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -102,21 +124,32 @@ func (r *FileSessionRecorder) AppendTurn(ctx context.Context, sessionID string, 
 	return writer.Flush()
 }
 
-func buildMessageRecord(sessionID string, turnID string, source string, msg *schema.Message, now time.Time) sessionRecordLine {
+func buildMessageRecord(recordType string, sessionID string, turnID string, source string, msg *schema.Message, index int, now time.Time) sessionRecordLine {
 	role := ""
 	content := ""
+	toolCallID := ""
+	var toolCalls json.RawMessage
 	if msg != nil {
 		role = string(msg.Role)
 		content = msg.Content
+		toolCallID = msg.ToolCallID
+		if len(msg.ToolCalls) > 0 {
+			if payload, err := json.Marshal(msg.ToolCalls); err == nil {
+				toolCalls = payload
+			}
+		}
 	}
 	return sessionRecordLine{
-		Type:      "message",
-		SessionID: sessionID,
-		TurnID:    turnID,
-		Source:    strings.TrimSpace(source),
-		Role:      role,
-		Content:   content,
-		Timestamp: now.Format(time.RFC3339Nano),
+		Type:       recordType,
+		SessionID:  sessionID,
+		TurnID:     turnID,
+		Source:     strings.TrimSpace(source),
+		Role:       role,
+		Content:    content,
+		ToolCallID: toolCallID,
+		ToolCalls:  toolCalls,
+		Index:      index,
+		Timestamp:  now.Format(time.RFC3339Nano),
 	}
 }
 

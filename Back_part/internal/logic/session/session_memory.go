@@ -12,6 +12,8 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
+	gormmysql "gorm.io/driver/mysql"
+	"gorm.io/gorm"
 )
 
 // SessionMemoryConfig 会话内存配置结构。
@@ -50,21 +52,24 @@ func DefaultSessionMemoryConfig() SessionMemoryConfig {
 // - 根据 token 预算构建消息历史
 // - 保存对话轮次到 Redis
 // - 控制历史长度和总结策略
+// - 异步写入 MySQL 作为持久化备份（SESSION_MYSQL_DSN 配置时启用）
 type SessionMemory struct {
 	cfg          SessionMemoryConfig
 	logger       *zap.Logger
 	fileRecorder *FileSessionRecorder
+	mysqlWriter  *MySQLSessionWriter
 }
 
 // NewSessionMemory 创建会话内存管理器。
 //
 // 输入：
 // - cfg: 会话内存配置（可选，使用默认配置）
+// - mysqlWriter: MySQL 持久化写入器（可选，nil 时禁用 MySQL 双写）
 // - logger: 日志记录器（可选）
 //
 // 输出：
 // - *SessionMemory: 初始化完成的会话内存管理器
-func NewSessionMemory(cfg *SessionMemoryConfig, logger *zap.Logger) *SessionMemory {
+func NewSessionMemory(cfg *SessionMemoryConfig, mysqlWriter *MySQLSessionWriter, logger *zap.Logger) *SessionMemory {
 	base := DefaultSessionMemoryConfig()
 	if cfg != nil {
 		if cfg.ReserveToolTokens > 0 {
@@ -84,6 +89,7 @@ func NewSessionMemory(cfg *SessionMemoryConfig, logger *zap.Logger) *SessionMemo
 		cfg:          base,
 		logger:       logger,
 		fileRecorder: newSessionFileRecorderFromEnv(),
+		mysqlWriter:  mysqlWriter,
 	}
 }
 
@@ -120,18 +126,74 @@ func (s *SessionMemory) BuildMessages(ctx context.Context, sessionID, question s
 		}
 		return []*schema.Message{schema.UserMessage(question)}, nil
 	}
+
+	// Redis 为空（TTL 过期）且 MySQL 写入器可用时，尝试从 MySQL 恢复历史。
+	if len(messages) <= 1 && s.mysqlWriter != nil {
+		if recovered := s.recoverFromMySQL(ctx, sessionID, question); len(recovered) > 1 {
+			return recovered, nil
+		}
+	}
+
 	if len(messages) == 0 {
 		return []*schema.Message{schema.UserMessage(question)}, nil
 	}
 	return messages, nil
 }
 
+// recoverFromMySQL 从 MySQL 加载历史消息，回写 Redis，再重新构建带 token 预算的消息列表。
+// 仅在 Redis 为空（TTL 过期）时调用，失败时静默降级（返回 nil）。
+func (s *SessionMemory) recoverFromMySQL(ctx context.Context, sessionID, question string) []*schema.Message {
+	historical, err := s.mysqlWriter.LoadTurnsBySession(ctx, sessionID)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("mysql_recovery: failed to load history",
+				zap.String("session_id", sessionID),
+				zap.Error(err))
+		}
+		return nil
+	}
+	if len(historical) == 0 {
+		return nil
+	}
+
+	// 将历史消息按 user/assistant 配对回写 Redis。
+	// historical 已按 turn_seq ASC 排序，每两条为一轮（user + assistant）。
+	memory := mem.GetSimpleMemory(sessionID)
+	for i := 0; i+1 < len(historical); i += 2 {
+		u := historical[i]
+		a := historical[i+1]
+		if u.Role != schema.User || a.Role != schema.Assistant {
+			// 非标准配对（system/tool 消息），跳过整对。
+			continue
+		}
+		if err := memory.SetMessages(ctx, u, a, nil, 0, 0); err != nil && s.logger != nil {
+			s.logger.Warn("mysql_recovery: failed to replay turn into redis",
+				zap.String("session_id", sessionID),
+				zap.Int("turn_index", i),
+				zap.Error(err))
+		}
+	}
+
+	if s.logger != nil {
+		s.logger.Info("mysql_recovery: replayed history into redis",
+			zap.String("session_id", sessionID),
+			zap.Int("historical_msgs", len(historical)))
+	}
+
+	// 重新从 Redis 读取，应用 token 预算裁剪。
+	rebuilt, err := mem.GetMessagesForRequest(ctx, sessionID, schema.UserMessage(question), s.cfg.ReserveToolTokens)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("mysql_recovery: failed to rebuild messages after replay",
+				zap.String("session_id", sessionID),
+				zap.Error(err))
+		}
+		return nil
+	}
+	return rebuilt
+}
+
 // SaveTurn 保存对话轮次到会话内存。
-//
-// 功能：
-// 1. 验证回答是否为空（空回答不保存）
-// 2. 创建用户消息和助手消息
-// 3. 将消息保存到 Redis（通过 mem utility）
 //
 // 调用位置：
 // - chat_v1.go:191 行，聊天流式请求完成后调用
@@ -152,10 +214,11 @@ func (s *SessionMemory) SaveTurn(
 	answer string,
 	promptMessages []*schema.Message,
 ) {
-	s.SaveTurnWithSource(ctx, sessionID, question, answer, nil, promptMessages, "chat")
+	s.SaveTurnWithSource(ctx, sessionID, question, answer, nil, promptMessages, "chat") //nolint:errcheck
 }
 
-// SaveTurnWithSource 保存对话轮次。旁路文件记录仅在显式启用时追加用户可见消息。
+// SaveTurnWithSource 保存对话轮次。旁路文件记录启用时会追加本轮 prompt 快照和用户可见消息。
+// 返回 error 仅反映 Redis SetMessages 失败；文件记录和 MySQL 异步写入失败仅记录日志，不影响返回值。
 func (s *SessionMemory) SaveTurnWithSource(
 	ctx context.Context,
 	sessionID string,
@@ -164,10 +227,10 @@ func (s *SessionMemory) SaveTurnWithSource(
 	intermediateMessages []*schema.Message,
 	promptMessages []*schema.Message,
 	source string,
-) {
+) error {
 	answer = strings.TrimSpace(answer)
 	if answer == "" {
-		return
+		return nil
 	}
 
 	memory := mem.GetSimpleMemory(sessionID)
@@ -197,11 +260,13 @@ func (s *SessionMemory) SaveTurnWithSource(
 		err = memory.SetMessages(detachedCtx, userMsg, assistantMsg, promptMessages, promptTokens, completionTokens)
 	}
 
-	if err != nil && s.logger != nil {
-		s.logger.Warn("failed to save session memory",
-			zap.String("session_id", sessionID),
-			zap.Error(err))
-		return
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("failed to save session memory",
+				zap.String("session_id", sessionID),
+				zap.Error(err))
+		}
+		return err
 	}
 
 	compactErr := memory.CompactHistory(saveCtx, s.cfg.MaxRecentTurns, s.cfg.SummarizeAfterTurns, s.cfg.SummaryMaxRunes)
@@ -217,17 +282,23 @@ func (s *SessionMemory) SaveTurnWithSource(
 	}
 
 	if s.fileRecorder == nil {
-		return
+		// 即使 fileRecorder 为 nil，也尝试 MySQL 异步写入
+		s.mysqlWriter.SaveTurnAsync(sessionID, userMsg, assistantMsg, nil)
+		return nil
 	}
 
 	recordCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := s.fileRecorder.AppendTurn(recordCtx, sessionID, strings.TrimSpace(source), userMsg, assistantMsg); err != nil && s.logger != nil {
+	if err := s.fileRecorder.AppendTurnWithPrompt(recordCtx, sessionID, strings.TrimSpace(source), promptMessages, userMsg, assistantMsg); err != nil && s.logger != nil {
 		s.logger.Warn("failed to append session file record",
 			zap.String("session_id", sessionID),
 			zap.String("source", strings.TrimSpace(source)),
 			zap.Error(err))
 	}
+
+	// MySQL 异步双写（不阻塞主流程）
+	s.mysqlWriter.SaveTurnAsync(sessionID, userMsg, assistantMsg, nil)
+	return nil
 }
 
 func newSessionFileRecorderFromEnv() *FileSessionRecorder {
@@ -235,6 +306,54 @@ func newSessionFileRecorderFromEnv() *FileSessionRecorder {
 		return nil
 	}
 	return NewFileSessionRecorder(os.Getenv("SESSION_FILE_RECORD_DIR"))
+}
+
+// NewMySQLWriterFromEnv 从 SESSION_MYSQL_DSN 环境变量构建 MySQLSessionWriter。
+// 未设置或连接失败时返回 nil（MySQL 双写被禁用，不影响主流程）。
+func NewMySQLWriterFromEnv(logger *zap.Logger) *MySQLSessionWriter {
+	dsn := strings.TrimSpace(os.Getenv("SESSION_MYSQL_DSN"))
+	if dsn == "" {
+		return nil
+	}
+	db, err := openMySQLDB(dsn)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("session mysql: failed to open db, mysql write disabled",
+				zap.String("dsn_prefix", safeDSNPrefix(dsn)),
+				zap.Error(err))
+		}
+		return nil
+	}
+	w := NewMySQLSessionWriter(db, logger)
+	if migrateErr := w.AutoMigrate(); migrateErr != nil && logger != nil {
+		logger.Warn("session mysql: auto-migrate failed",
+			zap.Error(migrateErr))
+	}
+	return w
+}
+
+// openMySQLDB opens a gorm DB with sensible connection-pool defaults.
+func openMySQLDB(dsn string) (*gorm.DB, error) {
+	db, err := gorm.Open(gormmysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		return nil, err
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	sqlDB.SetMaxOpenConns(5)
+	sqlDB.SetMaxIdleConns(2)
+	sqlDB.SetConnMaxLifetime(30 * time.Minute)
+	return db, nil
+}
+
+// safeDSNPrefix returns the first 30 chars of a DSN for safe logging (hides credentials).
+func safeDSNPrefix(dsn string) string {
+	if len(dsn) <= 30 {
+		return dsn
+	}
+	return dsn[:30] + "..."
 }
 
 func isTruthyEnv(value string) bool {

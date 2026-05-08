@@ -70,11 +70,39 @@ export async function uploadFile(file: File) {
     body: formData,
   });
 
+  const payload = await readJsonResponse<UploadFileResponse>(response);
   if (!response.ok) {
-    throw new Error('Upload failed');
+    throw new Error(payload?.message || 'Upload failed');
   }
 
-  return response.json();
+  if (!payload?.data) {
+    throw new Error(payload?.message || 'Upload failed: empty response');
+  }
+
+  return payload;
+}
+
+interface UploadFileData {
+  fileName: string;
+  filePath: string;
+  fileSize: number;
+}
+
+interface UploadFileResponse {
+  message?: string;
+  data?: UploadFileData | null;
+}
+
+async function readJsonResponse<T>(response: Response): Promise<T | null> {
+  const text = await response.text();
+  if (!text.trim()) {
+    return null;
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
 }
 
 interface StreamOptions {

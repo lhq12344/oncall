@@ -64,7 +64,7 @@ func TestPrepareLeafAgentMessagesAppendsUserHandoff(t *testing.T) {
 		schema.AssistantMessage("[TO_COMPLEX] 知识库检索异常", nil),
 	}
 
-	prepared := prepareComplexAgentMessages(msgs)
+	prepared := prepareComplexAgentMessages(context.Background(), msgs)
 	if len(prepared) != len(msgs)+1 {
 		t.Fatalf("len(prepared) = %d, want %d", len(prepared), len(msgs)+1)
 	}

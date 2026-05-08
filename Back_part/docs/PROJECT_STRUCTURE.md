@@ -15,7 +15,6 @@
 ├── internal/logic/agent/            # dialogue 与 knowledge agent
 ├── internal/logic/ai/               # model、embedding、retriever、indexer、tokenizer、Milvus client
 ├── internal/logic/session/          # checkpoint、session memory、Redis memory
-├── internal/legacy/opsworkflow/     # 已断开启动路径的旧运维工作流归档
 ├── utility/middleware/              # HTTP middleware
 ├── manifest/config/                 # 本地运行配置
 ├── deploy/                          # Docker Compose 中间件
@@ -54,10 +53,6 @@
 | `/api/v1/upload` | POST | 上传 `.txt/.md/.markdown` 到知识库 |
 
 旧 AIOps 路由不再绑定。
-
-## Legacy Area
-
-`internal/legacy/opsworkflow/` 保留旧运维多 Agent 工作流代码，便于后续审计或阶段 2 删除。该目录不属于当前启动路径，不应被新对话/知识/搜索功能引用。
 
 ## Validation
 
