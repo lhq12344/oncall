@@ -9,6 +9,8 @@ import (
 	chatservice "go_agent/internal/service/chat"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/compose"
+	"github.com/cloudwego/eino/schema"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
@@ -20,13 +22,13 @@ type ControllerV1 struct {
 
 // NewV1 creates the V1 chat controller.
 func NewV1(
-	dialogueAgent adk.ResumableAgent,
+	orchGraph compose.Runnable[[]*schema.Message, *schema.Message],
 	logger *zap.Logger,
 	redisClient *redis.Client,
 	knowledgeAgent adk.Agent,
 ) *ControllerV1 {
 	return &ControllerV1{
-		chat: logicchat.NewService(dialogueAgent, logger, redisClient, knowledgeAgent),
+		chat: logicchat.NewService(orchGraph, logger, redisClient, knowledgeAgent),
 	}
 }
 

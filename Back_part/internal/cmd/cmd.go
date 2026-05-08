@@ -82,7 +82,7 @@ func (command) Run(ctx context.Context) {
 		group.Middleware(middleware.ResponseMiddleware)
 		group.Group("/v1", func(v1Group *ghttp.RouterGroup) {
 			chatController := chat.NewV1(
-				application.DialogueAgent,
+				application.OrchGraph,
 				application.Logger,
 				application.RedisClient,
 				application.KnowledgeAgent,

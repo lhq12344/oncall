@@ -10,9 +10,12 @@ import (
 	"go_agent/internal/logic/agent/knowledge"
 	aiembedder "go_agent/internal/logic/ai/embedder"
 	"go_agent/internal/logic/ai/models"
+	appcontext "go_agent/internal/logic/session"
 	"go_agent/internal/logic/session/mem"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/compose"
+	"github.com/cloudwego/eino/schema"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
@@ -20,12 +23,12 @@ import (
 // Application 应用实例，包含所有核心组件的引用。
 //
 // 字段说明：
-// - DialogueAgent: 对话代理，处理用户聊天请求
+// - OrchGraph: 三 Agent 对话编排图 Runnable，替代原 DialogueAgent
 // - KnowledgeAgent: 知识代理，处理知识库上传和检索
 // - Logger: 日志记录器
 // - RedisClient: Redis 客户端，用于会话状态存储
 type Application struct {
-	DialogueAgent  adk.ResumableAgent
+	OrchGraph      compose.Runnable[[]*schema.Message, *schema.Message]
 	KnowledgeAgent adk.Agent
 	Logger         *zap.Logger
 	RedisClient    *redis.Client
@@ -114,18 +117,19 @@ func NewApplication(cfg *Config) (*Application, error) {
 		dialogueEmbedder = nil
 	}
 
-	// 5. 初始化 Dialogue Agent（用于前端对话）
-	logger.Info("initializing dialogue chat agent")
-	dialogueAgent, err := dialogue.NewDialogueAgent(ctx, &dialogue.Config{
+	// 5. 初始化三 Agent 对话编排图
+	logger.Info("initializing three-agent dialogue orchestration graph")
+	checkpointStore := appcontext.NewRedisCheckPointStore(redisClient, "oncall", dialogue.RunCheckpointTTL)
+	orchResult, err := dialogue.BuildOrchestrationGraph(ctx, &dialogue.Config{
 		ChatModel: chatModel,
 		Embedder:  dialogueEmbedder,
 		SkillsDir: os.Getenv("EINO_EXT_SKILLS_DIR"),
 		Logger:    logger,
-	})
+	}, checkpointStore)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create dialogue agent: %w", err)
+		return nil, fmt.Errorf("failed to build dialogue orchestration graph: %w", err)
 	}
-	logger.Info("dialogue chat agent initialized")
+	logger.Info("three-agent dialogue orchestration graph initialized")
 
 	// 6. 初始化 Knowledge Agent（用于前端上传）
 	logger.Info("initializing knowledge upload agent")
@@ -141,7 +145,7 @@ func NewApplication(cfg *Config) (*Application, error) {
 	}
 
 	return &Application{
-		DialogueAgent:  dialogueAgent,
+		OrchGraph:      orchResult.Graph,
 		KnowledgeAgent: knowledgeAgent,
 		Logger:         logger,
 		RedisClient:    redisClient,

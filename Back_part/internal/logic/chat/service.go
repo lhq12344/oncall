@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	v1 "go_agent/api/chat/v1"
+	"go_agent/internal/logic/agent/dialogue"
 	appcontext "go_agent/internal/logic/session"
 	"go_agent/internal/model"
 
@@ -29,65 +31,34 @@ const (
 )
 
 type Service struct {
-	dialogueAgent    adk.ResumableAgent
-	chatStreamRunner *adk.Runner
-	rootAgentName    string
-	sessionMemory    *appcontext.SessionMemory
-	logger           *zap.Logger
-	knowledgeAgent   adk.Agent
+	orchGraph      compose.Runnable[[]*schema.Message, *schema.Message]
+	sessionMemory  *appcontext.SessionMemory
+	logger         *zap.Logger
+	knowledgeAgent adk.Agent
 }
 
 // NewService 创建聊天业务服务。
 //
-// 功能：
-// 1. 初始化控制器实例，绑定各个 Agent
-// 2. 创建检查点存储（Redis 或内存）
-// 3. 初始化聊天流式 Runner
-//
-// 调用位置：
-// - main.go:118 行，应用启动时调用
-//
 // 输入：
-// - dialogueAgent: 对话代理（可选）
+// - orchGraph: 三 Agent 对话编排图 Runnable（已含 checkpoint store）
 // - logger: 日志记录器
-// - redisClient: Redis 客户端（可选，用于持久化检查点）
+// - redisClient: Redis 客户端（仅用于 SessionMemory；orchGraph 内部已持有 checkpoint store）
 // - knowledgeAgent: 知识代理（可选）
 //
 // 输出：
 // - *Service: 初始化完成的聊天业务服务
 func NewService(
-	dialogueAgent adk.ResumableAgent,
+	orchGraph compose.Runnable[[]*schema.Message, *schema.Message],
 	logger *zap.Logger,
 	redisClient *redis.Client,
 	knowledgeAgent adk.Agent,
 ) *Service {
-	ctrl := &Service{
-		dialogueAgent:  dialogueAgent,
-		rootAgentName:  "dialogue_agent",
+	return &Service{
+		orchGraph:      orchGraph,
 		sessionMemory:  appcontext.NewSessionMemory(nil, logger),
 		logger:         logger,
 		knowledgeAgent: knowledgeAgent,
 	}
-
-	var checkpointStore compose.CheckPointStore
-	if redisClient != nil {
-		checkpointStore = appcontext.NewRedisCheckPointStore(redisClient, "oncall", 24*time.Hour)
-	} else {
-		checkpointStore = newInMemoryCheckPointStore()
-	}
-
-	if dialogueAgent != nil {
-		if agentName := strings.TrimSpace(dialogueAgent.Name(context.Background())); agentName != "" {
-			ctrl.rootAgentName = agentName
-		}
-		ctrl.chatStreamRunner = adk.NewRunner(context.Background(), adk.RunnerConfig{
-			Agent:           dialogueAgent,
-			EnableStreaming: true,
-			CheckPointStore: checkpointStore,
-		})
-	}
-
-	return ctrl
 }
 
 // Stream handles streaming chat through the internal chat model input.
@@ -143,8 +114,8 @@ func (c *Service) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (res *v
 	if err != nil {
 		return nil, err
 	}
-	if c.chatStreamRunner == nil {
-		return nil, fmt.Errorf("chat stream runner is not initialized")
+	if c.orchGraph == nil {
+		return nil, fmt.Errorf("orchestration graph is not initialized")
 	}
 
 	r, err := setupSSE(ctx)
@@ -159,121 +130,69 @@ func (c *Service) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (res *v
 
 	checkpointID := generateCheckpointID(sessionID)
 	if c.logger != nil {
-		c.logger.Info("chat_stream request received",
+		c.logger.Info("chat_stream orchestration started",
 			zap.String("session_id", sessionID),
 			zap.Int("question_len", len([]rune(question))),
 			zap.String("checkpoint_id", checkpointID))
 	}
-	iter := c.chatStreamRunner.Run(ctx, messages,
-		adk.WithCheckPointID(checkpointID),
-		adk.WithSessionValues(map[string]any{
-			"session_id": sessionID,
-		}),
-	)
+
+	stream, streamErr := c.orchGraph.Stream(ctx, messages, compose.WithCheckPointID(checkpointID))
+	if streamErr != nil {
+		if interruptData, ok := compose.IsInterruptRerunError(streamErr); ok {
+			return c.handleGraphInterrupt(r, checkpointID, interruptData)
+		}
+		writeSSEData(r, "[ERROR] "+streamErr.Error())
+		return nil, nil
+	}
+	defer stream.Close()
 
 	var fullAnswer strings.Builder
-	var intermediateMessages []*schema.Message
 	interrupted := false
-	eventCount := 0
 	contentChunkCount := 0
-	lastEventAgent := ""
-	lastEventRole := ""
-	lastEventContentLen := 0
-	lastEventToolCalls := 0
 
 	for {
-		event, ok := iter.Next()
-		if !ok {
+		msg, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
 			break
 		}
-		if event == nil {
-			continue
+		if interruptData, ok := compose.IsInterruptRerunError(recvErr); ok {
+			interrupted = true
+			c.handleGraphInterrupt(r, checkpointID, interruptData) //nolint
+			break
 		}
-		eventCount++
-		if event.Err != nil {
-			writeSSEData(r, "[ERROR] "+event.Err.Error())
+		if recvErr != nil {
+			writeSSEData(r, "[ERROR] "+recvErr.Error())
 			return nil, nil
 		}
-		msg, hasMsg := c.resolveEventMessage(event)
-		if hasMsg && msg != nil {
-			lastEventAgent = event.AgentName
-			lastEventRole = string(msg.Role)
-			lastEventContentLen = len([]rune(strings.TrimSpace(msg.Content)))
-			lastEventToolCalls = len(msg.ToolCalls)
-			// 收集工具调用/结果消息，用于记忆持久化
-			if msg.Role == schema.Tool ||
-				(msg.Role == schema.Assistant && len(msg.ToolCalls) > 0) {
-				intermediateMessages = append(intermediateMessages, msg)
-			}
-		}
-
-		if event.Action != nil && event.Action.Interrupted != nil {
-			interrupted = true
-			payload := buildInterruptPayload(checkpointID, event.Action.Interrupted)
-			payloadBytes, _ := json.Marshal(payload)
-			writeSSEData(r, string(payloadBytes))
+		if msg == nil {
 			continue
 		}
-		//将工具调用信息传回前端
-		chunk, ok := c.extractAssistantContentFromResolved(event, msg)
-		if !ok {
-			continue
+		chunk := sanitizeUserFacingContent(cleanRoutingMarkers(msg.Content))
+		if chunk != "" {
+			fullAnswer.WriteString(chunk)
+			contentChunkCount++
+			writeSSEData(r, chunk)
 		}
-		fullAnswer.WriteString(chunk)
-		contentChunkCount++
-		writeSSEData(r, chunk)
 	}
 
 	writeSSEData(r, "[DONE]")
 
 	answer := strings.TrimSpace(fullAnswer.String())
 	if c.logger != nil {
-		c.logger.Info("chat_stream completed",
+		c.logger.Info("chat_stream orchestration completed",
 			zap.String("session_id", sessionID),
 			zap.Bool("interrupted", interrupted),
-			zap.Int("event_count", eventCount),
 			zap.Int("content_chunks", contentChunkCount),
 			zap.Int("answer_len", len([]rune(answer))))
-		if !interrupted && strings.TrimSpace(answer) == "" {
-			c.logger.Warn("chat_stream no displayable assistant content",
-				zap.String("session_id", sessionID),
-				zap.String("last_event_agent", strings.TrimSpace(lastEventAgent)),
-				zap.String("last_event_role", strings.TrimSpace(lastEventRole)),
-				zap.Int("last_event_content_len", lastEventContentLen),
-				zap.Int("last_event_tool_calls", lastEventToolCalls))
-		}
 	}
 	if answer != "" && !interrupted {
-		c.sessionMemory.SaveTurnWithSource(context.Background(), sessionID, question, answer, intermediateMessages, messages, "chat_stream")
+		c.sessionMemory.SaveTurnWithSource(context.Background(), sessionID, question, answer, nil, messages, "chat_stream_graph")
 	}
 
 	return &v1.ChatStreamRes{}, nil
 }
 
 // ChatResumeStream 处理聊天中断恢复请求。
-//
-// 功能：
-// 1. 验证输入参数（会话 ID、检查点 ID、中断 ID、审批结果）
-// 2. 恢复流式 Runner，从中断点继续执行
-// 3. 处理恢复后的流式事件
-// 4. 保存恢复操作的历史记录
-//
-// 调用位置：
-// - API 路由 `/api/v1/chat/resume` 的处理函数
-//
-// 输入：
-// - ctx: 上下文
-// - req: 中断恢复请求参数（包含会话 ID、检查点 ID、中断 ID、审批结果等）
-//
-// 输出：
-// - *v1.ChatResumeStreamRes: 响应对象（实际响应通过 SSE 流式输出）
-// - error: 处理过程中的错误
-//
-// 中断恢复流程：
-// 1. 用户收到中断请求（需要审批高风险命令）
-// 2. 用户通过前端提交审批结果（approved/resolved/comment）
-// 3. 调用此方法恢复执行
-// 4. 继续执行被中断的流程
 func (c *Service) ChatResumeStream(ctx context.Context, req *v1.ChatResumeStreamReq) (res *v1.ChatResumeStreamRes, err error) {
 	if req == nil {
 		return nil, fmt.Errorf("request is required")
@@ -286,11 +205,8 @@ func (c *Service) ChatResumeStream(ctx context.Context, req *v1.ChatResumeStream
 	}
 	sessionID := normalizeSessionID(req.Id)
 
-	iter, err := c.resumeAgent(ctx, c.chatStreamRunner, req.CheckpointID, req.InterruptIDs, req.Approved, req.Resolved, req.Comment, req.SelectionValue, map[string]any{
-		"session_id": sessionID,
-	})
-	if err != nil {
-		return nil, err
+	if c.orchGraph == nil {
+		return nil, fmt.Errorf("orchestration graph is not initialized")
 	}
 
 	r, err := setupSSE(ctx)
@@ -298,75 +214,105 @@ func (c *Service) ChatResumeStream(ctx context.Context, req *v1.ChatResumeStream
 		return nil, err
 	}
 
+	// 构建审批/选择数据，通过 StateModifier 注入图状态供 complex_node 读取。
+	resumeData := buildResumeTargetPayload(req.Approved, req.Resolved, req.Comment, req.SelectionValue)
+	interruptIDs := normalizeIDList(req.InterruptIDs)
+	if len(interruptIDs) == 0 {
+		// interruptIDs 为空时无法精确定位恢复目标，complex_node 会触发无限中断循环。
+		// 要求前端必须回传 interrupt_contexts[*].id 中的 ID。
+		writeSSEData(r, "[ERROR] interrupt_ids is required for resume; include interrupt context IDs from the interrupt event")
+		writeSSEData(r, "[DONE]")
+		return &v1.ChatResumeStreamRes{}, nil
+	}
+
+	stream, streamErr := c.orchGraph.Stream(ctx, nil,
+		compose.WithCheckPointID(req.CheckpointID),
+		compose.WithStateModifier(func(_ context.Context, _ compose.NodePath, state any) error {
+			if s, ok := state.(*dialogue.OrchState); ok {
+				s.ResumeData = resumeData
+				s.ResumeInterruptIDs = interruptIDs
+			}
+			return nil
+		}),
+	)
+	if streamErr != nil {
+		if interruptData, ok := compose.IsInterruptRerunError(streamErr); ok {
+			c.handleGraphInterrupt(r, req.CheckpointID, interruptData) //nolint
+			return &v1.ChatResumeStreamRes{}, nil
+		}
+		writeSSEData(r, "[ERROR] "+streamErr.Error())
+		return nil, nil
+	}
+	defer stream.Close()
+
 	var fullAnswer strings.Builder
 	interrupted := false
 
 	for {
-		event, ok := iter.Next()
-		if !ok {
+		msg, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
 			break
 		}
-		if event == nil {
-			continue
+		if interruptData, ok := compose.IsInterruptRerunError(recvErr); ok {
+			interrupted = true
+			c.handleGraphInterrupt(r, req.CheckpointID, interruptData) //nolint
+			break
 		}
-		if event.Err != nil {
-			writeSSEData(r, "[ERROR] "+event.Err.Error())
+		if recvErr != nil {
+			writeSSEData(r, "[ERROR] "+recvErr.Error())
 			return nil, nil
 		}
-
-		if event.Action != nil && event.Action.Interrupted != nil {
-			interrupted = true
-			payload := buildInterruptPayload(req.CheckpointID, event.Action.Interrupted)
-			b, _ := json.Marshal(payload)
-			writeSSEData(r, string(b))
+		if msg == nil {
 			continue
 		}
-
-		chunk, ok := c.extractAssistantContent(event)
-		if !ok {
-			continue
+		chunk := sanitizeUserFacingContent(cleanRoutingMarkers(msg.Content))
+		if chunk != "" {
+			fullAnswer.WriteString(chunk)
+			writeSSEData(r, chunk)
 		}
-		fullAnswer.WriteString(chunk)
-		writeSSEData(r, chunk)
 	}
 
 	writeSSEData(r, "[DONE]")
 
 	answer := strings.TrimSpace(fullAnswer.String())
 	if answer != "" && !interrupted {
-		approvedValue := "nil"
-		if req.Approved != nil {
-			approvedValue = fmt.Sprintf("%v", *req.Approved)
-		}
-		resolvedValue := "nil"
-		if req.Resolved != nil {
-			resolvedValue = fmt.Sprintf("%v", *req.Resolved)
-		}
-		comment := strings.TrimSpace(req.Comment)
-		if comment == "" {
-			comment = "(empty)"
-		}
-		selectionValue := strings.TrimSpace(req.SelectionValue)
-		if selectionValue == "" {
-			selectionValue = "(empty)"
-		}
-		interruptIDs := normalizeIDList(req.InterruptIDs)
-		if len(interruptIDs) == 0 {
-			interruptIDs = []string{"(all or checkpoint-level resume)"}
-		}
-		resumeInput := fmt.Sprintf(
-			"恢复执行确认：checkpoint_id=%s; interrupt_ids=%s; approved=%s; resolved=%s; comment=%s; selection_value=%s",
-			strings.TrimSpace(req.CheckpointID),
-			strings.Join(interruptIDs, ","),
-			approvedValue,
-			resolvedValue,
-			comment,
-			selectionValue,
-		)
-		c.sessionMemory.SaveTurnWithSource(context.Background(), sessionID, resumeInput, answer, nil, nil, "chat_resume_stream")
+		resumeInput := fmt.Sprintf("恢复执行确认：checkpoint_id=%s", strings.TrimSpace(req.CheckpointID))
+		c.sessionMemory.SaveTurnWithSource(context.Background(), sessionID, resumeInput, answer, nil, nil, "chat_resume_stream_graph")
 	}
 
 	return &v1.ChatResumeStreamRes{}, nil
+}
+
+// handleGraphInterrupt 处理图层中断，将中断信息格式化为 SSE interrupt payload 并推送。
+// interruptData 是 compose.StatefulInterrupt 第一参数（本项目传入 *adk.InterruptInfo）。
+func (c *Service) handleGraphInterrupt(r *ghttp.Request, checkpointID string, interruptData any) (*v1.ChatStreamRes, error) {
+	payload := map[string]any{
+		"type":          "interrupt",
+		"checkpoint_id": strings.TrimSpace(checkpointID),
+	}
+	if adkInterrupt, ok := interruptData.(*adk.InterruptInfo); ok {
+		payload["interrupt_contexts"] = convertInterruptContexts(adkInterrupt.InterruptContexts)
+		payload["message"] = buildInterruptMessage(adkInterrupt.Data)
+		if structured := normalizeInterruptData(adkInterrupt.Data); structured != nil {
+			payload["interrupt_data"] = structured
+			if detailRequest := extractDetailSelectionPayload(structured); detailRequest != nil {
+				payload["detail_request"] = detailRequest
+			}
+		}
+	} else {
+		payload["interrupt_contexts"] = []v1.InterruptContext{}
+		payload["message"] = "流程已暂停，等待你的确认。"
+	}
+	payloadBytes, _ := json.Marshal(payload)
+	writeSSEData(r, string(payloadBytes))
+	return &v1.ChatStreamRes{}, nil
+}
+
+// cleanRoutingMarkers 删除 Gate Agent 注入的路由标记，避免透传给用户。
+func cleanRoutingMarkers(content string) string {
+	content = strings.ReplaceAll(content, "[RESOLVED]", "")
+	content = strings.ReplaceAll(content, "[TO_COMPLEX]", "")
+	return content
 }
 
 func (c *Service) FileUpload(ctx context.Context, req *v1.FileUploadReq) (res *v1.FileUploadRes, err error) {
@@ -440,144 +386,6 @@ func (c *Service) FileUpload(ctx context.Context, req *v1.FileUploadReq) (res *v
 		FilePath: fmt.Sprintf("/knowledge/%s", file.Filename),
 		FileSize: file.Size,
 	}, nil
-}
-
-func (c *Service) resumeAgent(
-	ctx context.Context,
-	runner *adk.Runner,
-	checkpointID string,
-	interruptIDs []string,
-	approved *bool,
-	resolved *bool,
-	comment string,
-	selectionValue string,
-	sessionValues map[string]any,
-) (*adk.AsyncIterator[*adk.AgentEvent], error) {
-	if runner == nil {
-		return nil, fmt.Errorf("runner is not initialized")
-	}
-
-	targetIDs := normalizeIDList(interruptIDs)
-	baseOpts := make([]adk.AgentRunOption, 0, 1)
-	if len(sessionValues) > 0 {
-		baseOpts = append(baseOpts, adk.WithSessionValues(sessionValues))
-	}
-	if len(targetIDs) == 0 {
-		return runner.Resume(ctx, checkpointID, baseOpts...)
-	}
-
-	targetPayload := buildResumeTargetPayload(approved, resolved, comment, selectionValue)
-	if len(targetPayload) == 0 {
-		targetPayload["comment"] = "继续执行"
-	}
-
-	targets := make(map[string]any, len(targetIDs))
-	for _, id := range targetIDs {
-		targets[id] = targetPayload
-	}
-
-	return runner.ResumeWithParams(ctx, checkpointID, &adk.ResumeParams{Targets: targets}, baseOpts...)
-}
-
-func (c *Service) extractAssistantContent(event *adk.AgentEvent) (string, bool) {
-	msg, ok := c.resolveEventMessage(event)
-	if !ok {
-		return "", false
-	}
-	return c.extractAssistantContentFromResolved(event, msg)
-}
-
-// extractAssistantContentFromResolved 从已解析的事件和消息中提取助手回复内容。
-//
-// 功能：
-// 1. 首先尝试从主 Agent（rootAgentName）的消息中提取内容
-// 2. 如果失败，放宽条件，允许任何 Agent 的 assistant 消息透出
-//
-// 调用位置：
-// - ChatStream:207 行，提取聊天流式响应的内容块
-// - extractAssistantContent:627 行，辅助函数调用
-//
-// 输入：
-// - event: ADK Agent 事件（包含 Agent 名称和输出）
-// - msg: schema.Message 消息（可能包含助手回复内容）
-//
-// 输出：
-// - string: 提取的助手回复内容（可能为空）
-// - bool: 是否成功提取内容
-//
-// 提取逻辑：
-// 1. 检查消息角色是否为 assistant
-// 2. 检查 Agent 名称是否匹配（优先主 Agent）
-// 3. 检查是否包含工具调用 ID（工具调用消息不提取）
-// 4. 清理内容中的特殊字符和格式
-func (c *Service) extractAssistantContentFromResolved(event *adk.AgentEvent, msg *schema.Message) (string, bool) {
-	if event == nil || msg == nil {
-		return "", false
-	}
-	content, ok := c.extractAgentContentByMessage(event.AgentName, msg, c.rootAgentName)
-	if ok {
-		return content, true
-	}
-
-	// 对话流放宽一次：若 AgentName 与 rootName 不一致，仍允许非工具 assistant 消息透出。
-	return c.extractAgentContentByMessage(event.AgentName, msg, "")
-}
-
-func (c *Service) resolveEventMessage(event *adk.AgentEvent) (*schema.Message, bool) {
-	if event == nil || event.Output == nil || event.Output.MessageOutput == nil {
-		return nil, false
-	}
-	variant := event.Output.MessageOutput
-	if variant.Message != nil {
-		return variant.Message, true
-	}
-	if variant.MessageStream == nil {
-		return nil, false
-	}
-
-	msg, err := variant.GetMessage()
-	if err != nil {
-		if c.logger != nil {
-			c.logger.Warn("failed to resolve event message stream",
-				zap.String("agent_name", event.AgentName),
-				zap.Error(err))
-		}
-		return nil, false
-	}
-	if msg == nil {
-		return nil, false
-	}
-	return msg, true
-}
-
-func (c *Service) extractAgentContent(event *adk.AgentEvent, rootName string) (string, bool) {
-	msg, ok := c.resolveEventMessage(event)
-	if !ok {
-		return "", false
-	}
-	return c.extractAgentContentByMessage(event.AgentName, msg, rootName)
-}
-
-func (c *Service) extractAgentContentByMessage(agentName string, msg *schema.Message, rootName string) (string, bool) {
-	if msg == nil {
-		return "", false
-	}
-	if msg.Role != schema.Assistant {
-		return "", false
-	}
-	if rootName = strings.TrimSpace(rootName); rootName != "" {
-		if agentName != "" && agentName != rootName {
-			return "", false
-		}
-	}
-	if strings.TrimSpace(msg.ToolCallID) != "" {
-		return "", false
-	}
-	content := sanitizeUserFacingContent(msg.Content)
-	if content == "" {
-		return "", false
-	}
-	return content, true
 }
 
 // setupSSE 初始化服务器发送事件（Server-Sent Events）响应。
@@ -946,14 +754,14 @@ func isAllowedUploadFile(fileName string) bool {
 }
 
 func sanitizeUserFacingContent(content string) string {
-	trimmed := strings.TrimSpace(content)
-	if trimmed == "" {
+	if content == "" {
 		return ""
 	}
+	trimmed := strings.TrimSpace(content)
 	if strings.HasPrefix(strings.ToLower(trimmed), "successfully transferred to agent") {
 		return ""
 	}
-	return trimmed
+	return content
 }
 
 func buildInterruptMessage(data any) string {
