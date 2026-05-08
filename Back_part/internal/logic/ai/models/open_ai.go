@@ -2,6 +2,7 @@ package models
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 	"github.com/gogf/gf/v2/frame/g"
 )
 
@@ -43,7 +45,7 @@ func OpenAIForDeepSeekV3Quick(ctx context.Context) (cm model.ToolCallingChatMode
 	if err != nil {
 		return nil, err
 	}
-	return cm, nil
+	return newSanitizingToolCallingChatModel(cm), nil
 }
 
 func readChatModelSetting(ctx context.Context, configKey, envKey string) string {
@@ -98,7 +100,106 @@ func GetChatModelForRole(role string) (*ChatModel, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create chat model for role %s: %w", role, err)
 	}
-	return &ChatModel{Client: client}, nil
+	return &ChatModel{Client: newSanitizingToolCallingChatModel(client)}, nil
+}
+
+type sanitizingToolCallingChatModel struct {
+	base model.ToolCallingChatModel
+}
+
+func newSanitizingToolCallingChatModel(base model.ToolCallingChatModel) model.ToolCallingChatModel {
+	if base == nil {
+		return nil
+	}
+	if _, ok := base.(*sanitizingToolCallingChatModel); ok {
+		return base
+	}
+	return &sanitizingToolCallingChatModel{base: base}
+}
+
+func (m *sanitizingToolCallingChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+	return m.base.Generate(ctx, sanitizeModelInputToolCallArgs(input), opts...)
+}
+
+func (m *sanitizingToolCallingChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	return m.base.Stream(ctx, sanitizeModelInputToolCallArgs(input), opts...)
+}
+
+func (m *sanitizingToolCallingChatModel) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+	wrapped, err := m.base.WithTools(tools)
+	if err != nil {
+		return nil, err
+	}
+	return newSanitizingToolCallingChatModel(wrapped), nil
+}
+
+func sanitizeModelInputToolCallArgs(input []*schema.Message) []*schema.Message {
+	if len(input) == 0 {
+		return input
+	}
+
+	var output []*schema.Message
+	for i, msg := range input {
+		if msg == nil || len(msg.ToolCalls) == 0 {
+			if output != nil {
+				output[i] = msg
+			}
+			continue
+		}
+
+		var fixedCalls []schema.ToolCall
+		changed := false
+		for j, tc := range msg.ToolCalls {
+			clean := sanitizeToolCallArgumentsJSON(tc.Function.Arguments)
+			if clean != tc.Function.Arguments {
+				if fixedCalls == nil {
+					fixedCalls = make([]schema.ToolCall, len(msg.ToolCalls))
+					copy(fixedCalls, msg.ToolCalls)
+				}
+				fixedCalls[j].Function.Arguments = clean
+				changed = true
+			}
+		}
+		if !changed {
+			if output != nil {
+				output[i] = msg
+			}
+			continue
+		}
+
+		if output == nil {
+			output = make([]*schema.Message, len(input))
+			copy(output, input[:i])
+		}
+		msgCopy := *msg
+		msgCopy.ToolCalls = fixedCalls
+		output[i] = &msgCopy
+	}
+
+	if output == nil {
+		return input
+	}
+	return output
+}
+
+func sanitizeToolCallArgumentsJSON(args string) string {
+	if args == "" {
+		return args
+	}
+	if err := json.Unmarshal([]byte(args), new(any)); err == nil {
+		return args
+	}
+
+	dec := json.NewDecoder(strings.NewReader(args))
+	var first any
+	if err := dec.Decode(&first); err != nil {
+		return args
+	}
+	fixed, err := json.Marshal(first)
+	if err != nil {
+		return args
+	}
+	return string(fixed)
 }
 
 // newRetryHTTPClient 创建带有限次退避重试能力的 HTTP 客户端。

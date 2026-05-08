@@ -80,14 +80,14 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
       .filter((id): id is string => Boolean(id));
     if (interruptIDs.length === 0) {
       setIsSubmitting(false);
-      setStreaming(false);
-      setConnectionStatus('error');
+      setStreaming(currentSessionId, false);
+      setConnectionStatus(currentSessionId, 'error');
       setErrorText('缺少 interrupt_ids，无法恢复到具体中断点');
       return;
     }
 
-    setStreaming(true);
-    setConnectionStatus('streaming');
+    setStreaming(currentSessionId, true);
+    setConnectionStatus(currentSessionId, 'streaming');
 
     if (currentSessionId) {
       addMessage(currentSessionId, {
@@ -121,8 +121,8 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
       },
       onInterrupt,
       onDone: () => {
-        setStreaming(false);
-        setConnectionStatus('idle');
+        setStreaming(currentSessionId, false);
+        setConnectionStatus(currentSessionId, 'idle');
         setIsSubmitting(false);
         setIsHandled(true);
         if (currentSessionId) {
@@ -130,8 +130,8 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
         }
       },
       onError: (err: string) => {
-        setStreaming(false);
-        setConnectionStatus('error');
+        setStreaming(currentSessionId, false);
+        setConnectionStatus(currentSessionId, 'error');
         setIsSubmitting(false);
         setErrorText(err || '恢复执行失败');
         if (currentSessionId) {
@@ -151,8 +151,8 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
       }
     } catch (error) {
       setIsSubmitting(false);
-      setStreaming(false);
-      setConnectionStatus('error');
+      setStreaming(currentSessionId, false);
+      setConnectionStatus(currentSessionId, 'error');
       setErrorText(error instanceof Error ? error.message : '恢复执行失败');
     }
   };

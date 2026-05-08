@@ -26,10 +26,6 @@ import (
 	"go.uber.org/zap"
 )
 
-const (
-	defaultSessionID = "default-session"
-)
-
 type Service struct {
 	orchGraph        compose.Runnable[[]*schema.Message, *schema.Message]
 	sessionMemory    *appcontext.SessionMemory
@@ -778,16 +774,15 @@ func validateChatStreamInput(req *v1.ChatStreamReq) (question string, sessionID 
 	if question == "" {
 		return "", "", fmt.Errorf("question is required")
 	}
+	if strings.TrimSpace(req.Id) == "" {
+		return "", "", fmt.Errorf("id is required")
+	}
 	sessionID = normalizeSessionID(req.Id)
 	return question, sessionID, nil
 }
 
 func normalizeSessionID(id string) string {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return defaultSessionID
-	}
-	return id
+	return strings.TrimSpace(id)
 }
 
 func generateCheckpointID(sessionID string) string {

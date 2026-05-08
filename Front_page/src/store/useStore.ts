@@ -22,8 +22,8 @@ interface AppState {
   theme: 'dark' | 'light';
   sessions: Session[];
   currentSessionId: string | null;
-  isStreaming: boolean;
-  connectionStatus: 'idle' | 'connecting' | 'streaming' | 'error';
+  streamingBySession: Record<string, boolean>;
+  connectionStatusBySession: Record<string, 'idle' | 'connecting' | 'streaming' | 'error'>;
   isRehydrated: boolean;
   isSidebarOpen: boolean;
 
@@ -38,8 +38,10 @@ interface AppState {
   updateLastMessage: (sessionId: string, content: string, steps?: ChatStep[], interrupt?: InterruptData) => void;
   appendStepToLastMessage: (sessionId: string, step: ChatStep) => void;
   setLastMessageStepStatus: (sessionId: string, status: ChatStep['status']) => void;
-  setStreaming: (isStreaming: boolean) => void;
-  setConnectionStatus: (status: AppState['connectionStatus']) => void;
+  isSessionStreaming: (sessionId: string | null | undefined) => boolean;
+  getSessionConnectionStatus: (sessionId: string | null | undefined) => 'idle' | 'connecting' | 'streaming' | 'error';
+  setStreaming: (sessionId: string, isStreaming: boolean) => void;
+  setConnectionStatus: (sessionId: string, status: 'idle' | 'connecting' | 'streaming' | 'error') => void;
   sendMessage: (sessionId: string, content: string) => Promise<void>;
 
   setRehydrated: (val: boolean) => void;
@@ -51,8 +53,8 @@ export const useStore = create<AppState>()(
       theme: 'dark',
       sessions: [],
       currentSessionId: null,
-      isStreaming: false,
-      connectionStatus: 'idle',
+      streamingBySession: {},
+      connectionStatusBySession: {},
 
       isRehydrated: false,
       isSidebarOpen: true,
@@ -76,6 +78,8 @@ export const useStore = create<AppState>()(
       deleteSession: (id) => set((state) => ({
         sessions: state.sessions.filter((s) => s.id !== id),
         currentSessionId: state.currentSessionId === id ? (state.sessions.find(s => s.id !== id)?.id || null) : state.currentSessionId,
+        streamingBySession: Object.fromEntries(Object.entries(state.streamingBySession).filter(([sessionId]) => sessionId !== id)),
+        connectionStatusBySession: Object.fromEntries(Object.entries(state.connectionStatusBySession).filter(([sessionId]) => sessionId !== id)),
       })),
 
       renameSession: (id, title) => set((state) => ({
@@ -176,8 +180,33 @@ export const useStore = create<AppState>()(
         }),
       })),
 
-      setStreaming: (isStreaming) => set({ isStreaming }),
-      setConnectionStatus: (status) => set({ connectionStatus: status }),
+      isSessionStreaming: (sessionId) => {
+        if (!sessionId) {
+          return false;
+        }
+        return Boolean(get().streamingBySession[sessionId]);
+      },
+
+      getSessionConnectionStatus: (sessionId) => {
+        if (!sessionId) {
+          return 'idle';
+        }
+        return get().connectionStatusBySession[sessionId] || 'idle';
+      },
+
+      setStreaming: (sessionId, isStreaming) => set((state) => ({
+        streamingBySession: {
+          ...state.streamingBySession,
+          [sessionId]: isStreaming
+        }
+      })),
+
+      setConnectionStatus: (sessionId, status) => set((state) => ({
+        connectionStatusBySession: {
+          ...state.connectionStatusBySession,
+          [sessionId]: status
+        }
+      })),
 
       sendMessage: async (sessionId, content) => {
         const {
@@ -201,32 +230,39 @@ export const useStore = create<AppState>()(
           content: '',
         });
 
-        setStreaming(true);
-        setConnectionStatus('streaming');
+        setStreaming(sessionId, true);
+        setConnectionStatus(sessionId, 'streaming');
 
         const { streamChat } = await import('../services/api');
-
-        await streamChat(sessionId, content, {
-          onContent: (chunk) => updateLastMessage(sessionId, chunk),
-          onStep: (step) => {
-            appendStepToLastMessage(sessionId, {
-              ...step,
-              status: 'pending'
-            });
-          },
-          onInterrupt: (interrupt) => updateLastMessage(sessionId, '', undefined, interrupt),
-          onDone: () => {
-            setLastMessageStepStatus(sessionId, 'completed');
-            setStreaming(false);
-            setConnectionStatus('idle');
-          },
-          onError: (err) => {
-            setLastMessageStepStatus(sessionId, 'error');
-            setStreaming(false);
-            setConnectionStatus('error');
-            updateLastMessage(sessionId, `\n\nError: ${err}`);
-          }
-        });
+        try {
+          await streamChat(sessionId, content, {
+            onContent: (chunk) => updateLastMessage(sessionId, chunk),
+            onStep: (step) => {
+              appendStepToLastMessage(sessionId, {
+                ...step,
+                status: 'pending'
+              });
+            },
+            onInterrupt: (interrupt) => updateLastMessage(sessionId, '', undefined, interrupt),
+            onDone: () => {
+              setLastMessageStepStatus(sessionId, 'completed');
+              setStreaming(sessionId, false);
+              setConnectionStatus(sessionId, 'idle');
+            },
+            onError: (err) => {
+              setLastMessageStepStatus(sessionId, 'error');
+              setStreaming(sessionId, false);
+              setConnectionStatus(sessionId, 'error');
+              updateLastMessage(sessionId, `\n\nError: ${err}`);
+            }
+          });
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          setLastMessageStepStatus(sessionId, 'error');
+          setStreaming(sessionId, false);
+          setConnectionStatus(sessionId, 'error');
+          updateLastMessage(sessionId, `\n\nError: ${errMsg}`);
+        }
       },
 
       setRehydrated: (val) => set({ isRehydrated: val }),

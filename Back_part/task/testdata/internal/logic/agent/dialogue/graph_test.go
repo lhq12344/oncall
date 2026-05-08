@@ -47,13 +47,38 @@ func TestRagResultRouterTreatsStructuredFailuresAsComplex(t *testing.T) {
 func TestRagResultRouterTreatsStructuredHitsAsAnswer(t *testing.T) {
 	route, err := ragResultRouter(context.Background(), []*schema.Message{
 		schema.UserMessage("查一下认证信息"),
-		{Role: schema.Tool, Content: `{"status":"success","results":[{"content":"认证信息说明"}],"count":1}`},
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID: "call_1",
+			Function: schema.FunctionCall{
+				Name: "knowledge_retrieve",
+			},
+		}}),
+		schema.ToolMessage(`{"status":"success","results":[{"content":"认证信息说明"}],"count":1}`, "call_1", schema.WithToolName("knowledge_retrieve")),
 	})
 	if err != nil {
 		t.Fatalf("router returned error: %v", err)
 	}
 	if route != "answer_node" {
 		t.Fatalf("route = %q, want answer_node", route)
+	}
+}
+
+func TestRagResultRouterIgnoresUnrelatedToolMessageFallback(t *testing.T) {
+	route, err := ragResultRouter(context.Background(), []*schema.Message{
+		schema.UserMessage("查一下认证信息"),
+		schema.ToolMessage(`{"solved_contexts":["看起来像知识结果"]}`, "call_other", schema.WithToolName("unrelated_tool")),
+	})
+	if err != nil {
+		t.Fatalf("router returned error: %v", err)
+	}
+	if route != "complex_node" {
+		t.Fatalf("route = %q, want complex_node", route)
+	}
+}
+
+func TestStructuredKnowledgeResultWithPendingIsEmptyRAG(t *testing.T) {
+	if !isEmptyRAGResult(`{"status":"partial","solved_contexts":["资料A"],"pending_questions":["缺失B"]}`) {
+		t.Fatalf("partial knowledge result with pending questions should be treated as insufficient")
 	}
 }
 

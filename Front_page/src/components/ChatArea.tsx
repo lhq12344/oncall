@@ -106,7 +106,7 @@ function detectSectionKind(title: string): SectionKind | undefined {
 }
 
 // parseMessageLayout 解析消息中的 Context 行与结构化 Markdown 分区。
-// 输入：格式化后的 Markdown 文本。
+// 输入：原始 Markdown 文本。
 // 输出：上下文、正文与分区卡片数据。
 function parseMessageLayout(content: string): ParsedMessageLayout {
   const normalized = content.replace(/\r\n/g, '\n');
@@ -224,12 +224,12 @@ const markdownComponents = {
     </h3>
   ),
   p: ({ children }: any) => (
-    <p className="mb-4 last:mb-0 leading-relaxed opacity-90">
+    <p className="leading-relaxed opacity-90">
       {children}
     </p>
   ),
   li: ({ children }: any) => (
-    <li className="flex items-start gap-3 my-2 group">
+    <li className="flex items-start gap-3 group">
       <span className="mt-1.5 shrink-0">
         <ArrowRight className="w-3 h-3 text-cyber-neon/40 group-hover:text-cyber-neon transition-colors" />
       </span>
@@ -237,9 +237,14 @@ const markdownComponents = {
     </li>
   ),
   ul: ({ children }: any) => (
-    <ul className="my-4 space-y-1">
+    <ul className="space-y-1">
       {children}
     </ul>
+  ),
+  ol: ({ children }: any) => (
+    <ol className="space-y-1">
+      {children}
+    </ol>
   ),
   code: ({ inline, children }: any) => {
     if (inline) {
@@ -288,11 +293,11 @@ const markdownComponents = {
 // MarkdownBlock 统一渲染 Markdown 内容，并支持流式光标。
 // 输入：Markdown 文本及是否展示流式光标。
 // 输出：渲染后的消息正文。
-const MarkdownBlock: React.FC<{ content: string; showCursor?: boolean }> = ({
+const MarkdownBlock: React.FC<{ content: string; showCursor?: boolean }> = React.memo(({
   content,
   showCursor = false
 }) => (
-  <div className="prose prose-sm dark:prose-invert max-w-none font-sans">
+  <div className="stream-markdown max-w-none font-sans text-sm leading-relaxed whitespace-pre-wrap break-words">
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents as any}>
       {content}
     </ReactMarkdown>
@@ -300,7 +305,7 @@ const MarkdownBlock: React.FC<{ content: string; showCursor?: boolean }> = ({
       <span className="inline-block w-2 h-4 ml-1 bg-cyber-neon animate-pulse align-middle" />
     )}
   </div>
-);
+));
 
 export const ChatArea: React.FC = () => {
   const { sessions, currentSessionId, theme } = useStore();
@@ -382,6 +387,7 @@ export const ChatArea: React.FC = () => {
             key={message.id}
             message={message}
             isLast={index === session.messages.length - 1}
+            sessionId={session.id}
           />
         ))}
       </AnimatePresence>
@@ -389,12 +395,13 @@ export const ChatArea: React.FC = () => {
   );
 };
 
-const MessageItem: React.FC<{ message: Message; isLast: boolean }> = ({ message, isLast }) => {
-  const { theme, isStreaming, sendMessage, currentSessionId } = useStore();
+const MessageItem: React.FC<{ message: Message; isLast: boolean; sessionId: string }> = ({ message, isLast, sessionId }) => {
+  const { theme, isSessionStreaming, sendMessage } = useStore();
+  const isStreaming = isSessionStreaming(sessionId);
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
-  const renderedContent = useMemo(() => formatMessageContent(message.content), [message.content]);
-  const parsedLayout = useMemo(() => parseMessageLayout(renderedContent), [renderedContent]);
+  const renderedContent = message.content;
+  const parsedLayout = useMemo(() => parseMessageLayout(message.content), [message.content]);
 
   const suggestions = useMemo(() => {
     if (isUser || isSystem || isStreaming || !isLast) {
@@ -434,7 +441,9 @@ const MessageItem: React.FC<{ message: Message; isLast: boolean }> = ({ message,
     );
   }
 
-  const contentForDefaultRender = parsedLayout.body || renderedContent;
+  const contentForDefaultRender = !isUser && parsedLayout.contextLine
+    ? parsedLayout.body
+    : renderedContent;
 
   return (
     <motion.div
@@ -486,7 +495,7 @@ const MessageItem: React.FC<{ message: Message; isLast: boolean }> = ({ message,
             </div>
           )}
 
-          {!isUser && parsedLayout.sections.length > 0 ? (
+          {!isUser && parsedLayout.sections.length > 0 && !(isStreaming && isLast) ? (
             <div className="space-y-4">
               {parsedLayout.intro && <MarkdownBlock content={parsedLayout.intro} />}
               {parsedLayout.sections.map((section, index) => {
@@ -607,7 +616,7 @@ const MessageItem: React.FC<{ message: Message; isLast: boolean }> = ({ message,
             {suggestions.map((suggestion, index) => (
               <button
                 key={index}
-                onClick={() => currentSessionId && sendMessage(currentSessionId, suggestion)}
+                onClick={() => sendMessage(sessionId, suggestion)}
                 className={cn(
                   'px-4 py-2 rounded-xl text-xs font-medium transition-all border flex items-center gap-2 group',
                   theme === 'dark'
@@ -625,10 +634,3 @@ const MessageItem: React.FC<{ message: Message; isLast: boolean }> = ({ message,
     </motion.div>
   );
 };
-
-// formatMessageContent 预留消息格式化入口，当前仅保持原始 Markdown。
-// 输入：原始消息文本。
-// 输出：适合 ReactMarkdown 渲染的 Markdown 文本。
-function formatMessageContent(content: string): string {
-  return content;
-}

@@ -10,9 +10,10 @@ function cn(...inputs: ClassValue[]) {
 
 export const Header: React.FC = () => {
   const { 
-    theme, toggleTheme, connectionStatus,
+    theme, toggleTheme, currentSessionId, getSessionConnectionStatus,
     isSidebarOpen, toggleSidebar
   } = useStore();
+  const connectionStatus = getSessionConnectionStatus(currentSessionId);
 
   const [time, setTime] = React.useState(new Date());
 

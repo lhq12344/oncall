@@ -2,6 +2,7 @@ package dialogue
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -225,6 +226,55 @@ func noFormatGenModelInput(_ context.Context, instruction string, input *adk.Age
 	return msgs, nil
 }
 
+// sanitizeToolCallArgs 修复因流式代理（PPIO/LiteLLM）将完整 arguments JSON 重复分块发送
+// 导致 concatToolCalls 拼出 {"q":"v"}{} 非法 JSON 的问题，仅保留首个完整 JSON 对象。
+func sanitizeToolCallArgs(args string) string {
+	if args == "" {
+		return args
+	}
+	if err := json.Unmarshal([]byte(args), new(any)); err == nil {
+		return args
+	}
+	dec := json.NewDecoder(strings.NewReader(args))
+	var first any
+	if err := dec.Decode(&first); err != nil {
+		return args
+	}
+	fixed, err := json.Marshal(first)
+	if err != nil {
+		return args
+	}
+	return string(fixed)
+}
+
+// sanitizeMessagesToolCallArgs 遍历消息，修复 assistant 消息工具调用的 arguments 拼接问题。
+func sanitizeMessagesToolCallArgs(msgs []adk.Message) []adk.Message {
+	result := make([]adk.Message, len(msgs))
+	copy(result, msgs)
+	for i, msg := range result {
+		if msg == nil || msg.Role != schema.Assistant || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		fixedCalls := make([]schema.ToolCall, len(msg.ToolCalls))
+		copy(fixedCalls, msg.ToolCalls)
+		changed := false
+		for j, tc := range fixedCalls {
+			clean := sanitizeToolCallArgs(tc.Function.Arguments)
+			if clean != tc.Function.Arguments {
+				fixedCalls[j].Function.Arguments = clean
+				changed = true
+			}
+		}
+		if !changed {
+			continue
+		}
+		msgCopy := *msg
+		msgCopy.ToolCalls = fixedCalls
+		result[i] = &msgCopy
+	}
+	return result
+}
+
 func contextAwareModelInput(ctx context.Context, instruction string, input *adk.AgentInput) ([]adk.Message, error) {
 	var latestAnalysis string
 	var filtered []adk.Message
@@ -251,7 +301,7 @@ func contextAwareModelInput(ctx context.Context, instruction string, input *adk.
 		}
 		msgs = append(msgs, formatted...)
 	}
-	msgs = append(msgs, filtered...)
+	msgs = append(msgs, sanitizeMessagesToolCallArgs(filtered)...)
 	return msgs, nil
 }
 
@@ -264,7 +314,7 @@ func buildDialogueTools(cfg *Config, knowledgeRetriever einoretriever.Retriever)
 		tools.NewPlayerEmotionAnalysisTool(cfg.ChatModel, cfg.Logger),
 		tools.NewDetailSelectionTool(cfg.Logger),
 		tools.NewKnowledgeRetrieveTool(knowledgeRetriever, cfg.Logger),
-		tools.NewWebSearchTool(cfg.Logger),
+		//tools.NewWebSearchTool(cfg.Logger),
 		tools.NewBashApprovalTool(cfg.Logger),
 	}
 }

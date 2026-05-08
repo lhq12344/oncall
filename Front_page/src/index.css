@@ -24,6 +24,43 @@
 }
 
 @layer utilities {
+  .stream-markdown p {
+    margin: 0 0 0.5rem;
+    white-space: pre-wrap;
+  }
+
+  .stream-markdown p:last-child {
+    margin-bottom: 0;
+  }
+
+  .stream-markdown ul,
+  .stream-markdown ol {
+    margin: 0.5rem 0;
+    padding-left: 0;
+  }
+
+  .stream-markdown li {
+    margin: 0.2rem 0;
+  }
+
+  .stream-markdown li > p {
+    margin: 0;
+  }
+
+  .stream-markdown pre {
+    margin: 0.65rem 0;
+  }
+
+  .stream-markdown blockquote {
+    margin: 0.7rem 0;
+  }
+
+  .stream-markdown h2,
+  .stream-markdown h3 {
+    margin-top: 0.75rem;
+    margin-bottom: 0.4rem;
+  }
+
   .glow-neon {
     text-shadow: 0 0 10px rgba(0, 243, 255, 0.8), 0 0 20px rgba(0, 243, 255, 0.4);
   }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -74,7 +75,7 @@ func resolveDashScopeEndpoint(baseURL string) string {
 	if baseURL == "" {
 		return defaultDashScopeEmbeddingEndpoint
 	}
-	if strings.HasSuffix(baseURL, dashScopeEmbeddingPath) {
+	if parsed, err := url.Parse(baseURL); err == nil && parsed.Path != "" && parsed.Path != "/" {
 		return baseURL
 	}
 	return baseURL + dashScopeEmbeddingPath
@@ -86,6 +87,8 @@ type dashScopeEmbedder struct {
 	endpoint string
 	client   *http.Client
 }
+
+const dashScopeMaxBatchSize = 20
 
 func (e *dashScopeEmbedder) EmbedStrings(ctx context.Context, texts []string, opts ...embedding.Option) ([][]float64, error) {
 	if len(texts) == 0 {
@@ -100,6 +103,22 @@ func (e *dashScopeEmbedder) EmbedStrings(ctx context.Context, texts []string, op
 		return nil, fmt.Errorf("empty model")
 	}
 
+	result := make([][]float64, len(texts))
+	for start := 0; start < len(texts); start += dashScopeMaxBatchSize {
+		end := start + dashScopeMaxBatchSize
+		if end > len(texts) {
+			end = len(texts)
+		}
+		batch, err := e.embedBatch(ctx, model, texts[start:end])
+		if err != nil {
+			return nil, err
+		}
+		copy(result[start:end], batch)
+	}
+	return result, nil
+}
+
+func (e *dashScopeEmbedder) embedBatch(ctx context.Context, model string, texts []string) ([][]float64, error) {
 	contents := make([]map[string]string, len(texts))
 	for i, text := range texts {
 		contents[i] = map[string]string{"text": text}
@@ -134,10 +153,16 @@ func (e *dashScopeEmbedder) EmbedStrings(ctx context.Context, texts []string, op
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, dashScopeHTTPError(resp.StatusCode, respBody)
 	}
-
+	if len(respBody) == 0 {
+		return nil, fmt.Errorf("decode dashscope embedding response failed: empty response body (http_status=%d)", resp.StatusCode)
+	}
 	var parsed dashScopeEmbeddingResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, fmt.Errorf("decode dashscope embedding response failed: %w", err)
+		hint := respBody
+		if len(hint) > 300 {
+			hint = hint[:300]
+		}
+		return nil, fmt.Errorf("decode dashscope embedding response failed: %w (http_status=%d body=%q)", err, resp.StatusCode, hint)
 	}
 	return parsed.vectors(len(texts))
 }

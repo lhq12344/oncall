@@ -25,4 +25,4 @@ milvus:
   timeout: "60s"
 
 doubao_embedding_model:
-  dimensions: 2048
+  dimensions: 1152

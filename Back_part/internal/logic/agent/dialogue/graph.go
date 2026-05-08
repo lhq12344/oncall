@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	dialoguetools "go_agent/internal/logic/agent/dialogue/tools"
@@ -201,7 +202,7 @@ func BuildOrchestrationGraph(
 	return &OrchestrationResult{Graph: runnable}, nil
 }
 
-const analysisNodeTimeout = 5 * time.Second
+const analysisNodeTimeout = 10 * time.Second
 
 func detectAndStoreUserLanguage(ctx context.Context, cfg *Config, msgs []*schema.Message) ([]*schema.Message, error) {
 	question := lastUserQuestion(msgs)
@@ -235,18 +236,31 @@ func appendAnalysisNodeMessage(ctx context.Context, cfg *Config, msgs []*schema.
 	analysisCtx, cancel := context.WithTimeout(ctx, analysisNodeTimeout)
 	defer cancel()
 
-	intentJSON, intentErr := runAnalysisTool(
-		analysisCtx,
-		dialoguetools.NewIntentAnalysisTool(cfg.ChatModel, cfg.Embedder, cfg.Logger, cfg.EnableToolLLM),
-		question,
-		fallbackIntentAnalysis(),
+	var (
+		intentJSON, emotionJSON string
+		intentErr, emotionErr   error
+		wg                      sync.WaitGroup
 	)
-	emotionJSON, emotionErr := runAnalysisTool(
-		analysisCtx,
-		dialoguetools.NewPlayerEmotionAnalysisTool(cfg.ChatModel, cfg.Logger),
-		question,
-		fallbackEmotionAnalysis(),
-	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		intentJSON, intentErr = runAnalysisTool(
+			analysisCtx,
+			dialoguetools.NewIntentAnalysisTool(cfg.ChatModel, cfg.Embedder, cfg.Logger, cfg.EnableToolLLM),
+			question,
+			fallbackIntentAnalysis(),
+		)
+	}()
+	go func() {
+		defer wg.Done()
+		emotionJSON, emotionErr = runAnalysisTool(
+			analysisCtx,
+			dialoguetools.NewPlayerEmotionAnalysisTool(cfg.ChatModel, cfg.Logger),
+			question,
+			fallbackEmotionAnalysis(),
+		)
+	}()
+	wg.Wait()
 
 	analysis := turnAnalysisFromToolResults(intentJSON, emotionJSON, errors.Join(intentErr, emotionErr))
 	if err := compose.ProcessState[*OrchState](ctx, func(_ context.Context, s *OrchState) error {
@@ -649,17 +663,7 @@ func recordGateTraceEvents(ctx context.Context, cfg *Config, msgs []*schema.Mess
 	if cfg == nil || cfg.TraceRecorder == nil {
 		return
 	}
-	// Build map from ToolCallID to tool name
-	toolCallIDToName := make(map[string]string)
-	for _, msg := range msgs {
-		if msg != nil && msg.Role == schema.Assistant {
-			for _, tc := range msg.ToolCalls {
-				if strings.TrimSpace(tc.ID) != "" && strings.TrimSpace(tc.Function.Name) != "" {
-					toolCallIDToName[tc.ID] = tc.Function.Name
-				}
-			}
-		}
-	}
+	toolCallIDToName := buildToolCallNameIndex(msgs)
 
 	for _, msg := range msgs {
 		if msg == nil {
@@ -667,14 +671,68 @@ func recordGateTraceEvents(ctx context.Context, cfg *Config, msgs []*schema.Mess
 		}
 		switch {
 		case msg.Role == schema.Tool:
-			toolName := toolCallIDToName[msg.ToolCallID]
-			if toolName == "" {
-				toolName = "unknown_tool"
+			toolName := toolNameForMessage(msg, toolCallIDToName)
+			status := "success"
+			var ksResult KnowledgeSpecialistResult
+			if toolName == "knowledge_search_expert" && json.Unmarshal([]byte(msg.Content), &ksResult) == nil {
+				status = knowledgeTraceStatus(ksResult)
 			}
-			recordTraceEvent(ctx, cfg, "gate_node", "tool_result", toolName, msg.ToolCallID, "success", msg.Content, "")
+			recordTraceEvent(ctx, cfg, "gate_node", "tool_result", toolName, msg.ToolCallID, status, msg.Content, "")
 		case msg.Role == schema.Assistant && strings.TrimSpace(msg.ToolCallID) == "" && (strings.Contains(msg.Content, "[RESOLVED]") || strings.Contains(msg.Content, "[TO_COMPLEX]")):
 			recordTraceEvent(ctx, cfg, "gate_node", "route_marker", "gate_agent", "", "success", msg.Content, "")
 		}
+	}
+}
+
+func buildToolCallNameIndex(msgs []*schema.Message) map[string]string {
+	toolCallIDToName := make(map[string]string)
+	for _, msg := range msgs {
+		if msg == nil || msg.Role != schema.Assistant {
+			continue
+		}
+		for _, tc := range msg.ToolCalls {
+			if strings.TrimSpace(tc.ID) != "" && strings.TrimSpace(tc.Function.Name) != "" {
+				toolCallIDToName[tc.ID] = tc.Function.Name
+			}
+		}
+	}
+	return toolCallIDToName
+}
+
+func toolNameForMessage(msg *schema.Message, toolCallIDToName map[string]string) string {
+	if msg == nil {
+		return "unknown_tool"
+	}
+	if name := strings.TrimSpace(msg.ToolName); name != "" {
+		return name
+	}
+	if name := strings.TrimSpace(toolCallIDToName[msg.ToolCallID]); name != "" {
+		return name
+	}
+	return "unknown_tool"
+}
+
+func knowledgeTraceStatus(result KnowledgeSpecialistResult) string {
+	switch strings.ToLower(strings.TrimSpace(result.Status)) {
+	case "degraded", "error":
+		return "degraded"
+	case "partial":
+		return "partial"
+	case "empty":
+		return "empty"
+	case "success":
+		return "success"
+	default:
+		if strings.TrimSpace(result.ErrorSummary) != "" {
+			return "degraded"
+		}
+		if len(result.PendingQuestions) > 0 {
+			return "partial"
+		}
+		if len(result.SolvedContexts) > 0 {
+			return "success"
+		}
+		return "empty"
 	}
 }
 
@@ -897,10 +955,14 @@ func shouldEmitAssistantMessage(mo *adk.MessageVariant, msg *schema.Message) boo
 //   - len(PendingQuestions)>0 → complex_node
 //     （工具本轮被调用时，结构化状态优先于 LLM 文本标记，防止 LLM 误判）
 //
-// 2. Gate Agent 最终助手消息含 [RESOLVED] → answer_node（工具未调用时的 LLM 判断）
-// 3. Gate Agent 最终助手消息含 [TO_COMPLEX] → complex_node
-// 4. 回退：最近一条 Tool 消息内容有效 → answer_node；无效或空 → complex_node
-// 5. 无 Tool 消息（未执行 RAG）→ complex_node
+// 2. 最近一次 knowledge_search_expert 工具 JSON：
+//   - len(SolvedContexts)>0 && len(PendingQuestions)==0 → answer_node
+//   - len(PendingQuestions)>0 或 status=empty/degraded/error → complex_node
+//
+// 3. Gate Agent 最终助手消息含 [RESOLVED] → answer_node（工具未调用时的 LLM 判断）
+// 4. Gate Agent 最终助手消息含 [TO_COMPLEX] → complex_node
+// 5. 回退：最近一条 Tool 消息内容有效 → answer_node；无效或空 → complex_node
+// 6. 无 Tool 消息（未执行 RAG）→ complex_node
 func ragResultRouter(ctx context.Context, msgs []*schema.Message) (string, error) {
 	// 优先级 1：读取 OrchState 结构化状态（由 writeKnowledgeSpecialistResultToState 写入）。
 	// 仅当本轮确实调用了 knowledge_search_expert（SolvedContexts 或 PendingQuestions 非空）时生效。
@@ -919,7 +981,12 @@ func ragResultRouter(ctx context.Context, msgs []*schema.Message) (string, error
 		return "answer_node", nil
 	}
 
-	// 优先级 2-3：工具本轮未被调用，回退到 LLM 文本标记。
+	toolCallIDToName := buildToolCallNameIndex(msgs)
+	if route, ok := routeFromKnowledgeSpecialistToolResult(msgs, toolCallIDToName); ok {
+		return route, nil
+	}
+
+	// 优先级 3-4：工具本轮未被调用，回退到 LLM 文本标记。
 	for i := len(msgs) - 1; i >= 0; i-- {
 		msg := msgs[i]
 		if msg.Role == schema.Assistant && strings.TrimSpace(msg.ToolCallID) == "" {
@@ -934,19 +1001,67 @@ func ragResultRouter(ctx context.Context, msgs []*schema.Message) (string, error
 		}
 	}
 
-	// 优先级 4：检查最近一条 Tool 消息内容。
+	// 优先级 5：仅检查已知知识检索工具的最近 Tool 消息内容。
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == schema.Tool {
-			content := strings.TrimSpace(msgs[i].Content)
-			if content == "" || isEmptyRAGResult(content) {
-				return "complex_node", nil
-			}
-			return "answer_node", nil
+		msg := msgs[i]
+		if msg == nil || msg.Role != schema.Tool || !isKnowledgeToolMessage(msg, toolCallIDToName) {
+			continue
 		}
+		content := strings.TrimSpace(msg.Content)
+		if content == "" || isEmptyRAGResult(content) {
+			return "complex_node", nil
+		}
+		return "answer_node", nil
 	}
 
 	// 优先级 5：无 Tool 消息，走 complex_node。
 	return "complex_node", nil
+}
+
+func routeFromKnowledgeSpecialistToolResult(msgs []*schema.Message, toolCallIDToName map[string]string) (string, bool) {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := msgs[i]
+		if msg == nil || msg.Role != schema.Tool {
+			continue
+		}
+		if toolNameForMessage(msg, toolCallIDToName) != "knowledge_search_expert" {
+			continue
+		}
+
+		var ksResult KnowledgeSpecialistResult
+		if err := json.Unmarshal([]byte(msg.Content), &ksResult); err != nil {
+			content := strings.TrimSpace(msg.Content)
+			if content == "" || isEmptyRAGResult(content) {
+				return "complex_node", true
+			}
+			return "answer_node", true
+		}
+		if len(ksResult.PendingQuestions) > 0 {
+			return "complex_node", true
+		}
+		if len(ksResult.SolvedContexts) > 0 {
+			return "answer_node", true
+		}
+		switch strings.ToLower(strings.TrimSpace(ksResult.Status)) {
+		case "empty", "degraded", "error", "partial":
+			return "complex_node", true
+		default:
+			if strings.TrimSpace(ksResult.ErrorSummary) != "" {
+				return "complex_node", true
+			}
+			return "complex_node", true
+		}
+	}
+	return "", false
+}
+
+func isKnowledgeToolMessage(msg *schema.Message, toolCallIDToName map[string]string) bool {
+	switch toolNameForMessage(msg, toolCallIDToName) {
+	case "knowledge_search_expert", "knowledge_retrieve":
+		return true
+	default:
+		return false
+	}
 }
 
 // isEmptyRAGResult 判断 RAG 工具返回内容是否为空/无效。
@@ -974,8 +1089,14 @@ func isStructuredEmptyRAGResult(content string) bool {
 
 	status, _ := payload["status"].(string)
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "error", "degraded":
+	case "error", "degraded", "empty":
 		return true
+	}
+	if pendingQuestions, ok := payload["pending_questions"].([]any); ok && len(pendingQuestions) > 0 {
+		return true
+	}
+	if solvedContexts, ok := payload["solved_contexts"].([]any); ok {
+		return len(solvedContexts) == 0
 	}
 
 	if count, ok := payload["count"]; ok && numericValue(count) <= 0 {
@@ -1016,8 +1137,13 @@ const RunCheckpointTTL = 24 * time.Hour
 // writeKnowledgeSpecialistResultToState 扫描消息列表，找到 knowledge_search_expert 工具返回的
 // JSON 结果，解析后写入 OrchState Blackboard（SolvedContexts / PendingQuestions）。
 func writeKnowledgeSpecialistResultToState(ctx context.Context, msgs []*schema.Message, logger *zap.Logger) {
-	for _, msg := range msgs {
+	toolCallIDToName := buildToolCallNameIndex(msgs)
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := msgs[i]
 		if msg == nil || msg.Role != schema.Tool {
+			continue
+		}
+		if toolNameForMessage(msg, toolCallIDToName) != "knowledge_search_expert" {
 			continue
 		}
 		var ksResult KnowledgeSpecialistResult

@@ -1,20 +1,21 @@
 import React, { useState, useRef } from 'react';
 import { useStore } from '../store/useStore';
-import { Send, Paperclip, Loader2, X } from 'lucide-react';
+import { Send, Paperclip, Loader2 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { streamChat, uploadFile } from '../services/api';
+import { uploadFile } from '../services/api';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
 export const InputArea: React.FC = () => {
-  const { theme, currentSessionId, addSession, setStreaming, setConnectionStatus, isStreaming, sendMessage, addMessage } = useStore();
+  const { theme, currentSessionId, addSession, isSessionStreaming, sendMessage, addMessage } = useStore();
   const [input, setInput] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const isStreaming = isSessionStreaming(currentSessionId);
 
   const handleSend = async () => {
     if (!input.trim() || isStreaming) return;

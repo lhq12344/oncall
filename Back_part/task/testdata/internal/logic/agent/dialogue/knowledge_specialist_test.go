@@ -57,3 +57,51 @@ func TestBuildEvaluateNodeUsesUserLanguage(t *testing.T) {
 		t.Fatalf("system prompt missing user language: %s", got)
 	}
 }
+
+func TestBuildEvaluateNodeMarksUncoveredQuestionsPending(t *testing.T) {
+	model := &fakeToolCallingChatModel{
+		generateResponse: schema.AssistantMessage("SOLVED:已覆盖问题", nil),
+	}
+	node := buildEvaluateNode(context.Background(), &models.ChatModel{Client: model}, nil)
+
+	result, err := node(context.Background(), map[string][]schema.Document{
+		"已覆盖问题": {
+			{Content: "相关资料"},
+		},
+		"未覆盖问题": {
+			{Content: "也有资料，但模型遗漏了这一行"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildEvaluateNode returned error: %v", err)
+	}
+	if len(result.SolvedContexts) != 1 {
+		t.Fatalf("solved contexts count = %d, want 1", len(result.SolvedContexts))
+	}
+	if len(result.PendingQuestions) != 1 || result.PendingQuestions[0] != "未覆盖问题" {
+		t.Fatalf("pending questions = %#v, want uncovered question", result.PendingQuestions)
+	}
+	if result.Status != "partial" {
+		t.Fatalf("status = %q, want partial", result.Status)
+	}
+}
+
+func TestBuildEvaluateNodeDoesNotSolveQuestionsWithoutDocs(t *testing.T) {
+	model := &fakeToolCallingChatModel{
+		generateResponse: schema.AssistantMessage("SOLVED:无文档问题", nil),
+	}
+	node := buildEvaluateNode(context.Background(), &models.ChatModel{Client: model}, nil)
+
+	result, err := node(context.Background(), map[string][]schema.Document{
+		"无文档问题": nil,
+	})
+	if err != nil {
+		t.Fatalf("buildEvaluateNode returned error: %v", err)
+	}
+	if len(result.SolvedContexts) != 0 {
+		t.Fatalf("solved contexts = %#v, want none", result.SolvedContexts)
+	}
+	if len(result.PendingQuestions) != 1 || result.PendingQuestions[0] != "无文档问题" {
+		t.Fatalf("pending questions = %#v, want no-doc question", result.PendingQuestions)
+	}
+}

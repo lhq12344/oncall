@@ -167,33 +167,44 @@ async function streamRequest(url: string, body: any, options: StreamOptions) {
 
       for (const part of parts) {
         const lines = part.split('\n');
-        let dataContent = '';
-        
+        const dataLines: string[] = [];
+
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            dataContent += line.slice(6) + '\n';
+          if (!line.startsWith('data:')) {
+            continue;
           }
+          if (line.startsWith('data: ')) {
+            dataLines.push(line.slice(6));
+            continue;
+          }
+          dataLines.push(line.slice(5));
         }
 
-        const trimmedData = dataContent.trim();
-        if (!trimmedData) continue;
+        if (dataLines.length === 0) {
+          continue;
+        }
+
+        // SSE multi-line data semantics: join each data line with "\n"
+        // to preserve model-emitted whitespace (including trailing newlines).
+        const eventData = dataLines.join('\n');
+        const controlPayload = eventData.trim();
 
         // Handle [DONE]
-        if (trimmedData === '[DONE]') {
+        if (controlPayload === '[DONE]') {
           onDone?.();
           return;
         }
 
         // Handle [ERROR]
-        if (trimmedData.startsWith('[ERROR]')) {
-          onError?.(trimmedData.slice(7).trim());
+        if (controlPayload.startsWith('[ERROR]')) {
+          onError?.(controlPayload.slice(7).trim());
           return;
         }
 
         // Try parsing as JSON
         try {
-          const json = JSON.parse(trimmedData);
-          
+          const json = JSON.parse(controlPayload);
+
           if (json.type === 'done') {
             onDone?.();
             return;
@@ -219,15 +230,15 @@ async function streamRequest(url: string, body: any, options: StreamOptions) {
           }
 
           if (json.type === 'content') {
-            onContent(json.content);
+            onContent(String(json.content ?? ''));
             continue;
           }
 
           // If it's JSON but not a recognized type, maybe it's just content?
           // Or just ignore it if it doesn't match our protocol
-        } catch (e) {
-          // Not JSON, treat as raw text
-          onContent(trimmedData);
+        } catch {
+          // Not JSON, treat as raw text and preserve whitespace as-is.
+          onContent(eventData);
         }
       }
     }
