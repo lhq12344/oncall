@@ -90,7 +90,9 @@ func (command) Run(ctx context.Context) {
 			v1Group.Bind(chatController)
 		})
 	})
-	s.SetPort(readServerPort(ctx))
+	serverPort := readServerPort(ctx)
+	serverHost := readServerHost(ctx)
+	s.SetAddr(net.JoinHostPort(serverHost, strconv.Itoa(serverPort)))
 	s.Run()
 }
 
@@ -142,6 +144,36 @@ func readServerPort(ctx context.Context) int {
 		}
 	}
 	return 6872
+}
+
+func readServerHost(ctx context.Context) string {
+	if host := strings.TrimSpace(os.Getenv("BACKEND_HOST")); host != "" {
+		return host
+	}
+	if value, err := g.Cfg().Get(ctx, "server.address"); err == nil && value != nil {
+		if host := parseHost(value.String()); host != "" {
+			return host
+		}
+	}
+	return "0.0.0.0"
+}
+
+func parseHost(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(value)
+	if err == nil {
+		return strings.TrimSpace(host)
+	}
+	if strings.HasPrefix(value, ":") {
+		return ""
+	}
+	if !strings.Contains(value, ":") {
+		return ""
+	}
+	return strings.TrimSpace(value[:strings.LastIndex(value, ":")])
 }
 
 func parsePort(value string) int {

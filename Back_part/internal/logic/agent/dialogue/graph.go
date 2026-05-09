@@ -57,13 +57,15 @@ type OrchestrationResult struct {
 // 图拓扑（DAG）：
 //
 //	START → analysis_node → gate_node → [ragResultRouter] → answer_node → END
+//	                                                   ↘ direct_node → END
 //	                                                   ↘ complex_node → END
 //
 // analysis_node 确定性运行意图/情绪工具并注入当前轮次内部分析上下文。
 // gate_node 以批量模式运行 Gate Agent（RAG 检索 → 路由标记）。
 // ragResultRouter 检查 Gate 输出中的 [RESOLVED]/[TO_COMPLEX] 标记决定路由。
 // answer_node 以流式模式运行 Answer Agent（整理 RAG 结果，结合情绪调整语气）。
-// complex_node 以流式模式运行 Complex Agent（全工具集 + 中断/恢复支持，结合情绪调整语气）。
+// direct_node 直接返回 Gate Agent 已生成的轻量回复（问候、补充信息、澄清追问等）。
+// complex_node 以流式模式运行 Complex Agent（受限工具集 + 中断/恢复支持，结合情绪调整语气）。
 //
 // 入参 checkpointStore 同时用于外层图 checkpoint（中断时保存图状态）和
 // complex_node 内部 complexRunner checkpoint（保存 Agent ReAct 状态）。
@@ -155,6 +157,15 @@ func BuildOrchestrationGraph(
 		return nil, fmt.Errorf("failed to add answer_node: %w", err)
 	}
 
+	// direct_node：Gate 已经给出不需要工具的轻量回复时，直接返回，避免落入 Complex Agent。
+	if err := g.AddLambdaNode("direct_node", compose.StreamableLambda(
+		func(ctx context.Context, msgs []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+			return streamDirectGateMessage(ctx, msgs, cfg.Logger)
+		},
+	)); err != nil {
+		return nil, fmt.Errorf("failed to add direct_node: %w", err)
+	}
+
 	// complex_node：流式运行 Complex Agent，支持 interrupt/resume。
 	if err := g.AddLambdaNode("complex_node", compose.StreamableLambda(
 		buildComplexNodeLambda(complexRunner, cfg.Logger),
@@ -167,6 +178,7 @@ func BuildOrchestrationGraph(
 		{"language_detector", "analysis_node"},
 		{"analysis_node", "gate_node"},
 		{"answer_node", compose.END},
+		{"direct_node", compose.END},
 		{"complex_node", compose.END},
 	} {
 		if err := g.AddEdge(edge[0], edge[1]); err != nil {
@@ -180,7 +192,7 @@ func BuildOrchestrationGraph(
 			recordTraceEvent(ctx, cfg, "gate_node", "route_decision", "gate_agent", "", statusFromError(err), route, errorSummary(err))
 			return route, err
 		},
-		map[string]bool{"answer_node": true, "complex_node": true},
+		map[string]bool{"answer_node": true, "direct_node": true, "complex_node": true},
 	)
 	if err := g.AddBranch("gate_node", branch); err != nil {
 		return nil, fmt.Errorf("failed to add router branch: %w", err)
@@ -901,7 +913,7 @@ func appendHandoffUserMessage(msgs []*schema.Message, target string, extraCtx []
 			pendingBlock = "\n\n知识库未能解决的遗留子问题（请重点攻克）：\n- " + strings.Join(extraCtx, "\n- ")
 		}
 		content = fmt.Sprintf(
-			"Gate Agent 已判断知识库结果不足或检索异常。请忽略内部路由标记，继续处理并直接回答用户原始问题。\n\n原始问题：%s%s\n\n要求：不要输出 [RESOLVED] 或 [TO_COMPLEX] 路由标记；必要时使用可用 Skill 工具或 web_search 攻克遗留问题。",
+			"Gate Agent 已判断知识库结果不足或检索异常。请忽略内部路由标记，继续处理并直接回答用户原始问题。\n\n原始问题：%s%s\n\n要求：不要输出 [RESOLVED] 或 [TO_COMPLEX] 路由标记；必要时使用可用 Skill 工具或已挂载工具攻克遗留问题。",
 			question, pendingBlock,
 		)
 	}
@@ -961,8 +973,9 @@ func shouldEmitAssistantMessage(mo *adk.MessageVariant, msg *schema.Message) boo
 //
 // 3. Gate Agent 最终助手消息含 [RESOLVED] → answer_node（工具未调用时的 LLM 判断）
 // 4. Gate Agent 最终助手消息含 [TO_COMPLEX] → complex_node
-// 5. 回退：最近一条 Tool 消息内容有效 → answer_node；无效或空 → complex_node
-// 6. 无 Tool 消息（未执行 RAG）→ complex_node
+// 5. Gate Agent 最终助手消息无标记且无工具调用 → direct_node（轻量直答/澄清追问）
+// 6. 回退：最近一条 Tool 消息内容有效 → answer_node；无效或空 → complex_node
+// 7. 无 Tool 消息（未执行 RAG）→ complex_node
 func ragResultRouter(ctx context.Context, msgs []*schema.Message) (string, error) {
 	// 优先级 1：读取 OrchState 结构化状态（由 writeKnowledgeSpecialistResultToState 写入）。
 	// 仅当本轮确实调用了 knowledge_search_expert（SolvedContexts 或 PendingQuestions 非空）时生效。
@@ -989,13 +1002,19 @@ func ragResultRouter(ctx context.Context, msgs []*schema.Message) (string, error
 	// 优先级 3-4：工具本轮未被调用，回退到 LLM 文本标记。
 	for i := len(msgs) - 1; i >= 0; i-- {
 		msg := msgs[i]
-		if msg.Role == schema.Assistant && strings.TrimSpace(msg.ToolCallID) == "" {
+		if msg == nil {
+			continue
+		}
+		if msg.Role == schema.Assistant && strings.TrimSpace(msg.ToolCallID) == "" && len(msg.ToolCalls) == 0 {
 			content := msg.Content
 			if strings.Contains(content, "[RESOLVED]") {
 				return "answer_node", nil
 			}
 			if strings.Contains(content, "[TO_COMPLEX]") {
 				return "complex_node", nil
+			}
+			if strings.TrimSpace(content) != "" {
+				return "direct_node", nil
 			}
 			break
 		}
@@ -1016,6 +1035,43 @@ func ragResultRouter(ctx context.Context, msgs []*schema.Message) (string, error
 
 	// 优先级 5：无 Tool 消息，走 complex_node。
 	return "complex_node", nil
+}
+
+func streamDirectGateMessage(ctx context.Context, msgs []*schema.Message, logger *zap.Logger) (*schema.StreamReader[*schema.Message], error) {
+	sr, sw := schema.Pipe[*schema.Message](1)
+	go func() {
+		defer sw.Close()
+		msg := lastDirectGateMessage(msgs)
+		if msg == nil {
+			sw.Send(nil, fmt.Errorf("direct gate message not found"))
+			return
+		}
+		if logger != nil {
+			logger.Info("direct_node emitting gate message",
+				zap.Int("content_len", len(msg.Content)),
+				zap.String("preview", previewContent(msg.Content)))
+		}
+		sw.Send(localizeAssistantMessage(ctx, msg), nil)
+	}()
+	return sr, nil
+}
+
+func lastDirectGateMessage(msgs []*schema.Message) *schema.Message {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := msgs[i]
+		if msg == nil || msg.Role != schema.Assistant {
+			continue
+		}
+		if strings.TrimSpace(msg.ToolCallID) != "" || len(msg.ToolCalls) > 0 {
+			continue
+		}
+		content := strings.TrimSpace(msg.Content)
+		if content == "" || strings.Contains(content, "[RESOLVED]") || strings.Contains(content, "[TO_COMPLEX]") {
+			continue
+		}
+		return msg
+	}
+	return nil
 }
 
 func routeFromKnowledgeSpecialistToolResult(msgs []*schema.Message, toolCallIDToName map[string]string) (string, bool) {

@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useLayoutEffect, useState, useRef } from 'react';
 import { useStore } from '../store/useStore';
 import { Send, Paperclip, Loader2 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
@@ -15,7 +15,22 @@ export const InputArea: React.FC = () => {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isStreaming = isSessionStreaming(currentSessionId);
+  const textareaBaseHeight = 88;
+  const textareaMaxHeight = textareaBaseHeight * 2;
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    textarea.style.height = 'auto';
+    const nextHeight = Math.min(textarea.scrollHeight, textareaMaxHeight);
+    textarea.style.height = `${Math.max(textareaBaseHeight, nextHeight)}px`;
+    textarea.style.overflowY = textarea.scrollHeight > textareaMaxHeight ? 'auto' : 'hidden';
+  }, [input]);
 
   const handleSend = async () => {
     if (!input.trim() || isStreaming) return;
@@ -111,6 +126,7 @@ export const InputArea: React.FC = () => {
           </button>
 
           <textarea
+            ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
@@ -120,7 +136,7 @@ export const InputArea: React.FC = () => {
               }
             }}
             placeholder="输入问题、知识库检索或搜索请求..."
-            className="flex-1 bg-transparent border-none outline-none py-3 px-2 resize-none max-h-40 min-h-[44px] text-sm"
+            className="input-scrollbar flex-1 bg-transparent border-none outline-none py-3 px-2 pr-4 resize-none min-h-[88px] max-h-[176px] text-sm leading-6 transition-[height] duration-300 ease-out"
             rows={1}
           />
 

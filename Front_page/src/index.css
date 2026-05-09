@@ -158,6 +158,40 @@
     background: rgba(0, 243, 255, 0.5);
   }
 
+  .input-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 243, 255, 0.45) transparent;
+    scrollbar-gutter: stable;
+  }
+
+  .input-scrollbar::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .input-scrollbar::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 999px;
+  }
+
+  .input-scrollbar::-webkit-scrollbar-thumb {
+    min-height: 36px;
+    background: linear-gradient(
+      to bottom,
+      rgba(0, 243, 255, 0.55),
+      rgba(188, 19, 254, 0.45)
+    );
+    border: 2px solid rgba(5, 5, 8, 0.8);
+    border-radius: 999px;
+  }
+
+  .input-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(
+      to bottom,
+      rgba(0, 243, 255, 0.85),
+      rgba(188, 19, 254, 0.7)
+    );
+  }
+
   .clip-path-corner {
     clip-path: polygon(
       0 0,

@@ -11,7 +11,9 @@ import (
 
 const defaultTraceTTL = 24 * time.Hour
 
-// OrchestrationTraceEvent records internal graph events outside visible chat memory.
+const traceEventTypeVisibleTurn = "visible_turn"
+
+// OrchestrationTraceEvent records visible dialogue turns for trace/audit storage.
 type OrchestrationTraceEvent struct {
 	SessionID      string            `json:"session_id,omitempty"`
 	TurnID         string            `json:"turn_id,omitempty"`
@@ -24,11 +26,13 @@ type OrchestrationTraceEvent struct {
 	Timestamp      string            `json:"timestamp,omitempty"`
 	Status         string            `json:"status,omitempty"`
 	Tags           map[string]string `json:"tags,omitempty"`
+	UserQuestion   string            `json:"user_question,omitempty"`
+	AssistantReply string            `json:"assistant_reply,omitempty"`
 	CompactPayload string            `json:"compact_payload,omitempty"`
 	ErrorSummary   string            `json:"error_summary,omitempty"`
 }
 
-// OrchestrationTraceRecorder persists internal graph events for audit/debugging.
+// OrchestrationTraceRecorder persists normal user-visible dialogue turns.
 type OrchestrationTraceRecorder interface {
 	RecordEvent(ctx context.Context, event OrchestrationTraceEvent) error
 }
@@ -71,9 +75,17 @@ func (r *RedisOrchestrationTraceRecorder) RecordEvent(ctx context.Context, event
 	if strings.TrimSpace(event.Timestamp) == "" {
 		event.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
 	}
+	event.EventType = strings.TrimSpace(event.EventType)
+	event.Status = strings.TrimSpace(event.Status)
+	event.UserQuestion = ClipTraceText(event.UserQuestion)
+	event.AssistantReply = ClipTraceText(event.AssistantReply)
 	event.CompactPayload = ClipTraceText(event.CompactPayload)
 	event.ErrorSummary = ClipTraceText(event.ErrorSummary)
 	event.Tags = normalizeTraceTags(event.Tags)
+
+	if !shouldPersistTraceEvent(event) {
+		return nil
+	}
 
 	payload, err := json.Marshal(event)
 	if err != nil {
@@ -99,6 +111,51 @@ func (r *RedisOrchestrationTraceRecorder) traceMetaKey(sessionID, turnID string)
 
 func (r *RedisOrchestrationTraceRecorder) traceEventsKey(sessionID, turnID string) string {
 	return r.prefix + ":trace:" + sessionID + ":" + turnID + ":events"
+}
+
+func shouldPersistTraceEvent(event OrchestrationTraceEvent) bool {
+	if event.EventType != traceEventTypeVisibleTurn || event.Status != "success" {
+		return false
+	}
+	if strings.TrimSpace(event.ErrorSummary) != "" {
+		return false
+	}
+	question := strings.TrimSpace(event.UserQuestion)
+	reply := strings.TrimSpace(event.AssistantReply)
+	if question == "" || reply == "" {
+		return false
+	}
+	return !isErrorTraceReply(reply)
+}
+
+func NewVisibleTurnTraceEvent(sessionID, turnID, checkpointID, source, question, answer string) OrchestrationTraceEvent {
+	return OrchestrationTraceEvent{
+		SessionID:      sessionID,
+		TurnID:         turnID,
+		CheckpointID:   checkpointID,
+		Source:         source,
+		Node:           "conversation",
+		EventType:      traceEventTypeVisibleTurn,
+		AgentOrTool:    "assistant",
+		Status:         "success",
+		UserQuestion:   question,
+		AssistantReply: answer,
+		CompactPayload: "",
+		ErrorSummary:   "",
+	}
+}
+
+func isErrorTraceReply(reply string) bool {
+	reply = strings.TrimSpace(reply)
+	if reply == "" {
+		return false
+	}
+	lower := strings.ToLower(reply)
+	return strings.HasPrefix(reply, "[ERROR]") ||
+		strings.HasPrefix(reply, "错误：") ||
+		strings.HasPrefix(reply, "错误:") ||
+		strings.HasPrefix(lower, "error:") ||
+		strings.HasPrefix(lower, "failed:")
 }
 
 func normalizeTraceTags(tags map[string]string) map[string]string {

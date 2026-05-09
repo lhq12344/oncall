@@ -135,6 +135,11 @@ func (t *PlayerEmotionAnalysisTool) InvokableRun(ctx context.Context, argumentsI
 		return "", fmt.Errorf("user_input is required")
 	}
 
+	if isPureInfoStatement(in.UserInput) {
+		result := stablePureInfoEmotionResult(in.UserInput)
+		return t.marshalAndLogEmotionResult(result, in.UserInput)
+	}
+
 	result, err := t.llmAnalyzeEmotion(ctx, in.UserInput)
 	if err != nil {
 		if t.logger != nil {
@@ -145,6 +150,13 @@ func (t *PlayerEmotionAnalysisTool) InvokableRun(ctx context.Context, argumentsI
 		result = keywordEmotionAnalysis(in.UserInput)
 	}
 
+	if isPureInfoStatement(in.UserInput) {
+		result = stablePureInfoEmotionResult(in.UserInput)
+	}
+	return t.marshalAndLogEmotionResult(result, in.UserInput)
+}
+
+func (t *PlayerEmotionAnalysisTool) marshalAndLogEmotionResult(result emotionAnalysisResult, input string) (string, error) {
 	out, err := json.Marshal(result)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal result: %w", err)
@@ -161,9 +173,37 @@ func (t *PlayerEmotionAnalysisTool) InvokableRun(ctx context.Context, argumentsI
 			zap.String("source", result.Source),
 			zap.String("reasoning", result.Reasoning),
 			zap.String("result_json", string(out)),
-			zap.String("input_preview", previewToolInput(in.UserInput)))
+			zap.String("input_preview", previewToolInput(input)))
 	}
 	return string(out), nil
+}
+
+func stablePureInfoEmotionResult(input string) emotionAnalysisResult {
+	evidence := pureInfoEvidence(input)
+	return emotionAnalysisResult{
+		Emotion:          "stable",
+		EmotionLabel:     emotionLabel("stable"),
+		Label:            emotionLabel("stable"),
+		Intensity:        0.1,
+		Confidence:       0.92,
+		EscalationNeeded: false,
+		Reasoning:        "玩家仅提供账号或角色标识等补充信息，没有表达情绪或问题。",
+		EvidenceKeywords: evidence,
+		Keywords:         evidence,
+		Source:           "rule",
+	}
+}
+
+func pureInfoEvidence(input string) []string {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	evidence := make([]string, 0, 2)
+	for _, marker := range []string{"游戏id", "游戏 id", "uid", "id", "账号", "帐号", "角色名"} {
+		if strings.Contains(lower, marker) {
+			evidence = append(evidence, marker)
+			break
+		}
+	}
+	return evidence
 }
 
 func (t *PlayerEmotionAnalysisTool) llmAnalyzeEmotion(ctx context.Context, input string) (emotionAnalysisResult, error) {

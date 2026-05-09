@@ -83,7 +83,7 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 	}
 
 	// 创建工具集
-	toolsList := buildDialogueTools(cfg, knowledgeRetriever)
+	toolsList := buildDialogueAgentTools(cfg, knowledgeRetriever)
 
 	// 创建内置 Summarization 中间件（自动压缩对话历史）
 	summaryConfig := &summarization.Config{
@@ -109,7 +109,7 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:          "dialogue_agent",
-		Description:   "面向对话、知识库检索和网络搜索的通用智能助手",
+		Description:   "面向对话、知识库检索和受控诊断的通用智能助手",
 		Model:         cfg.ChatModel.Client,
 		GenModelInput: noFormatGenModelInput,
 		ToolsConfig: adk.ToolsConfig{
@@ -118,22 +118,21 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 			},
 		},
 		Handlers: handlers,
-		Instruction: `你是一个面向对话、知识库检索和网络搜索的智能助手。
+		Instruction: `你是一个面向对话、知识库检索和受控诊断的智能助手。
 
-你的目标是准确理解用户问题，结合会话记忆、已上传知识库和必要的外部网络检索，给出简洁、可靠、可执行的回答。
+你的目标是准确理解用户问题，结合会话记忆、已上传知识库和必要的受控工具，给出简洁、可靠、可执行的回答。
 
 可用工具：
 - intent_analysis：每轮玩家请求都应先用于判断游戏客服主要诉求、置信度、缺失信息和内部路由建议。
 - player_emotion_analysis：每轮玩家请求都应先用于判断玩家情绪、强度和是否需要升级处理。
 - request_detail_selection：当缺少关键上下文且候选项有限、适合单选时，用于向用户请求补充选择。
 - knowledge_retrieve：当问题可能由用户上传的文档或内部知识回答时，优先检索知识库。
-- web_search：当问题依赖最新公告、官方文档、版本变化、外部资料或公开网页时使用。
 
 工作原则：
 - 每次处理玩家请求前，先调用 intent_analysis 和 player_emotion_analysis；不要把分析标签直接展示给玩家。
 - 普通闲聊、通用解释或已有上下文足够时，可以在完成诉求和情绪分析后直接回答。
 - 涉及上传文档、项目资料、内部说明、历史记录等内容时，优先调用 knowledge_retrieve。
-- 涉及最新信息、外部事实或可能过期的信息时，调用 web_search，并标注为外部检索结果。
+- 涉及最新信息、外部事实或可能过期的信息时，不要编造；如当前工具无法核验，说明需要以官方公告或人工核验为准。
 - 缺少关键字段且可枚举时，使用 request_detail_selection；开放式缺失信息用自然语言追问。
 - 工具结果不足以支撑确定结论时，明确说明不确定点和下一步建议。
 - 遇到愤怒、急迫、焦虑或需要升级的情绪时，语气更安抚、步骤更明确，必要时建议转人工或提交客服处理。
@@ -305,17 +304,28 @@ func contextAwareModelInput(ctx context.Context, instruction string, input *adk.
 	return msgs, nil
 }
 
-// buildDialogueTools 构建 dialogue_agent 可用工具集合。
+// buildDialogueAgentTools 构建 dialogue_agent 可用工具集合。
 // 输入：cfg 对话代理配置，knowledgeRetriever 知识库检索器。
-// 输出：可注册到 ToolsNode 的工具列表。
-func buildDialogueTools(cfg *Config, knowledgeRetriever einoretriever.Retriever) []tool.BaseTool {
+// 输出：可注册到 dialogue_agent ToolsNode 的工具列表。
+func buildDialogueAgentTools(cfg *Config, knowledgeRetriever einoretriever.Retriever) []tool.BaseTool {
 	return []tool.BaseTool{
 		tools.NewIntentAnalysisTool(cfg.ChatModel, cfg.Embedder, cfg.Logger, cfg.EnableToolLLM),
 		tools.NewPlayerEmotionAnalysisTool(cfg.ChatModel, cfg.Logger),
 		tools.NewDetailSelectionTool(cfg.Logger),
 		tools.NewKnowledgeRetrieveTool(knowledgeRetriever, cfg.Logger),
-		//tools.NewWebSearchTool(cfg.Logger),
 		tools.NewBashApprovalTool(cfg.Logger),
+	}
+}
+
+// buildComplexAgentTools 构建 complex_agent 可用工具集合。
+// 输入：cfg 对话代理配置，knowledgeRetriever 知识库检索器。
+// 输出：可注册到 complex_agent ToolsNode 的工具列表。
+func buildComplexAgentTools(cfg *Config, knowledgeRetriever einoretriever.Retriever) []tool.BaseTool {
+	return []tool.BaseTool{
+		tools.NewDetailSelectionTool(cfg.Logger),
+		tools.NewKnowledgeRetrieveTool(knowledgeRetriever, cfg.Logger),
+		tools.NewBashApprovalTool(cfg.Logger),
+		//tools.NewWebSearchTool(cfg.Logger),
 	}
 }
 
@@ -469,9 +479,9 @@ const complexAgentInstruction = `你是高级专家 Agent，处理需要专业�
 工作原则：
 - 首先根据情绪结果调整语气（见情绪响应策略），再着手解决问题
 - 根据玩家本轮具体问题选择说明顺序和措辞，避免固定模板化回复
-- 对 pending_questions 中的遗留问题，优先尝试使用 Skill 工具或 web_search 攻克
+- 对 pending_questions 中的遗留问题，优先尝试使用 Skill 工具或 knowledge_retrieve 补充检索
 - 涉及上传文档和内部资料时，可再次调用 knowledge_retrieve 进行补充检索
-- 涉及最新信息、版本公告、活动详情时，调用 web_search
+- 涉及最新信息、版本公告、活动详情时，不要编造；如当前工具无法核验，说明需要以官方公告或人工核验为准
 - 缺少关键上下文且可枚举时，使用 request_detail_selection 追问玩家
 - 执行 Bash 命令前，通过 bash_execute_with_approval 获取玩家确认
 - 给出可执行的专业解答；如信息有限，用自然客服口吻说明限制并建议下一步
@@ -521,10 +531,10 @@ func newAnswerAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	return agent, nil
 }
 
-// newComplexAgent 创建 Complex Agent（全工具集 + Skill 中间件 + 中断门控中间件）。
+// newComplexAgent 创建 Complex Agent（复杂处理工具集 + Skill 中间件 + 中断门控中间件）。
 func newComplexAgent(ctx context.Context, cfg *Config, retriever einoretriever.Retriever) (adk.ResumableAgent, error) {
 	complexModel := cfg.resolveModel(cfg.ComplexModel, cfg.ChatModel)
-	toolsList := buildDialogueTools(cfg, retriever)
+	toolsList := buildComplexAgentTools(cfg, retriever)
 
 	summaryHandler, err := summarization.New(ctx, &summarization.Config{
 		Model:   complexModel.Client,

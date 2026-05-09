@@ -32,6 +32,7 @@ type Application struct {
 	KnowledgeAgent adk.Agent
 	Logger         *zap.Logger
 	RedisClient    *redis.Client
+	closeCozeLoop  func(context.Context)
 }
 
 // Config 应用配置结构，用于初始化 Application。
@@ -98,6 +99,9 @@ func NewApplication(cfg *Config) (*Application, error) {
 	}
 
 	logger.Info("redis connected", zap.String("addr", cfg.RedisAddr))
+
+	// 2.0 初始化 Eino CozeLoop callback（未配置时跳过，不影响本地启动）。
+	closeCozeLoop := initCozeLoopCallback(logger)
 
 	// 2.1 初始化 mem 工具（用于会话历史管理）
 	if err := mem.InitRedis(redisClient, nil); err != nil {
@@ -171,6 +175,7 @@ func NewApplication(cfg *Config) (*Application, error) {
 		KnowledgeAgent: knowledgeAgent,
 		Logger:         logger,
 		RedisClient:    redisClient,
+		closeCozeLoop:  closeCozeLoop,
 	}, nil
 }
 
@@ -233,6 +238,12 @@ func initLogger(level string) (*zap.Logger, error) {
 // 输出：
 // - error: 关闭过程中的错误（如果有）
 func (app *Application) Close() error {
+	if app.closeCozeLoop != nil {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		app.closeCozeLoop(closeCtx)
+		cancel()
+	}
+
 	if err := app.RedisClient.Close(); err != nil {
 		return fmt.Errorf("failed to close redis: %w", err)
 	}

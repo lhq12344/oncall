@@ -54,3 +54,29 @@ func TestRagResultRouterSendsKnowledgeSpecialistPendingToComplex(t *testing.T) {
 		t.Fatalf("route = %q, want complex_node", route)
 	}
 }
+
+func TestRagResultRouterSendsUnmarkedGateReplyToDirectNode(t *testing.T) {
+	route, err := ragResultRouter(context.Background(), []*schema.Message{
+		schema.UserMessage("我的游戏ID是lhq"),
+		schema.AssistantMessage("了解，您的游戏ID是 **lhq**。请告诉我您具体想解决什么问题。", nil),
+	})
+	if err != nil {
+		t.Fatalf("router returned error: %v", err)
+	}
+	if route != "direct_node" {
+		t.Fatalf("route = %q, want direct_node", route)
+	}
+}
+
+func TestRagResultRouterDoesNotSendMarkedGateReplyToDirectNode(t *testing.T) {
+	route, err := ragResultRouter(context.Background(), []*schema.Message{
+		schema.UserMessage("我无法登录"),
+		schema.AssistantMessage("[TO_COMPLEX] 需要进一步排查登录问题", nil),
+	})
+	if err != nil {
+		t.Fatalf("router returned error: %v", err)
+	}
+	if route != "complex_node" {
+		t.Fatalf("route = %q, want complex_node", route)
+	}
+}

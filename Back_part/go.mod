@@ -4,11 +4,13 @@ go 1.25.5
 
 require (
 	github.com/cloudwego/eino v0.8.1
+	github.com/cloudwego/eino-ext/callbacks/cozeloop v0.2.0
 	github.com/cloudwego/eino-ext/components/document/loader/file v0.0.0-20260310075812-cb9c90b6a56a
 	github.com/cloudwego/eino-ext/components/indexer/milvus v0.0.0-20251011073417-75b93b87b8a9
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.7
 	github.com/cloudwego/eino-ext/components/retriever/milvus v0.0.0-20251011073417-75b93b87b8a9
 	github.com/cloudwego/eino-ext/components/tool/mcp v0.0.5
+	github.com/coze-dev/cozeloop-go v0.1.22
 	github.com/elastic/go-elasticsearch/v8 v8.19.3
 	github.com/gogf/gf/v2 v2.7.1
 	github.com/mark3labs/mcp-go v0.42.0
@@ -28,11 +30,13 @@ require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/PuerkitoBio/goquery v1.10.3 // indirect
 	github.com/andybalholm/cascadia v1.3.3 // indirect
+	github.com/bluele/gcache v0.0.2 // indirect
 	github.com/bmatcuk/doublestar/v4 v4.10.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/eino-ext/components/tool/duckduckgo/v2 v2.0.0-20260313050455-88e279b3b32f // indirect
 	github.com/cloudwego/eino-ext/libs/acl/openai v0.1.11 // indirect
 	github.com/corpix/uarand v0.2.0 // indirect
+	github.com/coze-dev/cozeloop-go/spec v0.1.8 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/elastic/elastic-transport-go/v8 v8.8.0 // indirect
@@ -42,6 +46,7 @@ require (
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
 	github.com/go-openapi/swag v0.23.0 // indirect
 	github.com/go-sql-driver/mysql v1.8.1 // indirect
+	github.com/golang-jwt/jwt v3.2.2+incompatible // indirect
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
@@ -50,11 +55,16 @@ require (
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/meguminnnnnnnnn/go-openai v0.1.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/nikolalohinski/gonja/v2 v2.3.1 // indirect
+	github.com/onsi/ginkgo/v2 v2.27.2 // indirect
+	github.com/onsi/gomega v1.38.2 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/smarty/assertions v1.16.0 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
+	github.com/valyala/bytebufferpool v1.0.0 // indirect
+	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
@@ -118,7 +128,7 @@ require (
 	github.com/nikolalohinski/gonja v1.5.3 // indirect
 	github.com/olekukonko/tablewriter v0.0.5 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
-	github.com/pkg/errors v0.9.1 // indirect
+	github.com/pkg/errors v0.9.2-0.20201214064552-5dd12d0cfe7f // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/slongfield/pyfmt v0.0.0-20220222012616-ea85ff4c361f // indirect

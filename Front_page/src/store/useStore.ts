@@ -2,6 +2,34 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { Message, Session, ChatStep, InterruptData } from '../types';
 
+function createClientId() {
+  const cryptoApi = globalThis.crypto;
+  if (typeof cryptoApi?.randomUUID === 'function') {
+    try {
+      return cryptoApi.randomUUID();
+    } catch {
+      // crypto.randomUUID is unavailable on some non-secure LAN origins.
+    }
+  }
+
+  if (typeof cryptoApi?.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    cryptoApi.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0'));
+    return [
+      hex.slice(0, 4).join(''),
+      hex.slice(4, 6).join(''),
+      hex.slice(6, 8).join(''),
+      hex.slice(8, 10).join(''),
+      hex.slice(10, 16).join(''),
+    ].join('-');
+  }
+
+  return `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 // mergeMessageSteps 合并消息步骤，优先按 step 编号更新已有项，避免恢复执行时覆盖历史步骤。
 // 输入：existing 现有步骤、incoming 新步骤。
 // 输出：合并后的步骤列表。
@@ -64,7 +92,7 @@ export const useStore = create<AppState>()(
       setSidebarOpen: (isOpen) => set({ isSidebarOpen: isOpen }),
 
       addSession: (title = 'New Session') => {
-        const id = crypto.randomUUID();
+        const id = createClientId();
         set((state) => ({
           sessions: [
             { id, title, messages: [], updatedAt: Date.now() },
@@ -89,7 +117,7 @@ export const useStore = create<AppState>()(
       setCurrentSession: (id) => set({ currentSessionId: id }),
 
       addMessage: (sessionId, message) => {
-        const id = crypto.randomUUID();
+        const id = createClientId();
         set((state) => ({
           sessions: state.sessions.map((s) => {
             if (s.id !== sessionId) return s;

@@ -3,38 +3,69 @@ package dialogue
 import (
 	"context"
 	"testing"
+
+	"github.com/cloudwego/eino/components/tool"
 )
 
-// TestBuildDialogueToolsDoesNotExposeBashExecution 验证通用工具集不包含 bash 执行工具。
-// bash_execute_with_approval 仅在 newComplexAgent 中通过 buildDialogueTools 注册，
-// Gate Agent 和 Answer Agent 不应暴露 bash 执行能力。
-func TestBuildDialogueToolsDoesNotExposeBashExecution(t *testing.T) {
-	allTools := buildDialogueTools(&Config{}, nil)
-	hasBash := false
-	for _, item := range allTools {
+func TestBuildDialogueAgentToolsIncludesAnalysisTools(t *testing.T) {
+	names := toolNames(t, buildDialogueAgentTools(&Config{}, nil))
+
+	for _, want := range []string{
+		"intent_analysis",
+		"player_emotion_analysis",
+		"request_detail_selection",
+		"knowledge_retrieve",
+		"bash_execute_with_approval",
+	} {
+		if !containsToolName(names, want) {
+			t.Fatalf("dialogue tool set missing %q: %v", want, names)
+		}
+	}
+}
+
+func TestBuildComplexAgentToolsExcludesAnalysisTools(t *testing.T) {
+	names := toolNames(t, buildComplexAgentTools(&Config{}, nil))
+
+	for _, forbidden := range []string{
+		"intent_analysis",
+		"player_emotion_analysis",
+	} {
+		if containsToolName(names, forbidden) {
+			t.Fatalf("complex tool set must not expose %q: %v", forbidden, names)
+		}
+	}
+
+	for _, want := range []string{
+		"request_detail_selection",
+		"knowledge_retrieve",
+		"bash_execute_with_approval",
+	} {
+		if !containsToolName(names, want) {
+			t.Fatalf("complex tool set missing %q: %v", want, names)
+		}
+	}
+}
+
+func toolNames(t *testing.T, tools []tool.BaseTool) []string {
+	t.Helper()
+	names := make([]string, 0, len(tools))
+	for _, item := range tools {
 		info, err := item.Info(context.Background())
 		if err != nil {
 			t.Fatalf("tool info: %v", err)
 		}
-		if info != nil && info.Name == "bash_execute_with_approval" {
-			hasBash = true
+		if info != nil {
+			names = append(names, info.Name)
 		}
 	}
-	// 新架构：bash_execute_with_approval 由 ApprovalMiddleware 门控，
-	// buildDialogueTools 包含它是预期行为（仅挂载到 complex_agent）。
-	if !hasBash {
-		t.Log("bash_execute_with_approval not found in buildDialogueTools — verify complex_agent has it")
-	}
+	return names
 }
 
-// TestGateAgentToolsExcludeBash 验证 Gate Agent 的工具集不含 bash 执行工具。
-func TestGateAgentToolsExcludeBash(t *testing.T) {
-	cfg := &Config{}
-	gateTools := []string{"knowledge_retrieve"}
-	for _, name := range gateTools {
-		if name == "bash_execute_with_approval" {
-			t.Fatalf("gate agent must not expose bash execution")
+func containsToolName(names []string, target string) bool {
+	for _, name := range names {
+		if name == target {
+			return true
 		}
 	}
-	_ = cfg // 保持 cfg 引用，未来扩展用
+	return false
 }

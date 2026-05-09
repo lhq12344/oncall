@@ -154,6 +154,10 @@ func (t *IntentAnalysisTool) InvokableRun(ctx context.Context, argumentsInJSON s
 		return "", fmt.Errorf("user_input is required")
 	}
 
+	if isPureInfoStatement(in.UserInput) {
+		return t.buildIntentResult(in.UserInput, "general_chat", 0.82, 0.18, true)
+	}
+
 	// 1. 关键词匹配（快速初步分类）
 	intentType, keywordConfidence := t.keywordMatching(in.UserInput)
 
@@ -187,10 +191,17 @@ func (t *IntentAnalysisTool) InvokableRun(ctx context.Context, argumentsInJSON s
 	// 6. 判断是否收敛
 	converged := entropy < 0.6 && finalConfidence > 0.7
 
-	// 7. 识别缺失信息和内部路由建议
-	missingInfo := t.identifyMissingInfo(in.UserInput, intentType)
+	return t.buildIntentResult(in.UserInput, intentType, keywordConfidence, entropy, converged)
+}
+
+func (t *IntentAnalysisTool) buildIntentResult(input string, intentType string, keywordConfidence float64, entropy float64, converged bool) (string, error) {
+	missingInfo := t.identifyMissingInfo(input, intentType)
 	intentLabel := intentLabel(intentType)
 	routingHint := routingHint(intentType, converged, missingInfo)
+	finalConfidence := t.evaluateConfidence(keywordConfidence, entropy, len(input))
+	if isPureInfoStatement(input) && intentType == "general_chat" {
+		finalConfidence = keywordConfidence
+	}
 
 	result := map[string]interface{}{
 		"intent_type":  intentType,
@@ -202,7 +213,7 @@ func (t *IntentAnalysisTool) InvokableRun(ctx context.Context, argumentsInJSON s
 		"routing_hint": routingHint,
 		"metadata": map[string]interface{}{
 			"keyword_confidence": keywordConfidence,
-			"input_length":       len(in.UserInput),
+			"input_length":       len(input),
 		},
 	}
 
@@ -222,10 +233,26 @@ func (t *IntentAnalysisTool) InvokableRun(ctx context.Context, argumentsInJSON s
 			zap.Strings("missing_info", missingInfo),
 			zap.Float64("keyword_confidence", keywordConfidence),
 			zap.String("result_json", string(out)),
-			zap.String("input_preview", previewToolInput(in.UserInput)))
+			zap.String("input_preview", previewToolInput(input)))
 	}
 
 	return string(out), nil
+}
+
+func isPureInfoStatement(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if lower == "" {
+		return false
+	}
+	if containsAny(lower, []string{"?", "？", "怎么办", "怎么", "如何", "为什么", "能否", "可以", "吗", "呢", "无法", "不能", "失败", "不到账", "报错", "异常", "崩溃", "卡住", "丢失", "被盗", "封号", "申诉", "退款", "投诉"}) {
+		return false
+	}
+	infoMarkers := []string{
+		"我的游戏id是", "我的游戏 id 是", "游戏id是", "游戏 id 是", "我的id是", "我的 id 是",
+		"我的uid是", "我的 uid 是", "uid是", "id是", "账号是", "帐号是", "角色名是",
+		"game id is", "my game id is", "my id is", "my uid is",
+	}
+	return containsAny(lower, infoMarkers)
 }
 
 // semanticEmbeddingClassification 基于 embedding 的语义分类

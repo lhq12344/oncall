@@ -44,3 +44,63 @@ func TestNormalizeTraceTagsDropsEmptyValues(t *testing.T) {
 		t.Fatalf("normalized tags = %#v, want only user_language=zh", tags)
 	}
 }
+
+func TestShouldPersistTraceEventOnlyAllowsNormalVisibleTurns(t *testing.T) {
+	tests := []struct {
+		name  string
+		event OrchestrationTraceEvent
+		want  bool
+	}{
+		{
+			name:  "normal visible turn",
+			event: NewVisibleTurnTraceEvent("s1", "t1", "c1", "chat", "hello", "hi"),
+			want:  true,
+		},
+		{
+			name: "tool result is skipped",
+			event: OrchestrationTraceEvent{
+				SessionID:      "s1",
+				TurnID:         "t1",
+				EventType:      "tool_result",
+				Status:         "success",
+				CompactPayload: `{"result":"secret tool payload"}`,
+			},
+			want: false,
+		},
+		{
+			name: "error reply is skipped",
+			event: OrchestrationTraceEvent{
+				SessionID:      "s1",
+				TurnID:         "t1",
+				EventType:      traceEventTypeVisibleTurn,
+				Status:         "success",
+				UserQuestion:   "hello",
+				AssistantReply: "[ERROR] upstream failed",
+				CompactPayload: "",
+				ErrorSummary:   "",
+			},
+			want: false,
+		},
+		{
+			name: "failed save event is skipped",
+			event: OrchestrationTraceEvent{
+				SessionID:    "s1",
+				TurnID:       "t1",
+				EventType:    traceEventTypeVisibleTurn,
+				Status:       "error",
+				UserQuestion: "hello",
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := shouldPersistTraceEvent(tt.event); got != tt.want {
+				t.Fatalf("shouldPersistTraceEvent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

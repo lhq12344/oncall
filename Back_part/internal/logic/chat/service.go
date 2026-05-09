@@ -137,13 +137,13 @@ func (c *Service) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (res *v
 	checkpointID := generateCheckpointID(sessionID)
 	turnID := uuid.NewString()
 	source := "chat_stream_graph"
-	c.savePendingTurn(ctx, appcontext.PendingTurn{
+	pendingTurn := appcontext.PendingTurn{
 		CheckpointID:     checkpointID,
 		SessionID:        sessionID,
 		TurnID:           turnID,
 		OriginalQuestion: question,
 		Source:           source,
-	})
+	}
 	streamCtx := dialogue.WithTraceMetadata(ctx, dialogue.TraceMetadata{
 		SessionID:    sessionID,
 		TurnID:       turnID,
@@ -173,6 +173,7 @@ func (c *Service) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (res *v
 	if streamErr != nil {
 		if interruptData, ok := compose.IsInterruptRerunError(streamErr); ok {
 			c.recordTraceEvent(sessionID, turnID, checkpointID, source, "graph", "interrupt", "compose", "interrupted", "", "")
+			c.savePendingTurn(context.Background(), pendingTurn)
 			return c.handleGraphInterrupt(r, checkpointID, interruptData)
 		}
 		c.recordTraceEvent(sessionID, turnID, checkpointID, source, "graph", "error", "compose", "error", "", streamErr.Error())
@@ -193,6 +194,7 @@ func (c *Service) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (res *v
 		if interruptData, ok := compose.IsInterruptRerunError(recvErr); ok {
 			interrupted = true
 			c.recordTraceEvent(sessionID, turnID, checkpointID, source, "graph", "interrupt", "compose", "interrupted", "", "")
+			c.savePendingTurn(context.Background(), pendingTurn)
 			c.handleGraphInterrupt(r, checkpointID, interruptData) //nolint
 			break
 		}
@@ -223,7 +225,7 @@ func (c *Service) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (res *v
 			zap.Int("answer_len", len([]rune(answer))))
 	}
 	if answer != "" && !interrupted {
-		c.saveVisibleTurnOnce(context.Background(), checkpointID, sessionID, turnID, source, question, answer, messages)
+		c.saveVisibleTurn(context.Background(), checkpointID, sessionID, turnID, source, question, answer, messages)
 	}
 
 	return &v1.ChatStreamRes{}, nil
@@ -316,6 +318,19 @@ func (c *Service) ChatResumeStream(ctx context.Context, req *v1.ChatResumeStream
 	if streamErr != nil {
 		if interruptData, ok := compose.IsInterruptRerunError(streamErr); ok {
 			c.recordTraceEvent(sessionID, turnID, checkpointID, "chat_resume_stream_graph", "graph", "interrupt", "compose", "interrupted", "", "")
+			effectiveQuestion := originalQuestion
+			if effectiveQuestion == "" {
+				effectiveQuestion = stateOriginalQuestion
+			}
+			if effectiveQuestion != "" {
+				c.savePendingTurn(context.Background(), appcontext.PendingTurn{
+					CheckpointID:     checkpointID,
+					SessionID:        sessionID,
+					TurnID:           turnID,
+					OriginalQuestion: effectiveQuestion,
+					Source:           source,
+				})
+			}
 			c.handleGraphInterrupt(r, checkpointID, interruptData) //nolint
 			return &v1.ChatResumeStreamRes{}, nil
 		}
@@ -336,6 +351,19 @@ func (c *Service) ChatResumeStream(ctx context.Context, req *v1.ChatResumeStream
 		if interruptData, ok := compose.IsInterruptRerunError(recvErr); ok {
 			interrupted = true
 			c.recordTraceEvent(sessionID, turnID, checkpointID, "chat_resume_stream_graph", "graph", "interrupt", "compose", "interrupted", "", "")
+			effectiveQuestion := originalQuestion
+			if effectiveQuestion == "" {
+				effectiveQuestion = stateOriginalQuestion
+			}
+			if effectiveQuestion != "" {
+				c.savePendingTurn(context.Background(), appcontext.PendingTurn{
+					CheckpointID:     checkpointID,
+					SessionID:        sessionID,
+					TurnID:           turnID,
+					OriginalQuestion: effectiveQuestion,
+					Source:           source,
+				})
+			}
 			c.handleGraphInterrupt(r, checkpointID, interruptData) //nolint
 			break
 		}
@@ -439,14 +467,7 @@ func (c *Service) saveVisibleTurnOnce(
 	promptMessages []*schema.Message,
 ) {
 	if c.pendingTurnStore == nil {
-		if saveErr := c.sessionMemory.SaveTurnWithSource(ctx, sessionID, question, answer, nil, promptMessages, source); saveErr != nil {
-			c.recordTraceEvent(sessionID, turnID, checkpointID, source, "persistence", "final_save", "session_memory", "error", "", saveErr.Error())
-			if c.logger != nil {
-				c.logger.Warn("failed to save visible turn (no pending store)",
-					zap.String("session_id", sessionID),
-					zap.Error(saveErr))
-			}
-		}
+		c.saveVisibleTurn(ctx, checkpointID, sessionID, turnID, source, question, answer, promptMessages)
 		return
 	}
 	saveCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -466,6 +487,19 @@ func (c *Service) saveVisibleTurnOnce(
 		c.recordTraceEvent(sessionID, turnID, checkpointID, source, "persistence", "final_save", "session_memory", "skipped", "already_saved", "")
 		return
 	}
+	c.saveVisibleTurn(ctx, checkpointID, sessionID, turnID, source, question, answer, promptMessages)
+}
+
+func (c *Service) saveVisibleTurn(
+	ctx context.Context,
+	checkpointID string,
+	sessionID string,
+	turnID string,
+	source string,
+	question string,
+	answer string,
+	promptMessages []*schema.Message,
+) {
 	if saveErr := c.sessionMemory.SaveTurnWithSource(ctx, sessionID, question, answer, nil, promptMessages, source); saveErr != nil {
 		c.recordTraceEvent(sessionID, turnID, checkpointID, source, "persistence", "final_save", "session_memory", "error", "", saveErr.Error())
 		if c.logger != nil {
@@ -476,7 +510,7 @@ func (c *Service) saveVisibleTurnOnce(
 		}
 		return
 	}
-	c.recordTraceEvent(sessionID, turnID, checkpointID, source, "persistence", "final_save", "session_memory", "success", "visible turn saved", "")
+	c.recordVisibleTurnTrace(sessionID, turnID, checkpointID, source, question, answer)
 }
 
 func (c *Service) recordTraceEvent(sessionID, turnID, checkpointID, source, node, eventType, agentOrTool, status, payload, errSummary string) {
@@ -502,6 +536,27 @@ func (c *Service) recordTraceEvent(sessionID, turnID, checkpointID, source, node
 			zap.String("turn_id", turnID),
 			zap.String("node", node),
 			zap.String("event_type", eventType),
+			zap.Error(err))
+	}
+}
+
+func (c *Service) recordVisibleTurnTrace(sessionID, turnID, checkpointID, source, question, answer string) {
+	if c.traceRecorder == nil {
+		return
+	}
+	recordCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := c.traceRecorder.RecordEvent(recordCtx, appcontext.NewVisibleTurnTraceEvent(
+		sessionID,
+		turnID,
+		checkpointID,
+		source,
+		question,
+		answer,
+	)); err != nil && c.logger != nil {
+		c.logger.Warn("failed to record visible turn trace event",
+			zap.String("session_id", sessionID),
+			zap.String("turn_id", turnID),
 			zap.Error(err))
 	}
 }

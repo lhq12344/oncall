@@ -9,14 +9,18 @@
 #   ./scripts/dev.sh logs backend
 #   ./scripts/dev.sh logs frontend
 #   ./scripts/dev.sh logs middleware
+#   ./scripts/dev.sh win-proxy
 #   ./scripts/dev.sh clean-volumes
 #
 # 说明：
 #   - start 会先通过 Docker Compose 启动 Redis、Milvus、Attu 等中间件，再启动后端(:6872)和前端(:3100)。
+#   - 默认绑定 0.0.0.0，并在启动完成后输出 localhost 与本机局域网 IP 访问地址。
 #   - stop 会关闭本地应用进程和中间件容器，默认保留 Docker volume 数据。
 #   - restart 只重启后端和前端，不重启中间件容器。
 #   - clean-volumes 会在明确确认后删除 Redis / Milvus 的持久化数据。
 #   - 如果 Docker 需要 sudo，请先执行 `sudo -v`，再运行 start / status / logs / stop。
+#   - 可通过 BACKEND_HOST / FRONTEND_HOST 调整监听地址，通过 LAN_HOST 覆盖展示用的本机 IP。
+#   - win-proxy 打印 Windows 管理员 PowerShell 端口转发命令，用于通过 Windows 局域网 IP 访问 WSL 服务。
 #
 set -euo pipefail
 
@@ -39,7 +43,9 @@ BACKEND_LOG="$RUN_DIR/backend.log"
 FRONTEND_LOG="$RUN_DIR/frontend.log"
 BACKEND_BIN="$RUN_DIR/backend-bin"
 BACKEND_PORT="${BACKEND_PORT:-6872}"
+BACKEND_HOST="${BACKEND_HOST:-0.0.0.0}"
 FRONTEND_PORT="${FRONTEND_PORT:-3100}"
+FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
 ATTU_PORT="${ATTU_PORT:-8000}"
 DOCKER_CMD=(docker)
 export ATTU_PORT
@@ -53,6 +59,63 @@ require_command() {
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "[dev] ERROR: $command_name command not found. $install_hint"
     exit 1
+  fi
+}
+
+detect_lan_ip() {
+  if [ -n "${LAN_HOST:-}" ]; then
+    printf '%s\n' "$LAN_HOST"
+    return 0
+  fi
+
+  if command -v ip >/dev/null 2>&1; then
+    local route_ip
+    route_ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{
+      for (i = 1; i <= NF; i++) {
+        if ($i == "src") {
+          print $(i + 1)
+          exit
+        }
+      }
+    }')"
+    if [ -n "$route_ip" ]; then
+      printf '%s\n' "$route_ip"
+      return 0
+    fi
+  fi
+
+  if command -v hostname >/dev/null 2>&1; then
+    local host_ip
+    host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    if [ -n "$host_ip" ]; then
+      printf '%s\n' "$host_ip"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+print_access_urls() {
+  local attu_ready="${1:-0}"
+  local lan_ip=""
+
+  if lan_ip="$(detect_lan_ip)"; then
+    :
+  fi
+
+  echo "  Backend:      http://localhost:$BACKEND_PORT"
+  echo "  Frontend:     http://localhost:$FRONTEND_PORT"
+  if [ -n "$lan_ip" ]; then
+    echo "  Backend LAN:  http://$lan_ip:$BACKEND_PORT"
+    echo "  Frontend LAN: http://$lan_ip:$FRONTEND_PORT"
+  else
+    echo "  LAN:          unavailable (set LAN_HOST=<this-machine-ip> to print LAN URLs)"
+  fi
+  if [ "$attu_ready" -eq 1 ]; then
+    echo "  Attu:         http://localhost:$ATTU_PORT"
+  else
+    echo "  Attu:         not ready on localhost:$ATTU_PORT"
   fi
 }
 
@@ -329,7 +392,7 @@ cmd_start() {
     echo "[dev] Building backend..."
     go build -o "$BACKEND_BIN" main.go
     echo "[dev] Starting backend..."
-    nohup setsid env BACKEND_PORT="$BACKEND_PORT" "$BACKEND_BIN" >"$BACKEND_LOG" 2>&1 &
+    nohup setsid env BACKEND_HOST="$BACKEND_HOST" BACKEND_PORT="$BACKEND_PORT" "$BACKEND_BIN" >"$BACKEND_LOG" 2>&1 &
     echo $! >"$BACKEND_PID_FILE"
     echo "[dev] Backend PID: $(cat "$BACKEND_PID_FILE")"
     echo "[dev] Waiting for backend on $BACKEND_PORT..."
@@ -354,7 +417,7 @@ cmd_start() {
       exit 1
     fi
     echo "[dev] Starting frontend..."
-    nohup setsid env VITE_API_BASE_URL="${VITE_API_BASE_URL:-}" VITE_BACKEND_PORT="$BACKEND_PORT" bash -c 'cd "$1" && exec ./node_modules/.bin/vite --port="$2" --host=0.0.0.0' bash "$FRONTEND_ROOT" "$FRONTEND_PORT" >"$FRONTEND_LOG" 2>&1 &
+    nohup setsid env VITE_API_BASE_URL="${VITE_API_BASE_URL:-}" VITE_BACKEND_PORT="$BACKEND_PORT" bash -c 'cd "$1" && exec ./node_modules/.bin/vite --port="$2" --host="$3"' bash "$FRONTEND_ROOT" "$FRONTEND_PORT" "$FRONTEND_HOST" >"$FRONTEND_LOG" 2>&1 &
     echo $! >"$FRONTEND_PID_FILE"
     echo "[dev] Frontend PID: $(cat "$FRONTEND_PID_FILE")"
     echo "[dev] Waiting for frontend on $FRONTEND_PORT..."
@@ -368,14 +431,8 @@ cmd_start() {
 
   echo ""
   echo "[dev] All services started."
-  echo "  Backend:  http://localhost:$BACKEND_PORT"
-  echo "  Frontend: http://localhost:$FRONTEND_PORT"
-  if [ "$attu_ready" -eq 1 ]; then
-    echo "  Attu:     http://localhost:$ATTU_PORT"
-  else
-    echo "  Attu:     not ready on localhost:$ATTU_PORT"
-  fi
-  echo "  Logs:     $BACKEND_LOG / $FRONTEND_LOG"
+  print_access_urls "$attu_ready"
+  echo "  Logs:         $BACKEND_LOG / $FRONTEND_LOG"
 }
 
 stop_app_processes() {
@@ -439,6 +496,13 @@ cmd_status() {
   else
     echo "  STOPPED (port $ATTU_PORT is not listening)"
   fi
+
+  echo "=== Access URLs ==="
+  if port_is_listening "$ATTU_PORT"; then
+    print_access_urls 1
+  else
+    print_access_urls 0
+  fi
 }
 
 cmd_logs() {
@@ -455,6 +519,30 @@ cmd_logs() {
       exit 1
       ;;
   esac
+}
+
+cmd_win_proxy() {
+  local wsl_ip script_path_win
+
+  if ! wsl_ip="$(ip -4 addr show eth0 | awk '/inet / {print $2}' | cut -d/ -f1 | head -n 1)" || [ -z "$wsl_ip" ]; then
+    echo "[dev] ERROR: could not detect WSL eth0 IPv4 address."
+    exit 1
+  fi
+
+  if ! script_path_win="$(wslpath -w "$BACKEND_ROOT/scripts/setup-wsl-lan-portproxy.ps1" 2>/dev/null)"; then
+    script_path_win="$BACKEND_ROOT/scripts/setup-wsl-lan-portproxy.ps1"
+  fi
+
+  echo "[dev] WSL IP: $wsl_ip"
+  echo "[dev] Run this in Windows PowerShell as Administrator:"
+  echo "powershell -ExecutionPolicy Bypass -File \"$script_path_win\" -WslIp $wsl_ip"
+  echo ""
+  echo "[dev] To bind only your current Windows LAN IP:"
+  echo "powershell -ExecutionPolicy Bypass -File \"$script_path_win\" -WslIp $wsl_ip -ListenAddress 192.168.23.81"
+  echo ""
+  echo "[dev] Then open with your Windows LAN IPv4:"
+  echo "  Frontend: http://<windows-lan-ip>:$FRONTEND_PORT"
+  echo "  Backend:  http://<windows-lan-ip>:$BACKEND_PORT"
 }
 
 cmd_clean_volumes() {
@@ -476,9 +564,10 @@ case "${1:-}" in
   restart) cmd_restart ;;
   status) cmd_status ;;
   logs) cmd_logs "${2:-backend}" ;;
+  win-proxy) cmd_win_proxy ;;
   clean-volumes) cmd_clean_volumes ;;
   *)
-    echo "Usage: $0 {start|stop|restart|status|logs [backend|frontend|middleware]|clean-volumes}"
+    echo "Usage: $0 {start|stop|restart|status|logs [backend|frontend|middleware]|win-proxy|clean-volumes}"
     exit 1
     ;;
 esac
