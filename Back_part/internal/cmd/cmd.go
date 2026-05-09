@@ -44,11 +44,14 @@ func (command) Run(ctx context.Context) {
 	redisAddr, _ := g.Cfg().Get(ctx, "redis.addr")
 	redisDB, _ := g.Cfg().Get(ctx, "redis.db")
 	dialTimeout, _ := g.Cfg().Get(ctx, "redis.dialTimeout")
+	redisAddress := readStringSetting(os.Getenv("REDIS_ADDR"), redisAddr.String())
+	redisDatabase := readIntSetting(os.Getenv("REDIS_DB"), redisDB.Int())
+	redisDialTimeout := readIntSetting(os.Getenv("REDIS_DIAL_TIMEOUT"), dialTimeout.Int())
 
 	rdb := redis.NewClient(&redis.Options{
-		Addr:        redisAddr.String(),
-		DB:          redisDB.Int(),
-		DialTimeout: time.Duration(dialTimeout.Int()) * time.Second,
+		Addr:        redisAddress,
+		DB:          redisDatabase,
+		DialTimeout: time.Duration(redisDialTimeout) * time.Second,
 	})
 
 	if err := mem.InitRedis(rdb, &mem.Config{
@@ -64,9 +67,9 @@ func (command) Run(ctx context.Context) {
 	defer func() { _ = rdb.Close() }()
 
 	application, err := app.NewApplication(&app.Config{
-		RedisAddr:     redisAddr.String(),
+		RedisAddr:     redisAddress,
 		RedisPassword: "",
-		RedisDB:       redisDB.Int(),
+		RedisDB:       redisDatabase,
 		LogLevel:      "info",
 	})
 	if err != nil {
@@ -144,6 +147,22 @@ func readServerPort(ctx context.Context) int {
 		}
 	}
 	return 6872
+}
+
+func readStringSetting(primaryValue, fallbackValue string) string {
+	if value := strings.TrimSpace(primaryValue); value != "" {
+		return value
+	}
+	return strings.TrimSpace(fallbackValue)
+}
+
+func readIntSetting(primaryValue string, fallbackValue int) int {
+	if value := strings.TrimSpace(primaryValue); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			return parsed
+		}
+	}
+	return fallbackValue
 }
 
 func readServerHost(ctx context.Context) string {

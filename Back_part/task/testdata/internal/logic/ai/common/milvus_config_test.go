@@ -14,18 +14,18 @@ func TestResolveMilvusSetting(t *testing.T) {
 		expected     string
 	}{
 		{
-			name:         "prefer config value",
+			name:         "prefer env value",
 			configValue:  "milvus.infra.svc:19530",
 			envValue:     "127.0.0.1:19530",
 			defaultValue: DefaultMilvusAddress,
-			expected:     "milvus.infra.svc:19530",
+			expected:     "127.0.0.1:19530",
 		},
 		{
-			name:         "fallback to env value",
-			configValue:  "",
-			envValue:     "127.0.0.1:19530",
+			name:         "fallback to config value",
+			configValue:  "milvus.infra.svc:19530",
+			envValue:     "",
 			defaultValue: DefaultMilvusAddress,
-			expected:     "127.0.0.1:19530",
+			expected:     "milvus.infra.svc:19530",
 		},
 		{
 			name:         "fallback to default value",
@@ -39,7 +39,7 @@ func TestResolveMilvusSetting(t *testing.T) {
 			configValue:  "  oncall_knowledge  ",
 			envValue:     "  biz  ",
 			defaultValue: MilvusCollectionName,
-			expected:     "oncall_knowledge",
+			expected:     "biz",
 		},
 	}
 
@@ -62,16 +62,16 @@ func TestResolveMilvusDuration(t *testing.T) {
 		expected     time.Duration
 	}{
 		{
-			name:         "prefer config value",
+			name:         "prefer env value",
 			configValue:  "12s",
 			envValue:     "20s",
 			defaultValue: DefaultMilvusTimeout,
-			expected:     12 * time.Second,
+			expected:     20 * time.Second,
 		},
 		{
-			name:         "fallback to env value",
-			configValue:  "",
-			envValue:     "15s",
+			name:         "fallback to config value",
+			configValue:  "15s",
+			envValue:     "",
 			defaultValue: DefaultMilvusTimeout,
 			expected:     15 * time.Second,
 		},

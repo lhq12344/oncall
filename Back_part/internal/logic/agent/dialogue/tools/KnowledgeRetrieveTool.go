@@ -68,19 +68,19 @@ func (t *KnowledgeRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSO
 	}
 
 	if t.retriever == nil {
-		return `{"status":"degraded","results":[],"count":0,"message":"knowledge retriever unavailable"}`, nil
+		return "", fmt.Errorf("knowledge retriever unavailable")
 	}
 
 	docs, err := t.retriever.Retrieve(ctx, in.Query, einoretriever.WithTopK(in.TopK))
 	if err != nil {
 		if strings.Contains(err.Error(), "extra output fields") {
 			if t.logger != nil {
-				t.logger.Warn("knowledge retrieve schema mismatch, fallback to empty result",
+				t.logger.Error("knowledge retrieve schema mismatch",
 					zap.String("query", in.Query),
 					zap.Int("top_k", in.TopK),
 					zap.Error(err))
 			}
-			return `{"status":"degraded","results":[],"count":0,"message":"knowledge collection schema mismatch, fallback to empty result"}`, nil
+			return "", fmt.Errorf("knowledge collection schema mismatch: %w", err)
 		}
 		if t.logger != nil {
 			t.logger.Error("knowledge retrieve failed",
@@ -88,7 +88,7 @@ func (t *KnowledgeRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSO
 				zap.Int("top_k", in.TopK),
 				zap.Error(err))
 		}
-		return fmt.Sprintf(`{"status":"error","results":[],"count":0,"message":"%s"}`, escapeJSONString(err.Error())), nil
+		return "", fmt.Errorf("knowledge retrieve failed: %w", err)
 	}
 
 	type resultItem struct {
@@ -168,12 +168,4 @@ func extractKnowledgeContent(doc *schema.Document) string {
 		}
 	}
 	return ""
-}
-
-func escapeJSONString(s string) string {
-	b, _ := json.Marshal(s)
-	if len(b) >= 2 {
-		return string(b[1 : len(b)-1])
-	}
-	return s
 }

@@ -115,11 +115,6 @@ func NewApplication(cfg *Config) (*Application, error) {
 	}
 
 	// 3.1 初始化角色专用模型（未配置时降级到默认模型，不影响启动）
-	gateModel, err := models.GetChatModelForRole("gate")
-	if err != nil {
-		logger.Warn("gate model init failed, falling back to default", zap.Error(err))
-		gateModel = nil
-	}
 	subgraphModel, err := models.GetChatModelForRole("subgraph")
 	if err != nil {
 		logger.Warn("subgraph model init failed, falling back to default", zap.Error(err))
@@ -138,13 +133,12 @@ func NewApplication(cfg *Config) (*Application, error) {
 		dialogueEmbedder = nil
 	}
 
-	// 5. 初始化三 Agent 对话编排图
-	logger.Info("initializing three-agent dialogue orchestration graph")
+	// 5. 初始化对话编排图
+	logger.Info("initializing dialogue orchestration graph")
 	checkpointStore := appcontext.NewRedisCheckPointStore(redisClient, "oncall", dialogue.RunCheckpointTTL)
 	traceRecorder := appcontext.NewRedisOrchestrationTraceRecorder(redisClient, "oncall", dialogue.RunCheckpointTTL)
 	orchResult, err := dialogue.BuildOrchestrationGraph(ctx, &dialogue.Config{
 		ChatModel:     chatModel,
-		GateModel:     gateModel,
 		SubgraphModel: subgraphModel,
 		ComplexModel:  complexModel,
 		Embedder:      dialogueEmbedder,
@@ -155,7 +149,7 @@ func NewApplication(cfg *Config) (*Application, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to build dialogue orchestration graph: %w", err)
 	}
-	logger.Info("three-agent dialogue orchestration graph initialized")
+	logger.Info("dialogue orchestration graph initialized")
 
 	// 6. 初始化 Knowledge Agent（用于前端上传）
 	logger.Info("initializing knowledge upload agent")

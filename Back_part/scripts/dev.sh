@@ -47,8 +47,10 @@ BACKEND_HOST="${BACKEND_HOST:-0.0.0.0}"
 FRONTEND_PORT="${FRONTEND_PORT:-3100}"
 FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
 ATTU_PORT="${ATTU_PORT:-8000}"
+MIDDLEWARE_BIND_HOST="${MIDDLEWARE_BIND_HOST:-127.0.0.1}"
 DOCKER_CMD=(docker)
 export ATTU_PORT
+export MIDDLEWARE_BIND_HOST
 
 mkdir -p "$RUN_DIR"
 
@@ -187,6 +189,19 @@ require_backend_model_config() {
   echo "[dev] Set ds_quick_chat_model.{api_key,base_url,model} in manifest/config/config.yaml"
   echo "[dev] or set DS_QUICK_CHAT_MODEL_* in .env / shell before starting."
   exit 1
+}
+
+validate_middleware_exposure_config() {
+  if [ "$MIDDLEWARE_BIND_HOST" = "127.0.0.1" ] || [ "$MIDDLEWARE_BIND_HOST" = "localhost" ]; then
+    return 0
+  fi
+
+  if [ -z "${MINIO_ACCESS_KEY:-}" ] || [ -z "${MINIO_SECRET_KEY:-}" ] ||
+    [ "${MINIO_ACCESS_KEY:-}" = "minioadmin" ] || [ "${MINIO_SECRET_KEY:-}" = "minioadmin" ]; then
+    echo "[dev] ERROR: exposing middleware outside loopback requires non-default MINIO_ACCESS_KEY and MINIO_SECRET_KEY."
+    echo "[dev] Set strong credentials, or keep MIDDLEWARE_BIND_HOST=127.0.0.1 and use app/backend-only portproxy."
+    exit 1
+  fi
 }
 
 configure_docker() {
@@ -328,6 +343,7 @@ cmd_start() {
     echo "[dev] Skipping middleware startup; using already-running middleware."
   else
     if configure_docker; then
+      validate_middleware_exposure_config
       echo "[dev] Starting middleware..."
       "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" up -d
     else
@@ -538,11 +554,23 @@ cmd_win_proxy() {
   echo "powershell -ExecutionPolicy Bypass -File \"$script_path_win\" -WslIp $wsl_ip"
   echo ""
   echo "[dev] To bind only your current Windows LAN IP:"
-  echo "powershell -ExecutionPolicy Bypass -File \"$script_path_win\" -WslIp $wsl_ip -ListenAddress 192.168.23.81"
+  echo "powershell -ExecutionPolicy Bypass -File \"$script_path_win\" -WslIp $wsl_ip -ListenAddress <windows-lan-ip>"
   echo ""
   echo "[dev] Then open with your Windows LAN IPv4:"
   echo "  Frontend: http://<windows-lan-ip>:$FRONTEND_PORT"
   echo "  Backend:  http://<windows-lan-ip>:$BACKEND_PORT"
+  echo ""
+  echo "[dev] Middleware ports are opt-in. To expose them, restart middleware with:"
+  echo "  MIDDLEWARE_BIND_HOST=0.0.0.0 MINIO_ACCESS_KEY=<user> MINIO_SECRET_KEY=<strong-password> ./scripts/dev.sh stop"
+  echo "  MIDDLEWARE_BIND_HOST=0.0.0.0 MINIO_ACCESS_KEY=<user> MINIO_SECRET_KEY=<strong-password> ./scripts/dev.sh start"
+  echo "[dev] Then run this in Windows PowerShell as Administrator:"
+  echo "powershell -ExecutionPolicy Bypass -File \"$script_path_win\" -WslIp $wsl_ip -ExposeMiddleware"
+  echo "  Redis:    <windows-lan-ip>:31029"
+  echo "  Milvus:   <windows-lan-ip>:31953"
+  echo "  Attu:     http://<windows-lan-ip>:$ATTU_PORT"
+  echo "  Etcd:     http://<windows-lan-ip>:2379"
+  echo "  MinIO:    http://<windows-lan-ip>:9000"
+  echo "  MinIO UI: http://<windows-lan-ip>:9001"
 }
 
 cmd_clean_volumes() {

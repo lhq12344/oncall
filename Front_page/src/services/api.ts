@@ -46,7 +46,13 @@ function resolveConfiguredApiBaseUrl(value: string) {
       return trimmed;
     }
     url.hostname = pageHostname;
+    if (!url.port) {
+      url.port = resolveBackendPort();
+    }
     url.protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+    if (url.pathname === '/' || url.pathname === '') {
+      url.pathname = API_BASE_PATH;
+    }
     return trimTrailingSlash(url.toString());
   } catch {
     return trimmed;
@@ -147,7 +153,7 @@ async function streamRequest(url: string, body: any, options: StreamOptions) {
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      throw new Error(await formatHTTPError(response));
     }
 
     const reader = response.body?.getReader();
@@ -252,6 +258,25 @@ function formatStreamError(error: unknown, url: string) {
     return `Failed to fetch ${url}. Backend is unreachable from this browser origin; check that port ${resolveBackendPort()} is running or set VITE_API_BASE_URL.`;
   }
   return error instanceof Error ? error.message : String(error);
+}
+
+async function formatHTTPError(response: Response) {
+  const text = await response.text();
+  if (!text.trim()) {
+    return `HTTP error! status: ${response.status}`;
+  }
+
+  try {
+    const payload = JSON.parse(text);
+    const message = payload?.message || payload?.error || payload?.data?.message;
+    if (typeof message === 'string' && message.trim()) {
+      return message.trim();
+    }
+  } catch {
+    // Fall back to the raw response body below.
+  }
+
+  return text.trim();
 }
 
 function mapInterruptData(raw: any): InterruptData {

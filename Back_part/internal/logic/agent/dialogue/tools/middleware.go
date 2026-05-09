@@ -10,7 +10,6 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
 )
@@ -226,8 +225,8 @@ func singleChunkReader(msg string) *schema.StreamReader[string] {
 	return r
 }
 
-// SafeToolMiddleware 包装所有工具调用，将普通 error 转为字符串结果，防止工具错误中断 Agent ReAct 循环。
-// 唯一例外：interrupt rerun error 必须原样透传（由 compose.IsInterruptRerunError 判断）。
+// SafeToolMiddleware 保留工具调用边界，所有错误都透传给 graph。
+// interrupt rerun error 也会原样透传，供 graph 保持审批/恢复语义。
 type SafeToolMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
 }
@@ -240,10 +239,7 @@ func (m *SafeToolMiddleware) WrapInvokableToolCall(
 	return func(ctx context.Context, args string, opts ...tool.Option) (string, error) {
 		result, err := endpoint(ctx, args, opts...)
 		if err != nil {
-			if _, ok := compose.IsInterruptRerunError(err); ok {
-				return "", err
-			}
-			return fmt.Sprintf("[tool error] %v", err), nil
+			return "", err
 		}
 		return result, nil
 	}, nil
@@ -257,16 +253,13 @@ func (m *SafeToolMiddleware) WrapStreamableToolCall(
 	return func(ctx context.Context, args string, opts ...tool.Option) (*schema.StreamReader[string], error) {
 		sr, err := endpoint(ctx, args, opts...)
 		if err != nil {
-			if _, ok := compose.IsInterruptRerunError(err); ok {
-				return nil, err
-			}
-			return singleChunkReader(fmt.Sprintf("[tool error] %v", err)), nil
+			return nil, err
 		}
 		return safeWrapReader(sr), nil
 	}, nil
 }
 
-// safeWrapReader 将 StreamReader 中的非 EOF error 转为字符串 chunk（中断错误除外）。
+// safeWrapReader 将 StreamReader 中的非 EOF error 透传给上层 graph。
 func safeWrapReader(sr *schema.StreamReader[string]) *schema.StreamReader[string] {
 	r, w := schema.Pipe[string](64)
 	go func() {
@@ -278,11 +271,7 @@ func safeWrapReader(sr *schema.StreamReader[string]) *schema.StreamReader[string
 				return
 			}
 			if err != nil {
-				if _, ok := compose.IsInterruptRerunError(err); ok {
-					_ = w.Send("", err)
-					return
-				}
-				_ = w.Send(fmt.Sprintf("\n[tool error] %v", err), nil)
+				_ = w.Send("", err)
 				return
 			}
 			_ = w.Send(chunk, nil)

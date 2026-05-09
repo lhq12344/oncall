@@ -39,30 +39,30 @@ func LoadEmbeddingDimension(ctx context.Context) int {
 }
 
 // LoadMilvusConfig 读取 Milvus 配置。
-// 按当前项目要求，优先读取 manifest/config/config.yaml，再回退到环境变量，最后使用默认值。
+// 优先读取环境变量，便于 WSL/Windows 端口转发后覆盖动态 IP 和本地运行参数。
 func LoadMilvusConfig(ctx context.Context) MilvusConfig {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	return MilvusConfig{
 		Address: resolveMilvusSetting(
-			readMilvusConfigString(ctx, "milvus.address"),
 			os.Getenv("MILVUS_ADDRESS"),
+			readMilvusConfigString(ctx, "milvus.address"),
 			DefaultMilvusAddress,
 		),
 		Database: resolveMilvusSetting(
-			readMilvusConfigString(ctx, "milvus.database"),
 			os.Getenv("MILVUS_DATABASE"),
+			readMilvusConfigString(ctx, "milvus.database"),
 			MilvusDBName,
 		),
 		Collection: resolveMilvusSetting(
-			readMilvusConfigString(ctx, "milvus.collection"),
 			os.Getenv("MILVUS_COLLECTION"),
+			readMilvusConfigString(ctx, "milvus.collection"),
 			MilvusCollectionName,
 		),
 		Timeout: resolveMilvusDuration(
-			readMilvusConfigString(ctx, "milvus.timeout"),
 			os.Getenv("MILVUS_TIMEOUT"),
+			readMilvusConfigString(ctx, "milvus.timeout"),
 			DefaultMilvusTimeout,
 		),
 	}
@@ -76,18 +76,18 @@ func readMilvusConfigString(ctx context.Context, key string) string {
 	return strings.TrimSpace(value.String())
 }
 
-func resolveMilvusSetting(configValue, envValue, defaultValue string) string {
-	if value := strings.TrimSpace(configValue); value != "" {
+func resolveMilvusSetting(primaryValue, fallbackValue, defaultValue string) string {
+	if value := strings.TrimSpace(primaryValue); value != "" {
 		return value
 	}
-	if value := strings.TrimSpace(envValue); value != "" {
+	if value := strings.TrimSpace(fallbackValue); value != "" {
 		return value
 	}
 	return strings.TrimSpace(defaultValue)
 }
 
-func resolveMilvusDuration(configValue, envValue string, defaultValue time.Duration) time.Duration {
-	for _, candidate := range []string{configValue, envValue} {
+func resolveMilvusDuration(primaryValue, fallbackValue string, defaultValue time.Duration) time.Duration {
+	for _, candidate := range []string{primaryValue, fallbackValue} {
 		if value := strings.TrimSpace(candidate); value != "" {
 			if parsed, err := time.ParseDuration(value); err == nil && parsed > 0 {
 				return parsed

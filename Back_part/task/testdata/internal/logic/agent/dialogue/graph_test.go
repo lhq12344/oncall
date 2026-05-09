@@ -9,22 +9,14 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-func TestRagResultRouterTreatsStructuredFailuresAsComplex(t *testing.T) {
+func TestRagResultRouterTreatsEmptyKnowledgeResultAsComplex(t *testing.T) {
 	cases := []struct {
 		name    string
 		content string
 	}{
 		{
-			name:    "error status",
-			content: `{"status":"error","results":[],"count":0,"message":"embedding failed"}`,
-		},
-		{
-			name:    "degraded status",
-			content: `{"status":"degraded","results":[],"count":0,"message":"retriever unavailable"}`,
-		},
-		{
-			name:    "success with zero count",
-			content: `{"status":"success","results":[],"count":0}`,
+			name:    "empty status",
+			content: `{"status":"empty","solved_contexts":[],"pending_questions":[]}`,
 		},
 	}
 
@@ -32,7 +24,7 @@ func TestRagResultRouterTreatsStructuredFailuresAsComplex(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			route, err := ragResultRouter(context.Background(), []*schema.Message{
 				schema.UserMessage("查一下认证信息"),
-				{Role: schema.Tool, Content: tc.content},
+				schema.ToolMessage(tc.content, "call_ks", schema.WithToolName("knowledge_search_expert")),
 			})
 			if err != nil {
 				t.Fatalf("router returned error: %v", err)
@@ -44,16 +36,10 @@ func TestRagResultRouterTreatsStructuredFailuresAsComplex(t *testing.T) {
 	}
 }
 
-func TestRagResultRouterTreatsStructuredHitsAsAnswer(t *testing.T) {
+func TestRagResultRouterTreatsKnowledgeSpecialistHitsAsAnswer(t *testing.T) {
 	route, err := ragResultRouter(context.Background(), []*schema.Message{
 		schema.UserMessage("查一下认证信息"),
-		schema.AssistantMessage("", []schema.ToolCall{{
-			ID: "call_1",
-			Function: schema.FunctionCall{
-				Name: "knowledge_retrieve",
-			},
-		}}),
-		schema.ToolMessage(`{"status":"success","results":[{"content":"认证信息说明"}],"count":1}`, "call_1", schema.WithToolName("knowledge_retrieve")),
+		schema.ToolMessage(`{"status":"success","solved_contexts":["认证信息说明"],"pending_questions":[]}`, "call_1", schema.WithToolName("knowledge_search_expert")),
 	})
 	if err != nil {
 		t.Fatalf("router returned error: %v", err)
@@ -86,7 +72,6 @@ func TestPrepareLeafAgentMessagesAppendsUserHandoff(t *testing.T) {
 	msgs := []*schema.Message{
 		schema.UserMessage("Eino 是什么"),
 		{Role: schema.Tool, Content: `{"status":"error","results":[],"count":0}`},
-		schema.AssistantMessage("[TO_COMPLEX] 知识库检索异常", nil),
 	}
 
 	prepared := prepareComplexAgentMessages(context.Background(), msgs)
@@ -136,14 +121,6 @@ func TestRunAnalysisToolFallsBackOnFailure(t *testing.T) {
 	}
 	if !strings.Contains(got, `"intent_type":"other"`) {
 		t.Fatalf("fallback intent analysis not returned: %s", got)
-	}
-}
-
-func TestGateInstructionDoesNotMandateIntentEmotionTools(t *testing.T) {
-	for _, forbidden := range []string{"调用 intent_analysis", "调用 player_emotion_analysis"} {
-		if strings.Contains(gateAgentInstruction, forbidden) {
-			t.Fatalf("gate instruction still mandates %q: %s", forbidden, gateAgentInstruction)
-		}
 	}
 }
 

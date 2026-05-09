@@ -64,6 +64,7 @@ interface AppState {
   setCurrentSession: (id: string) => void;
   addMessage: (sessionId: string, message: Omit<Message, 'id' | 'timestamp'>) => string;
   updateLastMessage: (sessionId: string, content: string, steps?: ChatStep[], interrupt?: InterruptData) => void;
+  markLastMessageError: (sessionId: string, error: string) => void;
   appendStepToLastMessage: (sessionId: string, step: ChatStep) => void;
   setLastMessageStepStatus: (sessionId: string, status: ChatStep['status']) => void;
   isSessionStreaming: (sessionId: string | null | undefined) => boolean;
@@ -148,6 +149,23 @@ export const useStore = create<AppState>()(
             content: content !== undefined ? lastMessage.content + content : lastMessage.content,
             steps: steps ? mergeMessageSteps(lastMessage.steps, steps) : lastMessage.steps,
             interrupt: interrupt || lastMessage.interrupt,
+          };
+          return { ...s, messages: updatedMessages, updatedAt: Date.now() };
+        }),
+      })),
+
+      markLastMessageError: (sessionId, error) => set((state) => ({
+        sessions: state.sessions.map((s) => {
+          if (s.id !== sessionId || s.messages.length === 0) return s;
+          const updatedMessages = [...s.messages];
+          const lastIndex = updatedMessages.length - 1;
+          const lastMessage = updatedMessages[lastIndex];
+          const errorText = error?.trim() || 'Unknown error';
+          const prefix = lastMessage.content.trim() ? '\n\nError: ' : 'Error: ';
+          updatedMessages[lastIndex] = {
+            ...lastMessage,
+            type: 'error',
+            content: `${lastMessage.content}${prefix}${errorText}`,
           };
           return { ...s, messages: updatedMessages, updatedAt: Date.now() };
         }),
@@ -241,6 +259,7 @@ export const useStore = create<AppState>()(
           addMessage,
           updateLastMessage,
           appendStepToLastMessage,
+          markLastMessageError,
           setLastMessageStepStatus,
           setStreaming,
           setConnectionStatus
@@ -281,7 +300,7 @@ export const useStore = create<AppState>()(
               setLastMessageStepStatus(sessionId, 'error');
               setStreaming(sessionId, false);
               setConnectionStatus(sessionId, 'error');
-              updateLastMessage(sessionId, `\n\nError: ${err}`);
+              markLastMessageError(sessionId, err);
             }
           });
         } catch (err) {
@@ -289,7 +308,7 @@ export const useStore = create<AppState>()(
           setLastMessageStepStatus(sessionId, 'error');
           setStreaming(sessionId, false);
           setConnectionStatus(sessionId, 'error');
-          updateLastMessage(sessionId, `\n\nError: ${errMsg}`);
+          markLastMessageError(sessionId, errMsg);
         }
       },
 

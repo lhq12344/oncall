@@ -22,6 +22,7 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
     currentSessionId,
     addMessage,
     updateLastMessage,
+    markLastMessageError,
     appendStepToLastMessage,
     setLastMessageStepStatus,
     setStreaming,
@@ -136,7 +137,7 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
         setErrorText(err || '恢复执行失败');
         if (currentSessionId) {
           setLastMessageStepStatus(currentSessionId, 'error');
-          updateLastMessage(currentSessionId, `\n\nError: ${err}`);
+          markLastMessageError(currentSessionId, err || '恢复执行失败');
         }
       }
     };
@@ -154,6 +155,9 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
       setStreaming(currentSessionId, false);
       setConnectionStatus(currentSessionId, 'error');
       setErrorText(error instanceof Error ? error.message : '恢复执行失败');
+      if (currentSessionId) {
+        markLastMessageError(currentSessionId, error instanceof Error ? error.message : '恢复执行失败');
+      }
     }
   };
 

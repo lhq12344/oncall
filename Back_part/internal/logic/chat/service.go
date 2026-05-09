@@ -435,7 +435,7 @@ func (c *Service) handleGraphInterrupt(r *ghttp.Request, checkpointID string, in
 	return &v1.ChatStreamRes{}, nil
 }
 
-// cleanRoutingMarkers 删除 Gate Agent 注入的路由标记，避免透传给用户。
+// cleanRoutingMarkers 删除内部路由标记，避免透传给用户。
 func cleanRoutingMarkers(content string) string {
 	content = strings.ReplaceAll(content, "[RESOLVED]", "")
 	content = strings.ReplaceAll(content, "[TO_COMPLEX]", "")

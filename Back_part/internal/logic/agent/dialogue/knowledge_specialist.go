@@ -311,11 +311,11 @@ func buildParallelRAGNode(
 	return func(nodeCtx context.Context, subQuestions []string) (map[string][]schema.Document, error) {
 		result := make(map[string][]schema.Document, len(subQuestions))
 
-		if retriever == nil || len(subQuestions) == 0 {
-			for _, q := range subQuestions {
-				result[q] = nil
-			}
+		if len(subQuestions) == 0 {
 			return result, nil
+		}
+		if retriever == nil {
+			return nil, fmt.Errorf("knowledge retriever unavailable")
 		}
 
 		type entry struct {
@@ -335,12 +335,11 @@ func buildParallelRAGNode(
 				docs, err := retriever.Retrieve(egCtx, q)
 				if err != nil {
 					if logger != nil {
-						logger.Warn("knowledge_specialist RAG failed for sub-question",
+						logger.Error("knowledge_specialist RAG failed for sub-question",
 							zap.String("question", q),
 							zap.Error(err))
 					}
-					results <- entry{question: q, docs: nil}
-					return nil
+					return fmt.Errorf("knowledge retrieve failed for %q: %w", q, err)
 				}
 				docsVal := make([]schema.Document, len(docs))
 				for i, d := range docs {
@@ -355,7 +354,7 @@ func buildParallelRAGNode(
 		}
 
 		if err := eg.Wait(); err != nil {
-			return result, fmt.Errorf("parallel RAG errgroup: %w", err)
+			return nil, fmt.Errorf("parallel RAG errgroup: %w", err)
 		}
 		close(results)
 
@@ -673,14 +672,9 @@ func (t *knowledgeSearchExpertTool) InvokableRun(ctx context.Context, argumentsI
 	result, err := t.runnable.Invoke(ctx, args.Question)
 	if err != nil {
 		if t.logger != nil {
-			t.logger.Warn("knowledge_search_expert degraded", zap.Error(err))
+			t.logger.Error("knowledge_search_expert failed", zap.Error(err))
 		}
-		fallback, _ := json.Marshal(&KnowledgeSpecialistResult{
-			PendingQuestions: []string{args.Question},
-			Status:           "degraded",
-			ErrorSummary:     err.Error(),
-		})
-		return string(fallback), nil
+		return "", fmt.Errorf("knowledge_search_expert failed: %w", err)
 	}
 
 	out, _ := json.Marshal(result)

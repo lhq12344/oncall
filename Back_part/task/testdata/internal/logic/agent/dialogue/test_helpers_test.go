@@ -2,6 +2,7 @@ package dialogue
 
 import (
 	"context"
+	"errors"
 
 	einoModel "github.com/cloudwego/eino/components/model"
 	einoretriever "github.com/cloudwego/eino/components/retriever"
@@ -40,15 +41,21 @@ func (f *fakeToolCallingChatModel) WithTools(_ []*schema.ToolInfo) (einoModel.To
 type fakeRetriever struct {
 	queries []string
 	docs    map[string][]*schema.Document
+	err     error
 }
 
 func (f *fakeRetriever) Retrieve(_ context.Context, query string, _ ...einoretriever.Option) ([]*schema.Document, error) {
 	f.queries = append(f.queries, query)
+	if f.err != nil {
+		return nil, f.err
+	}
 	if f.docs == nil {
 		return nil, nil
 	}
 	return f.docs[query], nil
 }
+
+var errFakeRetriever = errors.New("fake retriever failed")
 
 func cloneMessages(input []*schema.Message) []*schema.Message {
 	if len(input) == 0 {

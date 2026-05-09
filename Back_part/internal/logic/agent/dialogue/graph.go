@@ -15,6 +15,7 @@ import (
 	appcontext "go_agent/internal/logic/session"
 
 	"github.com/cloudwego/eino/adk"
+	einoretriever "github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
@@ -52,19 +53,17 @@ type OrchestrationResult struct {
 	Graph compose.Runnable[[]*schema.Message, *schema.Message]
 }
 
-// BuildOrchestrationGraph 构建三 Agent 协同对话编排图。
+// BuildOrchestrationGraph 构建客服对话编排图。
 //
 // 图拓扑（DAG）：
 //
-//	START → analysis_node → gate_node → [ragResultRouter] → answer_node → END
-//	                                                   ↘ direct_node → END
-//	                                                   ↘ complex_node → END
+//	START → language_detector → analysis_node → knowledge_specialist_node → [ragResultRouter] → answer_node → END
+//	                                                                                         ↘ complex_node → END
 //
 // analysis_node 确定性运行意图/情绪工具并注入当前轮次内部分析上下文。
-// gate_node 以批量模式运行 Gate Agent（RAG 检索 → 路由标记）。
-// ragResultRouter 检查 Gate 输出中的 [RESOLVED]/[TO_COMPLEX] 标记决定路由。
+// knowledge_specialist_node 直接运行 KnowledgeSpecialist 子图，并写入黑板供下游引用。
+// ragResultRouter 根据 KnowledgeSpecialistResult 决定路由。
 // answer_node 以流式模式运行 Answer Agent（整理 RAG 结果，结合情绪调整语气）。
-// direct_node 直接返回 Gate Agent 已生成的轻量回复（问候、补充信息、澄清追问等）。
 // complex_node 以流式模式运行 Complex Agent（受限工具集 + 中断/恢复支持，结合情绪调整语气）。
 //
 // 入参 checkpointStore 同时用于外层图 checkpoint（中断时保存图状态）和
@@ -83,15 +82,15 @@ func BuildOrchestrationGraph(
 	knowledgeRetriever, err := airetriever.NewMilvusRetriever(retrieverCtx)
 	if err != nil {
 		if cfg.Logger != nil {
-			cfg.Logger.Warn("milvus retriever unavailable for orchestration graph, RAG degraded",
+			cfg.Logger.Warn("milvus retriever unavailable for orchestration graph, chat requests will fail on knowledge recall",
 				zap.Error(err))
 		}
-		knowledgeRetriever = nil
+		knowledgeRetriever = unavailableRetriever{err: fmt.Errorf("knowledge retriever unavailable: %w", err)}
 	}
 
-	gateAgent, err := newGateAgent(ctx, cfg, knowledgeRetriever)
+	knowledgeSpecialist, err := buildKnowledgeSpecialistGraph(ctx, cfg.resolveModel(cfg.SubgraphModel, cfg.ChatModel), knowledgeRetriever, cfg.Logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build gate agent: %w", err)
+		return nil, fmt.Errorf("failed to build knowledge specialist graph: %w", err)
 	}
 	answerAgent, err := newAnswerAgent(ctx, cfg)
 	if err != nil {
@@ -132,19 +131,13 @@ func BuildOrchestrationGraph(
 		return nil, fmt.Errorf("failed to add analysis_node: %w", err)
 	}
 
-	// gate_node：批量运行 Gate Agent（含知识库检索），收集输出消息供路由函数检查。
-	// 同时解析 knowledge_search_expert 工具返回结果，写入 OrchState Blackboard。
-	if err := g.AddLambdaNode("gate_node", compose.InvokableLambda(
+	// knowledge_specialist_node：直接运行 KnowledgeSpecialist，写入 OrchState Blackboard。
+	if err := g.AddLambdaNode("knowledge_specialist_node", compose.InvokableLambda(
 		func(ctx context.Context, msgs []*schema.Message) ([]*schema.Message, error) {
-			out, err := collectAgentMessages(withDialogueRuntimeContextFromState(ctx), gateAgent, msgs, cfg.Logger)
-			if err == nil {
-				recordGateTraceEvents(ctx, cfg, out)
-				writeKnowledgeSpecialistResultToState(ctx, out, cfg.Logger)
-			}
-			return out, err
+			return appendKnowledgeSpecialistResult(ctx, cfg, knowledgeSpecialist, msgs)
 		},
 	)); err != nil {
-		return nil, fmt.Errorf("failed to add gate_node: %w", err)
+		return nil, fmt.Errorf("failed to add knowledge_specialist_node: %w", err)
 	}
 
 	// answer_node：流式运行 Answer Agent。
@@ -157,15 +150,6 @@ func BuildOrchestrationGraph(
 		return nil, fmt.Errorf("failed to add answer_node: %w", err)
 	}
 
-	// direct_node：Gate 已经给出不需要工具的轻量回复时，直接返回，避免落入 Complex Agent。
-	if err := g.AddLambdaNode("direct_node", compose.StreamableLambda(
-		func(ctx context.Context, msgs []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
-			return streamDirectGateMessage(ctx, msgs, cfg.Logger)
-		},
-	)); err != nil {
-		return nil, fmt.Errorf("failed to add direct_node: %w", err)
-	}
-
 	// complex_node：流式运行 Complex Agent，支持 interrupt/resume。
 	if err := g.AddLambdaNode("complex_node", compose.StreamableLambda(
 		buildComplexNodeLambda(complexRunner, cfg.Logger),
@@ -176,9 +160,8 @@ func BuildOrchestrationGraph(
 	for _, edge := range [][2]string{
 		{compose.START, "language_detector"},
 		{"language_detector", "analysis_node"},
-		{"analysis_node", "gate_node"},
+		{"analysis_node", "knowledge_specialist_node"},
 		{"answer_node", compose.END},
-		{"direct_node", compose.END},
 		{"complex_node", compose.END},
 	} {
 		if err := g.AddEdge(edge[0], edge[1]); err != nil {
@@ -189,12 +172,12 @@ func BuildOrchestrationGraph(
 	branch := compose.NewGraphBranch(
 		func(ctx context.Context, msgs []*schema.Message) (string, error) {
 			route, err := ragResultRouter(ctx, msgs)
-			recordTraceEvent(ctx, cfg, "gate_node", "route_decision", "gate_agent", "", statusFromError(err), route, errorSummary(err))
+			recordTraceEvent(ctx, cfg, "knowledge_specialist_node", "route_decision", "knowledge_specialist", "", statusFromError(err), route, errorSummary(err))
 			return route, err
 		},
-		map[string]bool{"answer_node": true, "direct_node": true, "complex_node": true},
+		map[string]bool{"answer_node": true, "complex_node": true},
 	)
-	if err := g.AddBranch("gate_node", branch); err != nil {
+	if err := g.AddBranch("knowledge_specialist_node", branch); err != nil {
 		return nil, fmt.Errorf("failed to add router branch: %w", err)
 	}
 
@@ -215,14 +198,25 @@ func BuildOrchestrationGraph(
 }
 
 const analysisNodeTimeout = 10 * time.Second
+const knowledgeSpecialistToolCallID = "knowledge_specialist_node"
+
+type unavailableRetriever struct {
+	err error
+}
+
+func (r unavailableRetriever) Retrieve(context.Context, string, ...einoretriever.Option) ([]*schema.Document, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return nil, fmt.Errorf("knowledge retriever unavailable")
+}
 
 func detectAndStoreUserLanguage(ctx context.Context, cfg *Config, msgs []*schema.Message) ([]*schema.Message, error) {
 	question := lastUserQuestion(msgs)
 	detectCtx, cancel := context.WithTimeout(ctx, languageDetectorTimeout)
 	defer cancel()
 
-	model := cfg.resolveModel(cfg.GateModel, cfg.ChatModel)
-	language, detectErr := detectUserLanguage(detectCtx, model, question)
+	language, detectErr := detectUserLanguage(detectCtx, cfg.ChatModel, question)
 	language = normalizeLanguageCode(language)
 	if language == "" {
 		language = defaultUserLanguage
@@ -293,6 +287,69 @@ func appendAnalysisNodeMessage(ctx context.Context, cfg *Config, msgs []*schema.
 	}
 	recordTraceEvent(ctx, cfg, "analysis_node", "analysis", "analysis_node", "", status, message, analysis.ErrorSummary)
 	return out, nil
+}
+
+func appendKnowledgeSpecialistResult(
+	ctx context.Context,
+	cfg *Config,
+	knowledgeSpecialist compose.Runnable[string, *KnowledgeSpecialistResult],
+	msgs []*schema.Message,
+) ([]*schema.Message, error) {
+	question := lastUserQuestion(msgs)
+	result, err := knowledgeSpecialist.Invoke(withDialogueRuntimeContextFromState(ctx), question)
+	if err != nil {
+		if cfg != nil && cfg.Logger != nil {
+			cfg.Logger.Error("knowledge_specialist_node failed", zap.Error(err))
+		}
+		return nil, fmt.Errorf("knowledge specialist failed for %q: %w", question, err)
+	}
+	return appendKnowledgeSpecialistResultMessage(ctx, cfg, msgs, result), nil
+}
+
+func appendKnowledgeSpecialistResultMessage(
+	ctx context.Context,
+	cfg *Config,
+	msgs []*schema.Message,
+	result *KnowledgeSpecialistResult,
+) []*schema.Message {
+	var logger *zap.Logger
+	if cfg != nil {
+		logger = cfg.Logger
+	}
+	if result == nil {
+		result = &KnowledgeSpecialistResult{
+			PendingQuestions: []string{lastUserQuestion(msgs)},
+			Status:           "empty",
+		}
+	}
+	writeKnowledgeSpecialistResultToState(ctx, result, logger)
+
+	payload, err := json.Marshal(result)
+	if err != nil {
+		payload, _ = json.Marshal(&KnowledgeSpecialistResult{
+			PendingQuestions: []string{lastUserQuestion(msgs)},
+			Status:           "degraded",
+			ErrorSummary:     err.Error(),
+		})
+	}
+
+	questionArgs, _ := json.Marshal(map[string]string{"question": lastUserQuestion(msgs)})
+	out := make([]*schema.Message, 0, len(msgs)+2)
+	out = append(out, msgs...)
+	out = append(out, schema.AssistantMessage("", []schema.ToolCall{{
+		ID: knowledgeSpecialistToolCallID,
+		Function: schema.FunctionCall{
+			Name:      "knowledge_search_expert",
+			Arguments: string(questionArgs),
+		},
+	}}))
+	out = append(out, schema.ToolMessage(
+		string(payload),
+		knowledgeSpecialistToolCallID,
+		schema.WithToolName("knowledge_search_expert"),
+	))
+	recordKnowledgeSpecialistTraceEvent(ctx, cfg, string(payload), result)
+	return out
 }
 
 func runAnalysisTool(ctx context.Context, analysisTool tool.BaseTool, userInput string, fallback string) (string, error) {
@@ -616,84 +673,15 @@ func drainIterToStream(
 	}
 }
 
-// collectAgentMessages 同步运行 Agent（批量模式），收集全部输出消息。
-// 返回：输入消息 + Agent 新产生的消息（含工具调用消息，供路由函数检查）。
-func collectAgentMessages(ctx context.Context, agent adk.Agent, inputMsgs []*schema.Message, logger *zap.Logger) ([]*schema.Message, error) {
-	iter := agent.Run(ctx, &adk.AgentInput{
-		Messages:        inputMsgs,
-		EnableStreaming: false,
-	})
-
-	result := make([]*schema.Message, len(inputMsgs))
-	copy(result, inputMsgs)
-
-	for {
-		event, ok := iter.Next()
-		if !ok {
-			break
-		}
-		if event == nil {
-			continue
-		}
-		if event.Err != nil {
-			return nil, fmt.Errorf("gate agent error: %w", event.Err)
-		}
-		if event.Output == nil || event.Output.MessageOutput == nil {
-			continue
-		}
-		msg, err := event.Output.MessageOutput.GetMessage()
-		if err == nil && msg != nil {
-			result = append(result, msg)
-		}
-	}
-
-	// 记录 gate_node 路由判断依据，帮助诊断路由方向。
-	if logger != nil {
-		for i := len(result) - 1; i >= 0; i-- {
-			m := result[i]
-			if m.Role == schema.Assistant && strings.TrimSpace(m.ToolCallID) == "" {
-				logger.Info("gate_node routing decision",
-					zap.Int("content_len", len(m.Content)),
-					zap.Bool("resolved", strings.Contains(m.Content, "[RESOLVED]")),
-					zap.Bool("to_complex", strings.Contains(m.Content, "[TO_COMPLEX]")),
-					zap.String("preview", func() string {
-						s := strings.TrimSpace(m.Content)
-						if len(s) > 120 {
-							return s[:120]
-						}
-						return s
-					}()))
-				break
-			}
-		}
-	}
-
-	return result, nil
-}
-
-func recordGateTraceEvents(ctx context.Context, cfg *Config, msgs []*schema.Message) {
+func recordKnowledgeSpecialistTraceEvent(ctx context.Context, cfg *Config, payload string, result *KnowledgeSpecialistResult) {
 	if cfg == nil || cfg.TraceRecorder == nil {
 		return
 	}
-	toolCallIDToName := buildToolCallNameIndex(msgs)
-
-	for _, msg := range msgs {
-		if msg == nil {
-			continue
-		}
-		switch {
-		case msg.Role == schema.Tool:
-			toolName := toolNameForMessage(msg, toolCallIDToName)
-			status := "success"
-			var ksResult KnowledgeSpecialistResult
-			if toolName == "knowledge_search_expert" && json.Unmarshal([]byte(msg.Content), &ksResult) == nil {
-				status = knowledgeTraceStatus(ksResult)
-			}
-			recordTraceEvent(ctx, cfg, "gate_node", "tool_result", toolName, msg.ToolCallID, status, msg.Content, "")
-		case msg.Role == schema.Assistant && strings.TrimSpace(msg.ToolCallID) == "" && (strings.Contains(msg.Content, "[RESOLVED]") || strings.Contains(msg.Content, "[TO_COMPLEX]")):
-			recordTraceEvent(ctx, cfg, "gate_node", "route_marker", "gate_agent", "", "success", msg.Content, "")
-		}
+	status := "empty"
+	if result != nil {
+		status = knowledgeTraceStatus(*result)
 	}
+	recordTraceEvent(ctx, cfg, "knowledge_specialist_node", "tool_result", "knowledge_search_expert", knowledgeSpecialistToolCallID, status, payload, "")
 }
 
 func buildToolCallNameIndex(msgs []*schema.Message) map[string]string {
@@ -904,7 +892,7 @@ func appendHandoffUserMessage(msgs []*schema.Message, target string, extraCtx []
 			ctxBlock = "\n\n已解决的知识背景（可直接引用）：\n" + strings.Join(extraCtx, "\n---\n")
 		}
 		content = fmt.Sprintf(
-			"请基于上文中的 knowledge_search_expert 工具结果，直接回答用户原始问题。\n\n原始问题：%s%s\n\n要求：不要输出 [RESOLVED] 或 [TO_COMPLEX] 路由标记；如果知识库结果不足，请明确说明不足之处。",
+			"请基于上文中的 knowledge_specialist_node 输出结果，直接回答用户原始问题。\n\n原始问题：%s%s\n\n要求：不要输出 [RESOLVED] 或 [TO_COMPLEX] 路由标记；如果知识库结果不足，请明确说明不足之处。",
 			question, ctxBlock,
 		)
 	default:
@@ -913,7 +901,7 @@ func appendHandoffUserMessage(msgs []*schema.Message, target string, extraCtx []
 			pendingBlock = "\n\n知识库未能解决的遗留子问题（请重点攻克）：\n- " + strings.Join(extraCtx, "\n- ")
 		}
 		content = fmt.Sprintf(
-			"Gate Agent 已判断知识库结果不足或检索异常。请忽略内部路由标记，继续处理并直接回答用户原始问题。\n\n原始问题：%s%s\n\n要求：不要输出 [RESOLVED] 或 [TO_COMPLEX] 路由标记；必要时使用可用 Skill 工具或已挂载工具攻克遗留问题。",
+			"KnowledgeSpecialist 输出显示知识库结果不足、存在遗留问题或检索异常。请忽略内部路由标记，继续处理并直接回答用户原始问题。\n\n原始问题：%s%s\n\n要求：不要输出 [RESOLVED] 或 [TO_COMPLEX] 路由标记；必要时使用可用 Skill 工具或已挂载工具攻克遗留问题。",
 			question, pendingBlock,
 		)
 	}
@@ -959,32 +947,32 @@ func shouldEmitAssistantMessage(mo *adk.MessageVariant, msg *schema.Message) boo
 	return true
 }
 
-// ragResultRouter 路由函数：根据 Gate Agent 输出决定分流到 answer_node 或 complex_node。
+// ragResultRouter 路由函数：根据 KnowledgeSpecialistResult 分流到 answer_node 或 complex_node。
 //
 // 优先级（高到低）：
-// 1. OrchState 结构化状态（knowledge_search_expert 写入）：
-//   - len(SolvedContexts)>0 && len(PendingQuestions)==0 → answer_node
+// 1. OrchState 结构化状态（knowledge_specialist_node 写入）：
+//   - status=empty/degraded/error/partial 或 ErrorSummary 非空 → complex_node
 //   - len(PendingQuestions)>0 → complex_node
-//     （工具本轮被调用时，结构化状态优先于 LLM 文本标记，防止 LLM 误判）
+//   - len(SolvedContexts)>0 && len(PendingQuestions)==0 → answer_node
 //
-// 2. 最近一次 knowledge_search_expert 工具 JSON：
+// 2. 最近一次 synthetic knowledge_search_expert 工具 JSON：
 //   - len(SolvedContexts)>0 && len(PendingQuestions)==0 → answer_node
 //   - len(PendingQuestions)>0 或 status=empty/degraded/error → complex_node
 //
-// 3. Gate Agent 最终助手消息含 [RESOLVED] → answer_node（工具未调用时的 LLM 判断）
-// 4. Gate Agent 最终助手消息含 [TO_COMPLEX] → complex_node
-// 5. Gate Agent 最终助手消息无标记且无工具调用 → direct_node（轻量直答/澄清追问）
-// 6. 回退：最近一条 Tool 消息内容有效 → answer_node；无效或空 → complex_node
-// 7. 无 Tool 消息（未执行 RAG）→ complex_node
+// 3. 无有效 KnowledgeSpecialistResult → complex_node
 func ragResultRouter(ctx context.Context, msgs []*schema.Message) (string, error) {
-	// 优先级 1：读取 OrchState 结构化状态（由 writeKnowledgeSpecialistResultToState 写入）。
-	// 仅当本轮确实调用了 knowledge_search_expert（SolvedContexts 或 PendingQuestions 非空）时生效。
 	var solvedCtxs, pendingQs []string
+	var status, errSummary string
 	_ = compose.ProcessState[*OrchState](ctx, func(_ context.Context, s *OrchState) error {
 		solvedCtxs = s.SolvedContexts
 		pendingQs = s.PendingQuestions
+		status = s.KnowledgeStatus
+		errSummary = s.KnowledgeErrorSummary
 		return nil
 	})
+	if isComplexKnowledgeStatus(status, errSummary) {
+		return "complex_node", nil
+	}
 	if len(pendingQs) > 0 {
 		// 有未解决子问题，无论 LLM 标记如何，必须走 complex_node。
 		return "complex_node", nil
@@ -999,79 +987,7 @@ func ragResultRouter(ctx context.Context, msgs []*schema.Message) (string, error
 		return route, nil
 	}
 
-	// 优先级 3-4：工具本轮未被调用，回退到 LLM 文本标记。
-	for i := len(msgs) - 1; i >= 0; i-- {
-		msg := msgs[i]
-		if msg == nil {
-			continue
-		}
-		if msg.Role == schema.Assistant && strings.TrimSpace(msg.ToolCallID) == "" && len(msg.ToolCalls) == 0 {
-			content := msg.Content
-			if strings.Contains(content, "[RESOLVED]") {
-				return "answer_node", nil
-			}
-			if strings.Contains(content, "[TO_COMPLEX]") {
-				return "complex_node", nil
-			}
-			if strings.TrimSpace(content) != "" {
-				return "direct_node", nil
-			}
-			break
-		}
-	}
-
-	// 优先级 5：仅检查已知知识检索工具的最近 Tool 消息内容。
-	for i := len(msgs) - 1; i >= 0; i-- {
-		msg := msgs[i]
-		if msg == nil || msg.Role != schema.Tool || !isKnowledgeToolMessage(msg, toolCallIDToName) {
-			continue
-		}
-		content := strings.TrimSpace(msg.Content)
-		if content == "" || isEmptyRAGResult(content) {
-			return "complex_node", nil
-		}
-		return "answer_node", nil
-	}
-
-	// 优先级 5：无 Tool 消息，走 complex_node。
 	return "complex_node", nil
-}
-
-func streamDirectGateMessage(ctx context.Context, msgs []*schema.Message, logger *zap.Logger) (*schema.StreamReader[*schema.Message], error) {
-	sr, sw := schema.Pipe[*schema.Message](1)
-	go func() {
-		defer sw.Close()
-		msg := lastDirectGateMessage(msgs)
-		if msg == nil {
-			sw.Send(nil, fmt.Errorf("direct gate message not found"))
-			return
-		}
-		if logger != nil {
-			logger.Info("direct_node emitting gate message",
-				zap.Int("content_len", len(msg.Content)),
-				zap.String("preview", previewContent(msg.Content)))
-		}
-		sw.Send(localizeAssistantMessage(ctx, msg), nil)
-	}()
-	return sr, nil
-}
-
-func lastDirectGateMessage(msgs []*schema.Message) *schema.Message {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		msg := msgs[i]
-		if msg == nil || msg.Role != schema.Assistant {
-			continue
-		}
-		if strings.TrimSpace(msg.ToolCallID) != "" || len(msg.ToolCalls) > 0 {
-			continue
-		}
-		content := strings.TrimSpace(msg.Content)
-		if content == "" || strings.Contains(content, "[RESOLVED]") || strings.Contains(content, "[TO_COMPLEX]") {
-			continue
-		}
-		return msg
-	}
-	return nil
 }
 
 func routeFromKnowledgeSpecialistToolResult(msgs []*schema.Message, toolCallIDToName map[string]string) (string, bool) {
@@ -1086,11 +1002,10 @@ func routeFromKnowledgeSpecialistToolResult(msgs []*schema.Message, toolCallIDTo
 
 		var ksResult KnowledgeSpecialistResult
 		if err := json.Unmarshal([]byte(msg.Content), &ksResult); err != nil {
-			content := strings.TrimSpace(msg.Content)
-			if content == "" || isEmptyRAGResult(content) {
-				return "complex_node", true
-			}
-			return "answer_node", true
+			return "complex_node", true
+		}
+		if isComplexKnowledgeStatus(ksResult.Status, ksResult.ErrorSummary) {
+			return "complex_node", true
 		}
 		if len(ksResult.PendingQuestions) > 0 {
 			return "complex_node", true
@@ -1098,22 +1013,17 @@ func routeFromKnowledgeSpecialistToolResult(msgs []*schema.Message, toolCallIDTo
 		if len(ksResult.SolvedContexts) > 0 {
 			return "answer_node", true
 		}
-		switch strings.ToLower(strings.TrimSpace(ksResult.Status)) {
-		case "empty", "degraded", "error", "partial":
-			return "complex_node", true
-		default:
-			if strings.TrimSpace(ksResult.ErrorSummary) != "" {
-				return "complex_node", true
-			}
-			return "complex_node", true
-		}
+		return "complex_node", true
 	}
 	return "", false
 }
 
-func isKnowledgeToolMessage(msg *schema.Message, toolCallIDToName map[string]string) bool {
-	switch toolNameForMessage(msg, toolCallIDToName) {
-	case "knowledge_search_expert", "knowledge_retrieve":
+func isComplexKnowledgeStatus(status string, errSummary string) bool {
+	if strings.TrimSpace(errSummary) != "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "empty", "degraded", "error", "partial":
 		return true
 	default:
 		return false
@@ -1190,33 +1100,19 @@ type CheckPointStore = compose.CheckPointStore
 // RunCheckpointTTL 是 Redis checkpoint 的默认 TTL。
 const RunCheckpointTTL = 24 * time.Hour
 
-// writeKnowledgeSpecialistResultToState 扫描消息列表，找到 knowledge_search_expert 工具返回的
-// JSON 结果，解析后写入 OrchState Blackboard（SolvedContexts / PendingQuestions）。
-func writeKnowledgeSpecialistResultToState(ctx context.Context, msgs []*schema.Message, logger *zap.Logger) {
-	toolCallIDToName := buildToolCallNameIndex(msgs)
-	for i := len(msgs) - 1; i >= 0; i-- {
-		msg := msgs[i]
-		if msg == nil || msg.Role != schema.Tool {
-			continue
-		}
-		if toolNameForMessage(msg, toolCallIDToName) != "knowledge_search_expert" {
-			continue
-		}
-		var ksResult KnowledgeSpecialistResult
-		if err := json.Unmarshal([]byte(msg.Content), &ksResult); err != nil {
-			continue
-		}
-		if len(ksResult.SolvedContexts)+len(ksResult.PendingQuestions) == 0 {
-			continue
-		}
-		if stateErr := compose.ProcessState[*OrchState](ctx, func(_ context.Context, s *OrchState) error {
-			s.SolvedContexts = ksResult.SolvedContexts
-			s.PendingQuestions = ksResult.PendingQuestions
-			return nil
-		}); stateErr != nil && logger != nil {
-			logger.Warn("gate_node: failed to write KnowledgeSpecialistResult to OrchState",
-				zap.Error(stateErr))
-		}
-		return // 仅处理第一条匹配的工具消息
+// writeKnowledgeSpecialistResultToState 将 KnowledgeSpecialist 结构化输出写入黑板。
+func writeKnowledgeSpecialistResultToState(ctx context.Context, result *KnowledgeSpecialistResult, logger *zap.Logger) {
+	if result == nil {
+		return
+	}
+	if stateErr := compose.ProcessState[*OrchState](ctx, func(_ context.Context, s *OrchState) error {
+		s.SolvedContexts = append([]string(nil), result.SolvedContexts...)
+		s.PendingQuestions = append([]string(nil), result.PendingQuestions...)
+		s.KnowledgeStatus = strings.TrimSpace(result.Status)
+		s.KnowledgeErrorSummary = strings.TrimSpace(result.ErrorSummary)
+		return nil
+	}); stateErr != nil && logger != nil {
+		logger.Warn("knowledge_specialist_node: failed to write KnowledgeSpecialistResult to OrchState",
+			zap.Error(stateErr))
 	}
 }

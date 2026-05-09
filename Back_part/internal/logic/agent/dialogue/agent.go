@@ -31,7 +31,6 @@ const milvusRetrieverInitTimeout = 8 * time.Second
 // Config Dialogue Agent 配置
 type Config struct {
 	ChatModel     *models.ChatModel
-	GateModel     *models.ChatModel  // Gate Agent 专用（nil 时降级到 ChatModel）
 	SubgraphModel *models.ChatModel  // KnowledgeSpecialist 子图专用（nil 时降级到 ChatModel）
 	ComplexModel  *models.ChatModel  // Complex Agent 专用（nil 时降级到 ChatModel）
 	Embedder      embedding.Embedder // 用于语义相似度计算
@@ -343,12 +342,16 @@ type OrchState struct {
 	ResumeData map[string]any
 	// ResumeInterruptIDs 是本次 resume 针对的 interrupt ID 列表。
 	ResumeInterruptIDs []string
-	// SolvedContexts 是 knowledge_search_expert 已解决子问题的文档背景摘要。
-	// 由 gate_node 解析工具结果后写入，供 answer_node 和 complex_node 引用。
+	// SolvedContexts 是 knowledge_specialist_node 已解决子问题的文档背景摘要。
+	// 供 answer_node 和 complex_node 引用。
 	SolvedContexts []string
-	// PendingQuestions 是 knowledge_search_expert 未能在知识库中解决的子问题列表。
-	// 由 gate_node 写入，complex_node 应优先攻克这些遗留问题。
+	// PendingQuestions 是 knowledge_specialist_node 未能在知识库中解决的子问题列表。
+	// complex_node 应优先攻克这些遗留问题。
 	PendingQuestions []string
+	// KnowledgeStatus 是 KnowledgeSpecialistResult.Status，用于路由时优先处理降级/异常状态。
+	KnowledgeStatus string
+	// KnowledgeErrorSummary 是 KnowledgeSpecialistResult.ErrorSummary，用于保留检索失败证据。
+	KnowledgeErrorSummary string
 	// OriginalQuestion 是本轮用户原始问题，由 ChatStream 通过 StateModifier 写入并随
 	// checkpoint 持久化。ChatResumeStream 在 pendingTurnStore 记录缺失时从此字段恢复，
 	// 确保中断恢复后的对话轮次仍能写入 session memory。
@@ -420,22 +423,6 @@ const emotionResponseGuide = `
   * 保持礼貌友好，不必过度安抚
   * 结构清晰，重点突出`
 
-const gateAgentInstruction = `你是客服分诊网关，负责基于当前轮次的已知意图/情绪分析、检索知识库并决定处理路由。
-
-工作流程：
-1. 读取系统提示顶部的内部客服分析结果，理解玩家诉求、情绪和缺失信息
-2. 根据意图类型决定是否调用 knowledge_search_expert：
-   - 明确的知识类问题（游戏规则、活动说明、账号操作等）→ 调用 knowledge_search_expert
-   - 纯情绪疏导、技术排障、需要工具操作的问题 → 跳过检索，直接输出 [TO_COMPLEX]
-3. 获取 knowledge_search_expert 的 JSON 结果，根据其中的 pending_questions 字段判断路由：
-   - pending_questions 为空（所有子问题已解决）→ 输出 [RESOLVED]
-   - pending_questions 不为空（存在未解决子问题）→ 输出 [TO_COMPLEX]
-
-输出规则（严格遵守，你的输出仅用于内部路由）：
-- 知识库检索结果充足时：回复开头包含 [RESOLVED]，简述检索要点，并附上简短处理依据
-- 检索结果不足、为空、无关，或未调用检索：回复开头包含 [TO_COMPLEX]，说明转复杂处理的原因
-- 不要向玩家直接展示工具调用标签或内部路由标记` + customerServiceEtiquette
-
 const answerAgentInstruction = `你是知识整理员，负责将知识库检索结果整理为对玩家友好的最终回复。
 
 你是一个多语言专家。当前用户的提问语言是 {UserLanguage}。
@@ -444,10 +431,10 @@ const answerAgentInstruction = `你是知识整理员，负责将知识库检索
 黑板中的已解决知识背景如下：
 {SolvedContextsText}
 
-你的上下文中包含 gate_agent 调用工具的完整结果，请重点关注：
+你的上下文中包含 knowledge_specialist_node 的结构化输出，请重点关注：
 - intent_analysis 结果：了解玩家的主要诉求和缺失信息
 - player_emotion_analysis 结果：根据情绪状态调整回复语气和策略
-- knowledge_search_expert 的 solved_contexts：这是当前可直接引用的中文背景资料
+- solved_contexts：这是当前可直接引用的中文背景资料
 
 回复格式要求：
 - 使用 Markdown，必要时用列表、表格、代码块
@@ -470,11 +457,11 @@ const complexAgentInstruction = `你是高级专家 Agent，处理需要专业�
 黑板中的遗留问题如下：
 {PendingQuestionsText}
 
-你的上下文中包含 gate_agent 调用工具的完整结果，请重点关注：
+你的上下文中包含 knowledge_specialist_node 的结构化输出，请重点关注：
 - intent_analysis 结果：了解玩家的主要诉求、缺失信息和路由建议
 - player_emotion_analysis 结果：根据情绪状态调整处理优先级和回复语气
-- knowledge_search_expert 的 solved_contexts：这是已通过 RAG 解决的子问题背景，可直接引用
-- knowledge_search_expert 的 pending_questions：这是 RAG 未能覆盖的遗留子问题，需要你通过 Skill 或工具攻克
+- solved_contexts：这是已通过 RAG 解决的子问题背景，可直接引用
+- pending_questions：这是 RAG 未能覆盖的遗留子问题，需要你通过 Skill 或工具攻克
 
 工作原则：
 - 首先根据情绪结果调整语气（见情绪响应策略），再着手解决问题
@@ -487,34 +474,6 @@ const complexAgentInstruction = `你是高级专家 Agent，处理需要专业�
 - 给出可执行的专业解答；如信息有限，用自然客服口吻说明限制并建议下一步
 - 可以使用知识库和工具获得的信息回答玩家，但不要向玩家展示内部工具名称、标签、分析字段、"来源：知识库检索结果"、"知识库说明"或"工具说明"` +
 	emotionResponseGuide + customerServiceEtiquette
-
-// newGateAgent 创建 Gate Agent（RAG 检索 → 路由决策）。
-// 意图/情绪分析由 graph analysis_node 确定性完成；Gate 只负责检索和路由。
-func newGateAgent(ctx context.Context, cfg *Config, retriever einoretriever.Retriever) (adk.Agent, error) {
-	gateModel := cfg.resolveModel(cfg.GateModel, cfg.ChatModel)
-
-	ksTool, err := NewKnowledgeSearchExpertTool(ctx, cfg.resolveModel(cfg.SubgraphModel, cfg.ChatModel), retriever, cfg.Logger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create knowledge_search_expert tool: %w", err)
-	}
-
-	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
-		Name:          "gate_agent",
-		Description:   "知识库深度检索与路由网关",
-		Model:         gateModel.Client,
-		GenModelInput: contextAwareModelInput,
-		ToolsConfig: adk.ToolsConfig{
-			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools: []tool.BaseTool{ksTool},
-			},
-		},
-		Instruction: gateAgentInstruction,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gate agent: %w", err)
-	}
-	return agent, nil
-}
 
 // newAnswerAgent 创建 Answer Agent（整理 RAG 结果，无工具）。
 func newAnswerAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {

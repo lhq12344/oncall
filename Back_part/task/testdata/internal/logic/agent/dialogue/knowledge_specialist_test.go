@@ -32,6 +32,37 @@ func TestBuildParallelRAGNodeKeepsOriginalQuery(t *testing.T) {
 	}
 }
 
+func TestBuildParallelRAGNodeFailsOnRetrieverError(t *testing.T) {
+	retriever := &fakeRetriever{err: errFakeRetriever}
+	node := buildParallelRAGNode(retriever, nil)
+
+	result, err := node(context.Background(), []string{"数据库召回"})
+	if err == nil {
+		t.Fatalf("expected retriever error")
+	}
+	if result != nil {
+		t.Fatalf("result = %#v, want nil on retriever error", result)
+	}
+	if !strings.Contains(err.Error(), "knowledge retrieve failed") {
+		t.Fatalf("error = %v, want knowledge retrieve failure", err)
+	}
+}
+
+func TestBuildParallelRAGNodeFailsWhenRetrieverUnavailable(t *testing.T) {
+	node := buildParallelRAGNode(nil, nil)
+
+	result, err := node(context.Background(), []string{"数据库召回"})
+	if err == nil {
+		t.Fatalf("expected unavailable retriever error")
+	}
+	if result != nil {
+		t.Fatalf("result = %#v, want nil on unavailable retriever", result)
+	}
+	if !strings.Contains(err.Error(), "knowledge retriever unavailable") {
+		t.Fatalf("error = %v, want unavailable retriever", err)
+	}
+}
+
 func TestBuildEvaluateNodeUsesUserLanguage(t *testing.T) {
 	model := &fakeToolCallingChatModel{
 		generateResponse: schema.AssistantMessage("SOLVED:How to reset password?", nil),

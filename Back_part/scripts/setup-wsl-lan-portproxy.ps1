@@ -1,7 +1,8 @@
 param(
     [string]$WslIp = "",
     [int[]]$Ports = @(3100, 6872),
-    [string]$ListenAddress = "0.0.0.0"
+    [string]$ListenAddress = "0.0.0.0",
+    [switch]$ExposeMiddleware
 )
 
 $ErrorActionPreference = "Stop"
@@ -74,6 +75,11 @@ $resolvedWslIp = Resolve-WslIp
 Write-Host "Configuring Windows LAN port proxy to WSL IP $resolvedWslIp"
 Ensure-IpHelper
 
+if ($ExposeMiddleware) {
+    Write-Warning "ExposeMiddleware opens Redis, Milvus, Attu, Etcd, and MinIO to the selected Windows listen address. Use only on trusted networks."
+    $Ports = @($Ports + @(31029, 31953, 8000, 2379, 9000, 9001) | Select-Object -Unique)
+}
+
 foreach ($port in $Ports) {
     if ($ListenAddress -ne "0.0.0.0") {
         & netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=$port | Out-Null
@@ -101,3 +107,11 @@ Write-Host ""
 Write-Host "Use your Windows LAN IPv4 address, for example:"
 Write-Host "  Frontend: http://<windows-lan-ip>:3100"
 Write-Host "  Backend:  http://<windows-lan-ip>:6872"
+if ($ExposeMiddleware) {
+    Write-Host "  Redis:    <windows-lan-ip>:31029"
+    Write-Host "  Milvus:   <windows-lan-ip>:31953"
+    Write-Host "  Attu:     http://<windows-lan-ip>:8000"
+    Write-Host "  Etcd:     http://<windows-lan-ip>:2379"
+    Write-Host "  MinIO:    http://<windows-lan-ip>:9000"
+    Write-Host "  MinIO UI: http://<windows-lan-ip>:9001"
+}
