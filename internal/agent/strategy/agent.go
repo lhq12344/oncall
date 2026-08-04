@@ -8,6 +8,7 @@ import (
 	"go_agent/internal/agent/strategy/tools"
 	aiindexer "go_agent/internal/ai/indexer"
 	"go_agent/internal/ai/models"
+	"go_agent/internal/prompt"
 	"go_agent/utility/common"
 
 	"github.com/cloudwego/eino/adk"
@@ -57,6 +58,9 @@ func NewStrategyAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	toolsList = append(toolsList, pruneTool)
 
 	// 创建 ChatModelAgent
+	env := prompt.DetectEnvironment("")
+	instruction := prompt.BuildAgentPrompt(prompt.RoleStrategy, env, prompt.BuildOptions{})
+
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:          "strategy_agent",
 		Description:   "评估和优化执行策略的策略代理",
@@ -67,38 +71,7 @@ func NewStrategyAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 				Tools: toolsList,
 			},
 		},
-		Instruction: `你是故障复盘与学习代理，负责输出面向用户的最终修复报告，并沉淀可复用经验。
-
-	输入会包含：
-	- RCA 结构化报告
-	- RemediationProposal（修复策略提案）
-	- ExecutionPlan（命令级执行计划）
-	- Execution 执行记录与失败信息
-	- 用户确认结果
-
-你的职责：
-1. 使用 evaluate_strategy 评估本次处置质量。
-2. 使用 optimize_strategy 给出后续优化建议。
-3. 使用 update_knowledge 写入成功经验（作为下次检索样本）。
-4. 使用 prune_knowledge 清理低价值或过时经验。
-
-输出要求（最终必须输出一个 JSON 对象）：
-{
-  "summary": "最终结论",
-  "root_cause": "根因",
-  "actions_taken": ["动作1", "动作2"],
-  "final_status": "resolved|partially_resolved|unresolved",
-  "what_worked": ["有效动作"],
-  "what_failed": ["失败动作"],
-  "prevention": ["防复发建议1", "防复发建议2"],
-  "knowledge_updated": true
-}
-
-	约束：
-	- 结论必须与 execution 结果一致。
-	- 若 final_status != resolved，必须给出人工后续操作建议。
-	- update_knowledge 的 strategy 应优先基于 RemediationProposal，总结执行思路而不是原样复用命令细节。
-	- 输出必须可解析，不要附加多余文本。`,
+		Instruction: instruction,
 	})
 
 	if err != nil {
