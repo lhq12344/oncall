@@ -46,3 +46,4 @@ bin/
 go_agent
 
 AGENTS.md
+.gocache/

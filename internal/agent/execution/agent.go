@@ -6,7 +6,10 @@ import (
 	"strings"
 
 	"go_agent/internal/agent/execution/tools"
+	"go_agent/internal/agent/toolkit"
 	"go_agent/internal/ai/models"
+	"go_agent/internal/compact"
+	"go_agent/internal/permissions"
 	"go_agent/internal/prompt"
 
 	"github.com/cloudwego/eino/adk"
@@ -62,32 +65,17 @@ func NewExecutionAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 		return nil, fmt.Errorf("chat model is required")
 	}
 
-	// 创建工具集
-	var toolsList []tool.BaseTool
-
-	// 提案规范化工具
-	normalizeTool := tools.NewNormalizePlanTool(cfg.ChatModel, cfg.Logger)
-	toolsList = append(toolsList, normalizeTool)
-
-	// 执行计划生成工具
-	planTool := tools.NewGeneratePlanTool(cfg.ChatModel, cfg.Logger)
-	toolsList = append(toolsList, planTool)
-
-	// 计划校验工具
-	validatePlanTool := tools.NewValidatePlanTool(cfg.Logger)
-	toolsList = append(toolsList, validatePlanTool)
-
-	// 执行步骤工具
-	executeTool := tools.NewExecuteStepTool(cfg.Logger)
-	toolsList = append(toolsList, executeTool)
-
-	// 验证结果工具
-	validateTool := tools.NewValidateResultTool(cfg.Logger)
-	toolsList = append(toolsList, validateTool)
-
-	// 回滚工具
-	rollbackTool := tools.NewRollbackTool(cfg.Logger)
-	toolsList = append(toolsList, rollbackTool)
+	// ?????????????????????????
+	deferredTools := []tool.BaseTool{
+		tools.NewNormalizePlanTool(cfg.ChatModel, cfg.Logger),
+		tools.NewGeneratePlanTool(cfg.ChatModel, cfg.Logger),
+		tools.NewValidatePlanTool(cfg.Logger),
+		tools.NewExecuteStepTool(cfg.Logger),
+		tools.NewValidateResultTool(cfg.Logger),
+		tools.NewRollbackTool(cfg.Logger),
+	}
+	checker := permissions.NewChecker(permissions.Options{})
+	toolsList := toolkit.BuildAlwaysEinoTools(ctx, checker, deferredTools...)
 
 	// 创建 ChatModelAgent
 	env := prompt.DetectEnvironment("")
@@ -104,6 +92,7 @@ func NewExecutionAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 				Tools: toolsList,
 			},
 		},
+		Handlers:    []adk.ChatModelAgentMiddleware{compact.NewMiddleware(compact.Config{Model: cfg.ChatModel.Client})},
 		Instruction: instruction,
 	})
 

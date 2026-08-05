@@ -7,7 +7,10 @@ import (
 
 	opstools "go_agent/internal/agent/ops/tools"
 	"go_agent/internal/agent/rca/tools"
+	"go_agent/internal/agent/toolkit"
 	"go_agent/internal/ai/models"
+	"go_agent/internal/compact"
+	"go_agent/internal/permissions"
 	"go_agent/internal/prompt"
 
 	"github.com/cloudwego/eino/adk"
@@ -36,43 +39,46 @@ func NewRCAAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	}
 
 	// 创建工具集
-	var toolsList []tool.BaseTool
+	var deferredTools []tool.BaseTool
 
 	// K8s 监控工具
 	k8sTool, err := opstools.NewK8sMonitorTool(cfg.KubeConfig, cfg.Logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create rca k8s monitor tool: %w", err)
 	}
-	toolsList = append(toolsList, k8sTool)
+	deferredTools = append(deferredTools, k8sTool)
 
 	// Prometheus 指标采集工具
 	metricsTool, err := opstools.NewMetricsCollectorTool(cfg.PrometheusURL, cfg.Logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create rca metrics collector tool: %w", err)
 	}
-	toolsList = append(toolsList, metricsTool)
+	deferredTools = append(deferredTools, metricsTool)
 
 	// 时间查询工具
 	timeTool := tools.NewTimeQueryTool(cfg.Logger)
-	toolsList = append(toolsList, timeTool)
+	deferredTools = append(deferredTools, timeTool)
 
 	// 依赖图构建工具
 	depGraphTool := tools.NewBuildDependencyGraphTool(cfg.KubeConfig, cfg.Logger)
-	toolsList = append(toolsList, depGraphTool)
+	deferredTools = append(deferredTools, depGraphTool)
 
 	// 信号关联工具
 	correlateTool := tools.NewCorrelateSignalsTool(cfg.Logger)
-	toolsList = append(toolsList, correlateTool)
+	deferredTools = append(deferredTools, correlateTool)
 
 	// 根因推理工具
 	inferenceTool := tools.NewInferRootCauseTool(cfg.ChatModel, cfg.Logger)
-	toolsList = append(toolsList, inferenceTool)
+	deferredTools = append(deferredTools, inferenceTool)
 
 	// 影响分析工具
 	impactTool := tools.NewAnalyzeImpactTool(cfg.Logger)
-	toolsList = append(toolsList, impactTool)
+	deferredTools = append(deferredTools, impactTool)
 
 	// 创建 ChatModelAgent
+	checker := permissions.NewChecker(permissions.Options{})
+	toolsList := toolkit.BuildAlwaysEinoTools(ctx, checker, deferredTools...)
+
 	env := prompt.DetectEnvironment("")
 	instruction := prompt.BuildAgentPrompt(prompt.RoleRCA, env, prompt.BuildOptions{})
 
@@ -86,6 +92,7 @@ func NewRCAAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 				Tools: toolsList,
 			},
 		},
+		Handlers:    []adk.ChatModelAgentMiddleware{compact.NewMiddleware(compact.Config{Model: cfg.ChatModel.Client})},
 		Instruction: instruction,
 	})
 

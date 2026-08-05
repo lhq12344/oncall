@@ -74,3 +74,31 @@ func TestDetectEnvironmentUsesFallbacks(t *testing.T) {
 		t.Fatalf("expected date, got %#v", env)
 	}
 }
+
+func TestToolUseSectionMentionsDeferredGateway(t *testing.T) {
+	got := ToolUseSection().Content
+	for _, want := range []string{"ReadFile", "Grep", "Glob", "EditFile", "WriteFile", "ToolSearch", "InvokeDeferredTool", "allow", "ask", "deny"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("tool use section missing %q", want)
+		}
+	}
+}
+
+func TestRolePromptsDescribeRoleSpecificDeferredTools(t *testing.T) {
+	execution := BuildAgentPrompt(RoleExecution, EnvironmentContext{}, BuildOptions{})
+	for _, want := range []string{"normalize_plan", "validate_plan", "execute_step", "validate_result", "ToolSearch", "InvokeDeferredTool"} {
+		if !strings.Contains(execution, want) {
+			t.Fatalf("execution prompt missing %q", want)
+		}
+	}
+	if strings.Contains(execution, "web_search") {
+		t.Fatalf("execution prompt should not advertise dialogue deferred tools")
+	}
+
+	dialogue := BuildAgentPrompt(RoleDialogue, EnvironmentContext{}, BuildOptions{})
+	for _, want := range []string{"intent_analysis", "request_detail_selection", "web_search", "bash_execute_with_approval"} {
+		if !strings.Contains(dialogue, want) {
+			t.Fatalf("dialogue prompt missing %q", want)
+		}
+	}
+}

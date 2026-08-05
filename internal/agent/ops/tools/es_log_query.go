@@ -49,7 +49,7 @@ func (t *ESLogQueryTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"action": {
 				Type:     schema.String,
-				Desc:     "执行动作：query（默认）或 discover_indices（发现可用索引）",
+				Desc:     "执行动作：query（默认）或 discover_indices（发现可用索引，兼容 discover/list_indices 等别名）",
 				Required: false,
 			},
 			"index": {
@@ -96,12 +96,10 @@ func (t *ESLogQueryTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
-	in.Action = strings.ToLower(strings.TrimSpace(in.Action))
+	rawAction := strings.TrimSpace(in.Action)
+	in.Action = normalizeESLogAction(in.Action)
 	if in.Action == "" {
-		in.Action = "query"
-	}
-	if in.Action != "query" && in.Action != "discover_indices" {
-		return "", fmt.Errorf("unsupported action: %s", in.Action)
+		return "", fmt.Errorf("unsupported action: %s", rawAction)
 	}
 
 	// 参数校验
@@ -176,6 +174,31 @@ func (t *ESLogQueryTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 	}
 
 	return string(output), nil
+}
+
+// normalizeESLogAction 将模型常见动作别名收敛到工具支持的 canonical action。
+// 输入：原始 action 文本。
+// 输出：规范化后的 action；不支持时返回空字符串。
+func normalizeESLogAction(raw string) string {
+	original := strings.TrimSpace(raw)
+	if original == "" {
+		return "query"
+	}
+
+	normalized := strings.ToLower(original)
+	normalized = strings.NewReplacer("-", "_", " ", "_").Replace(normalized)
+	for strings.Contains(normalized, "__") {
+		normalized = strings.ReplaceAll(normalized, "__", "_")
+	}
+
+	switch normalized {
+	case "query", "search", "find", "lookup":
+		return "query"
+	case "discover_indices", "discover", "list_indices", "list_indexes", "indices", "index_discovery":
+		return "discover_indices"
+	default:
+		return ""
+	}
 }
 
 // ensureClient 尝试懒初始化 Elasticsearch 客户端。

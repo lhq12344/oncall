@@ -6,8 +6,11 @@ import (
 	"strings"
 
 	"go_agent/internal/agent/strategy/tools"
+	"go_agent/internal/agent/toolkit"
 	aiindexer "go_agent/internal/ai/indexer"
 	"go_agent/internal/ai/models"
+	"go_agent/internal/compact"
+	"go_agent/internal/permissions"
 	"go_agent/internal/prompt"
 	"go_agent/utility/common"
 
@@ -35,15 +38,15 @@ func NewStrategyAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	}
 
 	// 创建工具集
-	var toolsList []tool.BaseTool
+	var deferredTools []tool.BaseTool
 
 	// 策略评估工具
 	evaluateTool := tools.NewEvaluateStrategyTool(cfg.Logger)
-	toolsList = append(toolsList, evaluateTool)
+	deferredTools = append(deferredTools, evaluateTool)
 
 	// 策略优化工具
 	optimizeTool := tools.NewOptimizeStrategyTool(cfg.ChatModel, cfg.Logger)
-	toolsList = append(toolsList, optimizeTool)
+	deferredTools = append(deferredTools, optimizeTool)
 
 	// 知识库更新工具
 	opsCaseIndexer, err := aiindexer.NewMilvusIndexerWithCollection(ctx, common.MilvusOpsCollection)
@@ -51,13 +54,16 @@ func NewStrategyAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 		cfg.Logger.Warn("failed to initialize ops case indexer, continue without archive", zap.Error(err))
 	}
 	updateTool := tools.NewUpdateKnowledgeTool(opsCaseIndexer, cfg.Logger)
-	toolsList = append(toolsList, updateTool)
+	deferredTools = append(deferredTools, updateTool)
 
 	// 知识剪枝工具
 	pruneTool := tools.NewPruneKnowledgeTool(cfg.Logger)
-	toolsList = append(toolsList, pruneTool)
+	deferredTools = append(deferredTools, pruneTool)
 
 	// 创建 ChatModelAgent
+	checker := permissions.NewChecker(permissions.Options{})
+	toolsList := toolkit.BuildAlwaysEinoTools(ctx, checker, deferredTools...)
+
 	env := prompt.DetectEnvironment("")
 	instruction := prompt.BuildAgentPrompt(prompt.RoleStrategy, env, prompt.BuildOptions{})
 
@@ -71,6 +77,7 @@ func NewStrategyAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 				Tools: toolsList,
 			},
 		},
+		Handlers:    []adk.ChatModelAgentMiddleware{compact.NewMiddleware(compact.Config{Model: cfg.ChatModel.Client})},
 		Instruction: instruction,
 	})
 

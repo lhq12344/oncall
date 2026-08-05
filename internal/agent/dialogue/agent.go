@@ -6,13 +6,15 @@ import (
 	"strings"
 
 	"go_agent/internal/agent/dialogue/tools"
+	"go_agent/internal/agent/toolkit"
 	"go_agent/internal/ai/models"
 	airetriever "go_agent/internal/ai/retriever"
+	"go_agent/internal/compact"
+	"go_agent/internal/permissions"
 	"go_agent/internal/prompt"
 	"go_agent/utility/common"
 
 	"github.com/cloudwego/eino/adk"
-	"github.com/cloudwego/eino/adk/middlewares/summarization"
 	"github.com/cloudwego/eino/components/embedding"
 	einoretriever "github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/components/tool"
@@ -74,18 +76,7 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 	// 创建工具集
 	toolsList := buildDialogueTools(ctx, cfg, knowledgeRetriever, opsCaseRetriever)
 
-	// 创建内置 Summarization 中间件（自动压缩对话历史）
-	summaryConfig := &summarization.Config{
-		Model: cfg.ChatModel.Client,
-		Trigger: &summarization.TriggerCondition{
-			ContextTokens: 300000, // 在 k tokens 时触发
-		},
-	}
-
-	summaryHandler, err := summarization.New(ctx, summaryConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create dialogue summarization middleware: %w", err)
-	}
+	compactHandler := compact.NewMiddleware(compact.Config{Model: cfg.ChatModel.Client})
 
 	env := prompt.DetectEnvironment("")
 	instruction := prompt.BuildAgentPrompt(prompt.RoleDialogue, env, prompt.BuildOptions{})
@@ -100,7 +91,7 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 				Tools: toolsList,
 			},
 		},
-		Handlers:    []adk.ChatModelAgentMiddleware{summaryHandler},
+		Handlers:    []adk.ChatModelAgentMiddleware{compactHandler},
 		Instruction: instruction,
 	})
 
@@ -129,7 +120,7 @@ func noFormatGenModelInput(_ context.Context, instruction string, input *adk.Age
 // 输入：ctx 运行上下文，cfg 对话代理配置，knowledgeRetriever/opsCaseRetriever 检索器。
 // 输出：可注册到 ToolsNode 的工具列表。
 func buildDialogueTools(ctx context.Context, cfg *Config, knowledgeRetriever einoretriever.Retriever, opsCaseRetriever einoretriever.Retriever) []tool.BaseTool {
-	toolsList := []tool.BaseTool{
+	deferredTools := []tool.BaseTool{
 		tools.NewIntentAnalysisTool(cfg.ChatModel, cfg.Embedder, cfg.Logger, cfg.EnableToolLLM),
 		tools.NewDetailSelectionTool(cfg.Logger),
 		tools.NewKnowledgeRetrieveTool(knowledgeRetriever, cfg.Logger),
@@ -139,16 +130,17 @@ func buildDialogueTools(ctx context.Context, cfg *Config, knowledgeRetriever ein
 	}
 
 	if k8sTool, err := tools.NewDialogueK8sMonitorTool(cfg.KubeConfig, cfg.Logger); err == nil {
-		toolsList = append(toolsList, k8sTool)
+		deferredTools = append(deferredTools, k8sTool)
 	} else if cfg.Logger != nil {
 		cfg.Logger.Warn("failed to create dialogue k8s monitor tool", zap.Error(err))
 	}
 
 	if metricsTool, err := tools.NewDialogueMetricsCollectorTool(cfg.PrometheusURL, cfg.Logger); err == nil {
-		toolsList = append(toolsList, metricsTool)
+		deferredTools = append(deferredTools, metricsTool)
 	} else if cfg.Logger != nil {
 		cfg.Logger.Warn("failed to create dialogue metrics collector tool", zap.Error(err))
 	}
 
-	return toolsList
+	checker := permissions.NewChecker(permissions.Options{})
+	return toolkit.BuildAlwaysEinoTools(ctx, checker, deferredTools...)
 }
