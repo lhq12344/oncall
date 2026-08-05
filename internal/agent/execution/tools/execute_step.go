@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"go_agent/internal/permissions"
+
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
@@ -23,6 +25,7 @@ func init() {
 type ExecuteStepTool struct {
 	logger    *zap.Logger
 	whitelist *CommandWhitelist
+	checker   *permissions.Checker
 }
 
 // CommandWhitelist 命令白名单。
@@ -123,6 +126,7 @@ func NewExecuteStepTool(logger *zap.Logger) tool.BaseTool {
 	return &ExecuteStepTool{
 		logger:    logger,
 		whitelist: whitelist,
+		checker:   permissions.NewChecker(permissions.Options{}),
 	}
 }
 
@@ -339,22 +343,33 @@ func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 		}
 	}
 
-	if !t.whitelist.AllowedCommands[in.Command] {
-		return fail(fmt.Errorf("command not in whitelist: %s", in.Command))
+	permArgs := executeStepPermissionArgs(in.Command, in.Args, in.Script)
+	decision := t.permissionChecker().Check("execute_step", permArgs)
+	if decision.Effect == permissions.Deny {
+		result := &ExecutionResult{
+			StepID:     in.StepID,
+			Success:    false,
+			Skipped:    true,
+			Approved:   false,
+			Resolved:   false,
+			Executed:   false,
+			Mode:       modeLabel(isBashMode),
+			Command:    rendered,
+			Timeout:    in.Timeout,
+			Output:     "",
+			Error:      "permission denied: " + decision.Reason,
+			ExitCode:   -2,
+			Duration:   0,
+			ExecutedAt: time.Now().Format("2006-01-02 15:04:05"),
+		}
+		if err := rememberExecutionResult(ctx, result); err != nil {
+			return fail(err)
+		}
+		return marshalExecutionResult(result)
 	}
 
-	if isBashMode {
-		if err := t.validateScript(in.Script); err != nil {
-			return fail(fmt.Errorf("unsafe script: %w", err))
-		}
-	} else {
-		if err := t.validateArgs(in.Args); err != nil {
-			return fail(fmt.Errorf("unsafe arguments: %w", err))
-		}
-	}
-
-	approvalInfo := t.buildApprovalInterruptInfo(in.StepID, in.Command, in.Args, in.Script, in.Timeout)
-	requiresApproval := approvalInfo != nil && !in.DryRun
+	approvalInfo := t.buildPermissionInterruptInfo(in.StepID, in.Command, in.Args, in.Script, in.Timeout, decision.Reason)
+	requiresApproval := decision.Effect == permissions.Ask && !in.DryRun
 	approvalComment := ""
 	if requiresApproval {
 		wasInterrupted, _, _ := tool.GetInterruptState[any](ctx)
@@ -367,7 +382,7 @@ func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 			return "", tool.Interrupt(ctx, approvalInfo)
 		}
 
-		approved, resolved, comment := parseExecutionApprovalDecision(resumeData)
+		approved, resolved, allowAlways, comment := parseExecutionApprovalDecision(resumeData)
 		approvalComment = comment
 		if resolved {
 			result := &ExecutionResult{
@@ -416,6 +431,12 @@ func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 			clearRepeatedExecutionToolFailureState(ctx)
 			return marshalExecutionResult(result)
 		}
+
+		if allowAlways {
+			if err := t.permissionChecker().AllowAlways("execute_step", permArgs); err != nil && t.logger != nil {
+				t.logger.Warn("failed to persist execute_step allow-always permission", zap.Error(err))
+			}
+		}
 	}
 
 	if in.DryRun {
@@ -425,7 +446,7 @@ func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 			Mode:       modeLabel(isBashMode),
 			Command:    rendered,
 			Timeout:    in.Timeout,
-			Output:     fmt.Sprintf("[DRY RUN] Would execute: %s", rendered),
+			Output:     fmt.Sprintf("[DRY RUN] Permission=%s (%s). Would execute: %s", decision.Effect, decision.Reason, rendered),
 			ExitCode:   0,
 			Duration:   0,
 			ExecutedAt: time.Now().Format("2006-01-02 15:04:05"),
@@ -600,6 +621,41 @@ func (t *ExecuteStepTool) validateScript(script string) error {
 // buildApprovalInterruptInfo 判断当前步骤是否需要人工审批，并构造审批中断信息。
 // 输入：stepID、command、args、script、timeoutSec。
 // 输出：需要审批时返回中断信息，否则返回 nil。
+func (t *ExecuteStepTool) permissionChecker() *permissions.Checker {
+	if t.checker == nil {
+		t.checker = permissions.NewChecker(permissions.Options{})
+	}
+	return t.checker
+}
+
+func executeStepPermissionArgs(command string, args []string, script string) map[string]any {
+	return map[string]any{
+		"command": strings.TrimSpace(command),
+		"args":    append([]string(nil), args...),
+		"script":  strings.TrimSpace(script),
+	}
+}
+
+func (t *ExecuteStepTool) buildPermissionInterruptInfo(stepID int, command string, args []string, script string, timeoutSec int, reason string) *ExecutionApprovalInterruptInfo {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "permission approval required"
+	}
+	info := &ExecutionApprovalInterruptInfo{
+		StepID:     stepID,
+		Command:    strings.TrimSpace(command),
+		Args:       append([]string(nil), args...),
+		Timeout:    timeoutSec,
+		Reason:     reason,
+		RawCommand: renderedCommand(command, args, script),
+	}
+	if strings.EqualFold(strings.TrimSpace(command), "bash") {
+		info.Command = "bash"
+		info.Args = nil
+	}
+	return info
+}
+
 func (t *ExecuteStepTool) buildApprovalInterruptInfo(stepID int, command string, args []string, script string, timeoutSec int) *ExecutionApprovalInterruptInfo {
 	reason := approvalReasonForCommand(command, args, script)
 	if reason == "" {
@@ -813,9 +869,9 @@ func containsAnyToken(args []string, targets ...string) bool {
 // parseExecutionApprovalDecision 解析恢复执行时的审批决定。
 // 输入：resumeData。
 // 输出：approved、resolved、comment。
-func parseExecutionApprovalDecision(data map[string]any) (approved bool, resolved bool, comment string) {
+func parseExecutionApprovalDecision(data map[string]any) (approved bool, resolved bool, allowAlways bool, comment string) {
 	if data == nil {
-		return false, false, ""
+		return false, false, false, ""
 	}
 	if b, ok := boolFromExecutionAny(data["approved"]); ok {
 		approved = b
@@ -823,10 +879,16 @@ func parseExecutionApprovalDecision(data map[string]any) (approved bool, resolve
 	if b, ok := boolFromExecutionAny(data["resolved"]); ok {
 		resolved = b
 	}
+	for _, key := range []string{"always_allow", "allow_always", "remember", "dont_ask_again"} {
+		if b, ok := boolFromExecutionAny(data[key]); ok {
+			allowAlways = b
+			break
+		}
+	}
 	if msg, ok := data["comment"].(string); ok {
 		comment = strings.TrimSpace(msg)
 	}
-	return approved, resolved, comment
+	return approved, resolved, allowAlways, comment
 }
 
 // boolFromExecutionAny 将任意值解析为布尔语义。

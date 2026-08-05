@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"go_agent/internal/permissions"
+
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
@@ -25,10 +27,11 @@ func init() {
 	gob.Register(&BashApprovalInterruptInfo{})
 }
 
-// BashApprovalTool 为对话 Agent 提供「执行前人工确认」的 Bash 命令执行能力。
+// BashApprovalTool 为对话 Agent 提供 Bash 命令执行能力：
+// 只读命令可直接执行，变更/高风险命令执行前必须人工确认。
 type BashApprovalTool struct {
-	logger          *zap.Logger
-	allowedCommands map[string]struct{}
+	logger  *zap.Logger
+	checker *permissions.Checker
 }
 
 // BashApprovalInterruptInfo 定义中断时返回给前端的审批信息。
@@ -73,43 +76,16 @@ type BashExecuteResult struct {
 // 输入：logger（可为空）。
 // 输出：可注册到 Eino Agent 的 tool.BaseTool。
 func NewBashApprovalTool(logger *zap.Logger) tool.BaseTool {
-	allowed := map[string]struct{}{
-		"kubectl":    {},
-		"ls":         {},
-		"cat":        {},
-		"tail":       {},
-		"head":       {},
-		"grep":       {},
-		"awk":        {},
-		"sed":        {},
-		"ps":         {},
-		"top":        {},
-		"free":       {},
-		"df":         {},
-		"du":         {},
-		"uptime":     {},
-		"date":       {},
-		"echo":       {},
-		"curl":       {},
-		"wget":       {},
-		"ping":       {},
-		"netstat":    {},
-		"ss":         {},
-		"journalctl": {},
-		"docker":     {},
-		"systemctl":  {},
-	}
-
 	return &BashApprovalTool{
-		logger:          logger,
-		allowedCommands: allowed,
+		logger:  logger,
+		checker: permissions.NewChecker(permissions.Options{}),
 	}
 }
 
 func (t *BashApprovalTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: "bash_execute_with_approval",
-		Desc: "执行 Bash 命令（执行前会触发中断并等待用户审批）。适用于需要人工确认的运维命令。",
+		Desc: "执行 Bash 命令：只读命令直接执行，变更或高风险命令会触发中断并等待用户审批。",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"command": {
 				Type:     schema.String,
@@ -161,21 +137,46 @@ func (t *BashApprovalTool) InvokableRun(ctx context.Context, argumentsInJSON str
 		in.Timeout = maxBashTimeoutSeconds
 	}
 
-	if _, ok := t.allowedCommands[in.Command]; !ok {
-		return "", fmt.Errorf("command not in whitelist: %s", in.Command)
-	}
-	if err := t.validateArgs(in.Args); err != nil {
-		return "", err
+	permArgs := bashPermissionArgs(in.Command, in.Args)
+	decision := t.permissionChecker().Check("bash_execute_with_approval", permArgs)
+	if decision.Effect == permissions.Deny {
+		result := BashExecuteResult{
+			Approved: false,
+			Resolved: false,
+			Executed: false,
+			Success:  false,
+			Command:  in.Command,
+			Args:     in.Args,
+			Timeout:  in.Timeout,
+			Error:    "permission denied: " + decision.Reason,
+			ExitCode: -2,
+		}
+		return marshalBashExecuteResult(result)
 	}
 
-	// 首次执行：强制中断，等待前端通过 chat_resume_stream 提交审批结果。
+	if decision.Effect == permissions.Allow {
+		result := t.executeCommand(ctx, in.Command, in.Args, in.Timeout)
+		result.Approved = true
+		result.Resolved = false
+		result.Executed = true
+		if t.logger != nil {
+			t.logger.Info("dialogue bash command auto executed",
+				zap.String("command", in.Command),
+				zap.Int("args_count", len(in.Args)),
+				zap.Bool("success", result.Success),
+				zap.Int("duration_ms", result.DurationMS))
+		}
+		return marshalBashExecuteResult(result)
+	}
+
+	// 首次执行：仅变更/高风险命令触发中断，等待前端通过 chat_resume_stream 提交审批结果。
 	wasInterrupted, _, _ := tool.GetInterruptState[any](ctx)
 	if !wasInterrupted {
 		return "", tool.Interrupt(ctx, &BashApprovalInterruptInfo{
 			Command: in.Command,
 			Args:    in.Args,
 			Timeout: in.Timeout,
-			Reason:  in.Reason,
+			Reason:  firstNonEmptyBash(in.Reason, decision.Reason),
 		})
 	}
 
@@ -186,11 +187,11 @@ func (t *BashApprovalTool) InvokableRun(ctx context.Context, argumentsInJSON str
 			Command: in.Command,
 			Args:    in.Args,
 			Timeout: in.Timeout,
-			Reason:  in.Reason,
+			Reason:  firstNonEmptyBash(in.Reason, decision.Reason),
 		})
 	}
 
-	approved, resolved, comment := parseBashApprovalDecision(resumeData)
+	approved, resolved, allowAlways, comment := parseBashApprovalDecision(resumeData)
 
 	// 用户标记“已修复”时，按业务语义直接跳过命令执行并返回说明。
 	if resolved {
@@ -223,6 +224,12 @@ func (t *BashApprovalTool) InvokableRun(ctx context.Context, argumentsInJSON str
 			Comment:  comment,
 		}
 		return marshalBashExecuteResult(result)
+	}
+
+	if allowAlways {
+		if err := t.permissionChecker().AllowAlways("bash_execute_with_approval", permArgs); err != nil && t.logger != nil {
+			t.logger.Warn("failed to persist dialogue bash allow-always permission", zap.Error(err))
+		}
 	}
 
 	result := t.executeCommand(ctx, in.Command, in.Args, in.Timeout)
@@ -262,6 +269,240 @@ func (t *BashApprovalTool) validateArgs(args []string) error {
 		}
 	}
 	return nil
+}
+
+func (t *BashApprovalTool) permissionChecker() *permissions.Checker {
+	if t.checker == nil {
+		t.checker = permissions.NewChecker(permissions.Options{})
+	}
+	return t.checker
+}
+
+func bashPermissionArgs(command string, args []string) map[string]any {
+	return map[string]any{
+		"command": strings.TrimSpace(command),
+		"args":    append([]string(nil), args...),
+	}
+}
+
+func firstNonEmptyBash(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func (t *BashApprovalTool) requiresApproval(command string, args []string) bool {
+	command = normalizeBashToken(command)
+
+	switch command {
+	case "ls", "cat", "tail", "head", "grep", "ps", "top", "free", "df", "du", "uptime", "date", "echo", "ping", "netstat", "ss":
+		return false
+	case "journalctl":
+		return journalctlRequiresApproval(args)
+	case "kubectl":
+		return !isReadOnlyKubectl(args)
+	case "docker":
+		return !isReadOnlyDocker(args)
+	case "systemctl":
+		return !isReadOnlySystemctl(args)
+	default:
+		return true
+	}
+}
+
+func journalctlRequiresApproval(args []string) bool {
+	for _, arg := range args {
+		normalized := normalizeBashToken(arg)
+		if normalized == "--rotate" || normalized == "--flush" || normalized == "--sync" {
+			return true
+		}
+		if strings.HasPrefix(normalized, "--vacuum-") {
+			return true
+		}
+	}
+	return false
+}
+
+func isReadOnlyKubectl(args []string) bool {
+	tokens := normalizeBashTokens(args)
+	if len(tokens) == 0 {
+		return true
+	}
+
+	readOnlyVerbs := map[string]struct{}{
+		"get":           {},
+		"describe":      {},
+		"logs":          {},
+		"top":           {},
+		"api-resources": {},
+		"api-versions":  {},
+		"cluster-info":  {},
+		"version":       {},
+		"explain":       {},
+		"events":        {},
+	}
+	groupedReadOnlyVerbs := map[string]map[string]struct{}{
+		"auth": {
+			"can-i": {},
+		},
+		"config": {
+			"current-context": {},
+			"get-contexts":    {},
+			"view":            {},
+		},
+		"rollout": {
+			"history": {},
+			"status":  {},
+		},
+	}
+	mutatingVerbs := map[string]struct{}{
+		"annotate":     {},
+		"apply":        {},
+		"attach":       {},
+		"autoscale":    {},
+		"cordon":       {},
+		"cp":           {},
+		"create":       {},
+		"delete":       {},
+		"drain":        {},
+		"edit":         {},
+		"exec":         {},
+		"expose":       {},
+		"label":        {},
+		"patch":        {},
+		"port-forward": {},
+		"replace":      {},
+		"rollout":      {},
+		"run":          {},
+		"scale":        {},
+		"set":          {},
+		"taint":        {},
+		"uncordon":     {},
+	}
+
+	for index, token := range tokens {
+		if _, ok := readOnlyVerbs[token]; ok {
+			return true
+		}
+		if subs, ok := groupedReadOnlyVerbs[token]; ok {
+			if index+1 < len(tokens) {
+				_, ok = subs[tokens[index+1]]
+				return ok
+			}
+			return false
+		}
+		if _, ok := mutatingVerbs[token]; ok {
+			if token == "rollout" {
+				if index+1 < len(tokens) {
+					_, ok := groupedReadOnlyVerbs[token][tokens[index+1]]
+					return ok
+				}
+			}
+			return false
+		}
+	}
+
+	return false
+}
+
+func isReadOnlyDocker(args []string) bool {
+	tokens := normalizeBashTokens(args)
+	if len(tokens) == 0 {
+		return true
+	}
+
+	readOnlyTopLevel := map[string]struct{}{
+		"images":  {},
+		"info":    {},
+		"inspect": {},
+		"logs":    {},
+		"ps":      {},
+		"stats":   {},
+		"version": {},
+	}
+	readOnlyGrouped := map[string]map[string]struct{}{
+		"container": {
+			"inspect": {},
+			"logs":    {},
+			"ls":      {},
+		},
+		"image": {
+			"history": {},
+			"inspect": {},
+			"ls":      {},
+		},
+		"network": {
+			"inspect": {},
+			"ls":      {},
+		},
+		"system": {
+			"df": {},
+		},
+		"volume": {
+			"inspect": {},
+			"ls":      {},
+		},
+	}
+
+	for index, token := range tokens {
+		if _, ok := readOnlyTopLevel[token]; ok {
+			return true
+		}
+		if subs, ok := readOnlyGrouped[token]; ok {
+			if index+1 < len(tokens) {
+				_, ok = subs[tokens[index+1]]
+				return ok
+			}
+			return false
+		}
+	}
+
+	return false
+}
+
+func isReadOnlySystemctl(args []string) bool {
+	tokens := normalizeBashTokens(args)
+	if len(tokens) == 0 {
+		return true
+	}
+
+	readOnlyVerbs := map[string]struct{}{
+		"cat":               {},
+		"is-active":         {},
+		"is-enabled":        {},
+		"is-failed":         {},
+		"list-dependencies": {},
+		"list-unit-files":   {},
+		"list-units":        {},
+		"show":              {},
+		"status":            {},
+	}
+
+	for _, token := range tokens {
+		if _, ok := readOnlyVerbs[token]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeBashTokens(args []string) []string {
+	tokens := make([]string, 0, len(args))
+	for _, arg := range args {
+		token := normalizeBashToken(arg)
+		if token == "" || strings.HasPrefix(token, "-") {
+			continue
+		}
+		tokens = append(tokens, token)
+	}
+	return tokens
+}
+
+func normalizeBashToken(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 // executeCommand 执行单条命令并返回结构化结果。
@@ -318,9 +559,9 @@ func truncateRunes(text string, maxLen int) string {
 	return string(runes[:maxLen]) + "\n... (truncated)"
 }
 
-func parseBashApprovalDecision(data map[string]any) (approved bool, resolved bool, comment string) {
+func parseBashApprovalDecision(data map[string]any) (approved bool, resolved bool, allowAlways bool, comment string) {
 	if data == nil {
-		return false, false, ""
+		return false, false, false, ""
 	}
 	if b, ok := boolFromBashAny(data["approved"]); ok {
 		approved = b
@@ -328,10 +569,16 @@ func parseBashApprovalDecision(data map[string]any) (approved bool, resolved boo
 	if b, ok := boolFromBashAny(data["resolved"]); ok {
 		resolved = b
 	}
+	for _, key := range []string{"always_allow", "allow_always", "remember", "dont_ask_again"} {
+		if b, ok := boolFromBashAny(data[key]); ok {
+			allowAlways = b
+			break
+		}
+	}
 	if msg, ok := data["comment"].(string); ok {
 		comment = strings.TrimSpace(msg)
 	}
-	return approved, resolved, comment
+	return approved, resolved, allowAlways, comment
 }
 
 func boolFromBashAny(value any) (bool, bool) {
