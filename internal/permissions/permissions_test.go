@@ -112,6 +112,24 @@ func TestExtractContent(t *testing.T) {
 		want     string
 	}{
 		{
+			name:     "glob explicit path",
+			toolName: "Glob",
+			args: map[string]any{
+				"path":    filepath.Join("repo", "src"),
+				"pattern": "**/*.go",
+			},
+			want: filepath.Join("repo", "src"),
+		},
+		{
+			name:     "grep explicit path",
+			toolName: "Grep",
+			args: map[string]any{
+				"path":    filepath.Join("repo", "src"),
+				"pattern": "secret",
+			},
+			want: filepath.Join("repo", "src"),
+		},
+		{
 			name:     "dialogue bash",
 			toolName: "bash_execute_with_approval",
 			args: map[string]any{
@@ -146,6 +164,52 @@ func TestExtractContent(t *testing.T) {
 			t.Parallel()
 			if got := ExtractContent(tt.toolName, tt.args); got != tt.want {
 				t.Fatalf("ExtractContent()=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCheckerChecksGlobGrepBasePath(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("user home: %v", err)
+	}
+	outside := filepath.Join(home, ".oncall-perm-outside")
+	checker := NewChecker(Options{ProjectRoot: root, Mode: ModeDefault})
+
+	for _, tt := range []struct {
+		name string
+		tool string
+		args map[string]any
+	}{
+		{name: "glob", tool: "Glob", args: map[string]any{"path": outside, "pattern": "**/*.go"}},
+		{name: "grep", tool: "Grep", args: map[string]any{"path": outside, "pattern": "secret"}},
+	} {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := checker.Check(tt.tool, tt.args)
+			if got.Effect != Ask {
+				t.Fatalf("%s effect=%s reason=%s, want ask", tt.tool, got.Effect, got.Reason)
+			}
+		})
+	}
+}
+
+func TestCheckerAllowsSafeDeferredReadToolsByDefault(t *testing.T) {
+	t.Parallel()
+
+	checker := NewChecker(Options{ProjectRoot: t.TempDir(), Mode: ModeDefault})
+	for _, toolName := range []string{"intent_analysis", "knowledge_retrieve", "k8s_monitor", "metrics_collector"} {
+		toolName := toolName
+		t.Run(toolName, func(t *testing.T) {
+			t.Parallel()
+			got := checker.Check(toolName, map[string]any{"query": "pods"})
+			if got.Effect != Allow {
+				t.Fatalf("%s effect=%s reason=%s, want allow", toolName, got.Effect, got.Reason)
 			}
 		})
 	}

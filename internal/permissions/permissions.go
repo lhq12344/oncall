@@ -387,16 +387,21 @@ func hasShellMetachar(cmd string) bool {
 }
 
 var contentFields = map[string]string{
-	"Bash":      "command",
-	"ReadFile":  "file_path",
-	"WriteFile": "file_path",
-	"EditFile":  "file_path",
-	"Glob":      "pattern",
-	"Grep":      "pattern",
+	"Bash":               "command",
+	"ReadFile":           "file_path",
+	"WriteFile":          "file_path",
+	"EditFile":           "file_path",
+	"ToolSearch":         "query",
+	"InvokeDeferredTool": "tool_name",
 }
 
 func ExtractContent(toolName string, args map[string]any) string {
 	switch toolName {
+	case "Glob", "Grep":
+		if path := strings.TrimSpace(stringValue(args["path"])); path != "" {
+			return path
+		}
+		return strings.TrimSpace(stringValue(args["pattern"]))
 	case "bash_execute_with_approval":
 		return strings.TrimSpace(joinCommandArgs(stringValue(args["command"]), stringSliceValue(args["args"])))
 	case "execute_step":
@@ -545,11 +550,11 @@ func (c *Checker) Check(toolName string, args map[string]any) Decision {
 
 	if category == CategoryRead || category == CategoryWrite {
 		if ok, reason := c.Sandbox.Check(content); !ok {
-			if c.Mode == ModeBypass {
-				return Decision{Effect: Allow, Reason: "bypass permissions"}
-			}
 			if c.Sandbox.IsProtected(content) {
 				return Decision{Effect: Deny, Reason: reason}
+			}
+			if c.Mode == ModeBypass {
+				return Decision{Effect: Allow, Reason: "bypass permissions"}
 			}
 			return Decision{Effect: Ask, Reason: reason}
 		}
@@ -583,11 +588,18 @@ func (c *Checker) Check(toolName string, args map[string]any) Decision {
 
 func CategoryForTool(toolName string) ToolCategory {
 	switch toolName {
-	case "ReadFile", "Glob", "Grep":
+	case "ReadFile", "Glob", "Grep", "ToolSearch", "InvokeDeferredTool",
+		"intent_analysis", "request_detail_selection", "knowledge_retrieve", "ops_case_retrieve", "web_search",
+		"k8s_monitor", "metrics_collector", "es_log_query", "time_query", "build_dependency_graph",
+		"correlate_signals", "infer_root_cause", "analyze_impact",
+		"normalize_plan", "generate_plan", "validate_plan", "validate_result",
+		"evaluate_strategy", "optimize_strategy":
 		return CategoryRead
+	case "update_knowledge", "prune_knowledge":
+		return CategoryWrite
 	case "WriteFile", "EditFile":
 		return CategoryWrite
-	case "Bash", "bash_execute_with_approval", "execute_step":
+	case "Bash", "bash_execute_with_approval", "execute_step", "rollback":
 		return CategoryCommand
 	default:
 		return CategoryCommand
