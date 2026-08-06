@@ -6,11 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	v1 "go_agent/api/chat/v1"
+	"go_agent/internal/agent/slash"
 	appcontext "go_agent/internal/context"
 
 	"github.com/cloudwego/eino/adk"
@@ -28,6 +32,12 @@ const (
 	opsDiagnosticPrompt = "请执行系统健康检查，分析当前系统状态，识别潜在问题并给出分步骤的诊断和解决方案。重点关注：1) Kubernetes Pod状态 2) 关键指标异常 3) 错误日志。命名空间检查要求：必须优先检查 infra 命名空间；若需要全局对比，再补充 default/staging/production/kube-system。"
 )
 
+const (
+	sseWorkflowOps           = "ops"
+	sseResumeEndpointOps     = "ai_ops_resume_stream"
+	slashRecentMessagesProbe = "__oncall_slash_recent_messages_probe__"
+)
+
 type ControllerV1 struct {
 	dialogueAgent    adk.ResumableAgent
 	chatStreamRunner *adk.Runner
@@ -35,6 +45,8 @@ type ControllerV1 struct {
 	rootAgentName    string
 	opsRootAgentName string
 	sessionMemory    *appcontext.SessionMemory
+	slashRegistry    *slash.Registry
+	workDir          string
 	logger           *zap.Logger
 	opsAgent         adk.Agent
 	knowledgeAgent   adk.Agent
@@ -71,10 +83,12 @@ func NewV1(
 		rootAgentName:    "dialogue_agent",
 		opsRootAgentName: "ops_agent",
 		sessionMemory:    appcontext.NewSessionMemory(nil, logger),
+		workDir:          defaultWorkDir(),
 		logger:           logger,
 		opsAgent:         opsAgent,
 		knowledgeAgent:   knowledgeAgent,
 	}
+	ctrl.slashRegistry = slash.CreateDefaultRegistry(ctrl.workDir)
 
 	var checkpointStore compose.CheckPointStore
 	if redisClient != nil {
@@ -108,6 +122,23 @@ func NewV1(
 	return ctrl
 }
 
+func (c *ControllerV1) SlashCommands(ctx context.Context, req *v1.SlashCommandsReq) (res *v1.SlashCommandsRes, err error) {
+	reg := c.ensureSlashRegistry()
+	items := reg.List()
+	commands := make([]v1.SlashCommandInfo, 0, len(items))
+	for _, item := range items {
+		commands = append(commands, v1.SlashCommandInfo{
+			Name:         item.Name,
+			Aliases:      item.Aliases,
+			Description:  item.Description,
+			ArgumentHint: item.ArgumentHint,
+			Type:         string(item.Type),
+			Source:       item.Source,
+		})
+	}
+	return &v1.SlashCommandsRes{Commands: commands}, nil
+}
+
 // ChatStream 处理聊天流式请求。
 //
 // 功能：
@@ -138,13 +169,19 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 	if err != nil {
 		return nil, err
 	}
-	if c.chatStreamRunner == nil {
-		return nil, fmt.Errorf("chat stream runner is not initialized")
-	}
 
 	r, err := setupSSE(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	if parsed, ok := slash.Parse(question); ok {
+		c.handleSlashCommand(ctx, r, sessionID, parsed)
+		return &v1.ChatStreamRes{}, nil
+	}
+
+	if c.chatStreamRunner == nil {
+		return nil, fmt.Errorf("chat stream runner is not initialized")
 	}
 
 	messages, err := c.sessionMemory.BuildMessages(ctx, sessionID, question)
@@ -210,7 +247,7 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 		}
 		fullAnswer.WriteString(chunk)
 		contentChunkCount++
-		writeSSEData(r, chunk)
+		writeSSEJSON(r, map[string]any{"type": "content", "content": chunk})
 	}
 
 	writeSSEData(r, "[DONE]")
@@ -316,7 +353,7 @@ func (c *ControllerV1) ChatResumeStream(ctx context.Context, req *v1.ChatResumeS
 			continue
 		}
 		fullAnswer.WriteString(chunk)
-		writeSSEData(r, chunk)
+		writeSSEJSON(r, map[string]any{"type": "content", "content": chunk})
 	}
 
 	writeSSEData(r, "[DONE]")
@@ -467,7 +504,7 @@ func (c *ControllerV1) AIOpsStream(ctx context.Context, req *v1.AIOpsStreamReq) 
 		}
 
 		if event.Action != nil && event.Action.Interrupted != nil {
-			payload := buildInterruptPayload(checkpointID, event.Action.Interrupted)
+			payload := withSSEWorkflow(buildInterruptPayload(checkpointID, event.Action.Interrupted), sseWorkflowOps, sseResumeEndpointOps)
 			payloadBytes, _ := json.Marshal(payload)
 			writeSSEData(r, string(payloadBytes))
 			continue
@@ -510,7 +547,7 @@ func (c *ControllerV1) AIOpsResumeStream(ctx context.Context, req *v1.AIOpsResum
 		return nil, fmt.Errorf("checkpoint_id is required")
 	}
 
-	iter, err := c.resumeAgent(ctx, c.opsStreamRunner, req.CheckpointID, req.InterruptIDs, req.Approved, req.Resolved, req.Comment, "", map[string]any{
+	iter, err := c.resumeAgent(ctx, c.opsStreamRunner, req.CheckpointID, req.InterruptIDs, req.Approved, req.Resolved, req.Comment, req.SelectionValue, map[string]any{
 		"session_id": "aiops",
 	})
 	if err != nil {
@@ -538,7 +575,7 @@ func (c *ControllerV1) AIOpsResumeStream(ctx context.Context, req *v1.AIOpsResum
 		}
 
 		if event.Action != nil && event.Action.Interrupted != nil {
-			payload := buildInterruptPayload(req.CheckpointID, event.Action.Interrupted)
+			payload := withSSEWorkflow(buildInterruptPayload(req.CheckpointID, event.Action.Interrupted), sseWorkflowOps, sseResumeEndpointOps)
 			payloadBytes, _ := json.Marshal(payload)
 			writeSSEData(r, string(payloadBytes))
 			continue
@@ -580,6 +617,288 @@ func (c *ControllerV1) Monitoring(ctx context.Context, req *v1.MonitoringReq) (r
 		CacheMisses:     0,
 		CircuitBreakers: []v1.CircuitBreakerStatus{},
 	}, nil
+}
+
+func (c *ControllerV1) handleSlashCommand(ctx context.Context, r *ghttp.Request, sessionID string, parsed slash.ParsedCommand) {
+	reg := c.ensureSlashRegistry()
+	if strings.TrimSpace(parsed.Name) == "" {
+		writeSSEJSON(r, map[string]any{"type": "content", "content": "请输入斜杠命令，例如 /help。"})
+		writeSSEJSON(r, map[string]any{"type": "done"})
+		return
+	}
+	cmd, ok := reg.Find(parsed.Name)
+	if !ok {
+		writeSSEJSON(r, map[string]any{"type": "error", "content": fmt.Sprintf("Unknown slash command /%s. Try /help.", parsed.Name)})
+		return
+	}
+
+	result, err := cmd.Handler(c.buildSlashContext(ctx, sessionID, parsed.Args, reg))
+	if err != nil {
+		writeSSEJSON(r, map[string]any{"type": "error", "content": err.Error()})
+		return
+	}
+	resultType := result.Type
+	if resultType == "" {
+		resultType = cmd.Type
+	}
+
+	switch resultType {
+	case slash.TypeLocal:
+		writeSSEJSON(r, map[string]any{"type": "content", "content": result.Content})
+		writeSSEJSON(r, map[string]any{"type": "done"})
+	case slash.TypeClientAction:
+		payload := buildTrustedCommandActionPayload(result)
+		writeSSEJSON(r, payload)
+		writeSSEJSON(r, map[string]any{"type": "done"})
+	case slash.TypePrompt:
+		c.streamSlashDialoguePrompt(ctx, r, sessionID, parsed.Raw, result.Prompt)
+	case slash.TypeOpsWorkflow:
+		c.streamSlashOpsPrompt(ctx, r, sessionID, result.Prompt)
+	default:
+		writeSSEJSON(r, map[string]any{"type": "error", "content": fmt.Sprintf("unsupported slash command type %s", resultType)})
+	}
+}
+
+func (c *ControllerV1) streamSlashDialoguePrompt(ctx context.Context, r *ghttp.Request, sessionID, displayInput, prompt string) {
+	if c.chatStreamRunner == nil {
+		writeSSEJSON(r, map[string]any{"type": "error", "content": "chat stream runner is not initialized"})
+		return
+	}
+	messages, err := c.sessionMemory.BuildMessages(ctx, sessionID, prompt)
+	if err != nil {
+		writeSSEJSON(r, map[string]any{"type": "error", "content": err.Error()})
+		return
+	}
+	checkpointID := generateCheckpointID(sessionID)
+	iter := c.chatStreamRunner.Run(ctx, messages,
+		adk.WithCheckPointID(checkpointID),
+		adk.WithSessionValues(map[string]any{
+			"session_id": sessionID,
+		}),
+	)
+
+	var fullAnswer strings.Builder
+	interrupted := false
+	for {
+		event, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if event == nil {
+			continue
+		}
+		if event.Err != nil {
+			writeSSEData(r, "[ERROR] "+event.Err.Error())
+			return
+		}
+		msg, hasMsg := c.resolveEventMessage(event)
+		if event.Action != nil && event.Action.Interrupted != nil {
+			interrupted = true
+			payload := buildInterruptPayload(checkpointID, event.Action.Interrupted)
+			writeSSEJSON(r, payload)
+			continue
+		}
+		chunk, ok := c.extractAssistantContentFromResolved(event, msg)
+		if !ok && hasMsg {
+			chunk, ok = c.extractAssistantContent(event)
+		}
+		if !ok {
+			continue
+		}
+		fullAnswer.WriteString(chunk)
+		writeSSEJSON(r, map[string]any{"type": "content", "content": chunk})
+	}
+	writeSSEData(r, "[DONE]")
+
+	answer := strings.TrimSpace(fullAnswer.String())
+	if answer != "" && !interrupted {
+		c.sessionMemory.SaveTurn(context.Background(), sessionID, displayInput, answer, messages)
+	}
+}
+
+func (c *ControllerV1) streamSlashOpsPrompt(ctx context.Context, r *ghttp.Request, sessionID, prompt string) {
+	if c.opsStreamRunner == nil {
+		writeSSEJSON(r, withSSEWorkflow(map[string]any{"type": "error", "content": "ops stream runner is not initialized"}, sseWorkflowOps, sseResumeEndpointOps))
+		return
+	}
+	checkpointID := generateCheckpointID(sessionID + "-ops")
+	iter := c.opsStreamRunner.Run(ctx, []adk.Message{
+		schema.UserMessage(prompt),
+	}, adk.WithCheckPointID(checkpointID), adk.WithSessionValues(map[string]any{
+		"session_id": sessionID,
+	}))
+
+	stepNum := 1
+	finalReportStepEmitted := false
+	for {
+		event, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if event == nil {
+			continue
+		}
+		if event.Err != nil {
+			writeSSEJSON(r, withSSEWorkflow(map[string]any{"type": "error", "content": event.Err.Error()}, sseWorkflowOps, sseResumeEndpointOps))
+			return
+		}
+		if event.Action != nil && event.Action.Interrupted != nil {
+			payload := withSSEWorkflow(buildInterruptPayload(checkpointID, event.Action.Interrupted), sseWorkflowOps, sseResumeEndpointOps)
+			writeSSEJSON(r, payload)
+			continue
+		}
+		msg, hasMsg := c.resolveEventMessage(event)
+		if hasMsg && msg != nil {
+			for _, call := range msg.ToolCalls {
+				writeSSEJSON(r, withSSEWorkflow(map[string]any{"type": "step", "step": stepNum, "content": "调用工具: " + call.Function.Name}, sseWorkflowOps, sseResumeEndpointOps))
+				stepNum++
+			}
+			content, ok := c.extractAgentContentByMessage(event.AgentName, msg, "")
+			if !ok {
+				content, ok = c.extractBashToolResultByMessage(msg)
+			}
+			if ok {
+				content = formatAIOpsContent(event.AgentName, c.opsRootAgentName, content)
+				if strings.TrimSpace(content) != "" {
+					if !finalReportStepEmitted && isFinalReportContent(event.AgentName, content) {
+						writeSSEJSON(r, withSSEWorkflow(map[string]any{"type": "step", "step": stepNum, "content": "输出最终技术报告"}, sseWorkflowOps, sseResumeEndpointOps))
+						stepNum++
+						finalReportStepEmitted = true
+					}
+					writeSSEJSON(r, withSSEWorkflow(map[string]any{"type": "content", "content": content}, sseWorkflowOps, sseResumeEndpointOps))
+				}
+			}
+		}
+	}
+	writeSSEJSON(r, withSSEWorkflow(map[string]any{"type": "done"}, sseWorkflowOps, sseResumeEndpointOps))
+}
+
+func (c *ControllerV1) buildSlashContext(ctx context.Context, sessionID, args string, reg *slash.Registry) *slash.Context {
+	return &slash.Context{
+		Ctx:       ctx,
+		Args:      args,
+		SessionID: sessionID,
+		WorkDir:   c.workDir,
+		Registry:  reg,
+		Status: func() slash.StatusSnapshot {
+			return c.slashStatusSnapshot(sessionID, reg)
+		},
+		LastError: func() string {
+			return c.recentErrorFallback()
+		},
+		RecentMessages: func(limit int) []slash.Message {
+			return c.recentSlashMessages(ctx, sessionID, limit)
+		},
+	}
+}
+
+func (c *ControllerV1) recentSlashMessages(ctx context.Context, sessionID string, limit int) []slash.Message {
+	if c == nil || c.sessionMemory == nil || strings.TrimSpace(sessionID) == "" || limit <= 0 {
+		return nil
+	}
+	messages, err := c.sessionMemory.BuildMessages(ctx, sessionID, slashRecentMessagesProbe)
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Warn("failed to load slash recent messages", zap.String("session_id", sessionID), zap.Error(err))
+		}
+		return nil
+	}
+	return convertRecentSlashMessages(messages, slashRecentMessagesProbe, limit)
+}
+
+func convertRecentSlashMessages(messages []*schema.Message, probe string, limit int) []slash.Message {
+	if limit <= 0 || len(messages) == 0 {
+		return nil
+	}
+	probe = strings.TrimSpace(probe)
+	out := make([]slash.Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		content := strings.TrimSpace(msg.Content)
+		if content == "" || (probe != "" && content == probe) {
+			continue
+		}
+		role := strings.TrimSpace(string(msg.Role))
+		if role == "" {
+			role = "unknown"
+		}
+		out = append(out, slash.Message{Role: role, Content: content})
+	}
+	if len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out
+}
+func (c *ControllerV1) slashStatusSnapshot(sessionID string, reg *slash.Registry) slash.StatusSnapshot {
+	items := reg.List()
+	userCommands := 0
+	for _, item := range items {
+		if item.Source != string(slash.SourceBuiltin) {
+			userCommands++
+		}
+	}
+	return slash.StatusSnapshot{
+		SessionID:           sessionID,
+		ChatRunnerReady:     c.chatStreamRunner != nil,
+		OpsRunnerReady:      c.opsStreamRunner != nil,
+		DialogueAgentReady:  c.dialogueAgent != nil,
+		OpsAgentReady:       c.opsAgent != nil,
+		KnowledgeAgentReady: c.knowledgeAgent != nil,
+		K8sAvailable:        strings.TrimSpace(os.Getenv("KUBECONFIG")) != "",
+		PrometheusAvailable: strings.TrimSpace(os.Getenv("PROMETHEUS_URL")) != "" || strings.TrimSpace(os.Getenv("PROMETHEUS_ADDR")) != "",
+		ESAvailable:         strings.TrimSpace(os.Getenv("ELASTICSEARCH_URL")) != "" || strings.TrimSpace(os.Getenv("ES_URL")) != "",
+		LoadedCommands:      len(items),
+		UserCommands:        userCommands,
+		WorkDir:             c.workDir,
+	}
+}
+
+func (c *ControllerV1) ensureSlashRegistry() *slash.Registry {
+	if c.slashRegistry != nil {
+		return c.slashRegistry
+	}
+	c.slashRegistry = slash.CreateDefaultRegistry(c.workDir)
+	return c.slashRegistry
+}
+
+func (c *ControllerV1) recentErrorFallback() string {
+	if strings.TrimSpace(c.workDir) == "" {
+		return ""
+	}
+	matches, err := filepath.Glob(filepath.Join(c.workDir, "logs", "ops_reports", "*.md"))
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	var newest string
+	var newestTime time.Time
+	for _, path := range matches {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			continue
+		}
+		if newest == "" || info.ModTime().After(newestTime) {
+			newest = path
+			newestTime = info.ModTime()
+		}
+	}
+	if newest == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(newest)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(raw), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "error") || strings.Contains(lower, "failed") || strings.Contains(line, "错误") || strings.Contains(line, "异常") {
+			return sanitizeUserFacingContent(line)
+		}
+	}
+	return sanitizeUserFacingContent(filepath.Base(newest) + " has no explicit error line")
 }
 
 func (c *ControllerV1) resumeAgent(
@@ -845,6 +1164,34 @@ func writeSSEData(r *ghttp.Request, data string) {
 	r.Response.Flush()
 }
 
+func buildTrustedCommandActionPayload(result slash.Result) map[string]any {
+	payload := map[string]any{"type": "command_action", "action": result.Action, "trusted_control": true}
+	for key, value := range result.Payload {
+		payload[key] = value
+	}
+	return payload
+}
+func withSSEWorkflow(payload map[string]any, workflow, resumeEndpoint string) map[string]any {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	if value := strings.TrimSpace(workflow); value != "" {
+		payload["workflow"] = value
+	}
+	if value := strings.TrimSpace(resumeEndpoint); value != "" {
+		payload["resume_endpoint"] = value
+	}
+	return payload
+}
+func writeSSEJSON(r *ghttp.Request, payload any) {
+	b, err := json.Marshal(payload)
+	if err != nil {
+		writeSSEData(r, fmt.Sprintf("{\"type\":\"error\",\"content\":%q}", err.Error()))
+		return
+	}
+	writeSSEData(r, string(b))
+}
+
 type sseResponseWriter struct {
 	resp interface {
 		Write(content ...interface{})
@@ -981,6 +1328,14 @@ func normalizeSessionID(id string) string {
 		return defaultSessionID
 	}
 	return id
+}
+
+func defaultWorkDir() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return wd
 }
 
 func generateCheckpointID(sessionID string) string {
@@ -1175,6 +1530,18 @@ func isAllowedUploadFile(fileName string) bool {
 		strings.HasSuffix(fileName, ".markdown")
 }
 
+type redactionRule struct {
+	pattern     *regexp.Regexp
+	replacement string
+}
+
+var sensitiveContentRedactions = []redactionRule{
+	{regexp.MustCompile(`(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+`), `${1}[REDACTED]`},
+	{regexp.MustCompile(`(?i)\b(password|passwd|pwd|token|api[_-]?key|access[_-]?key|secret|client[_-]?secret)\s*[:=]\s*[^\s,;]+`), `${1}=[REDACTED]`},
+	{regexp.MustCompile(`(?i)(--kubeconfig\s+|kubeconfig\s*[:=]\s*)[^\s,;]+`), `${1}[REDACTED]`},
+	{regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://[^\s/:@]+:)[^\s/@]+(@)`), `${1}[REDACTED]${2}`},
+}
+
 func sanitizeUserFacingContent(content string) string {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
@@ -1183,7 +1550,30 @@ func sanitizeUserFacingContent(content string) string {
 	if strings.HasPrefix(strings.ToLower(trimmed), "successfully transferred to agent") {
 		return ""
 	}
-	return trimmed
+	trimmed = redactSensitiveContent(trimmed)
+	return clipRunes(trimmed, 500)
+}
+
+func redactSensitiveContent(content string) string {
+	redacted := content
+	for _, rule := range sensitiveContentRedactions {
+		redacted = rule.pattern.ReplaceAllString(redacted, rule.replacement)
+	}
+	return redacted
+}
+
+func clipRunes(value string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= max {
+		return value
+	}
+	if max <= 1 {
+		return string(runes[:max])
+	}
+	return string(runes[:max-1]) + "…"
 }
 
 // formatAIOpsContent 格式化 AIOps 流中的可展示内容。

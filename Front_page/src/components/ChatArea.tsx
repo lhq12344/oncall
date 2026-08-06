@@ -596,7 +596,7 @@ const MessageItem: React.FC<{ message: Message; isLast: boolean }> = ({ message,
           <InterruptCard
             messageId={message.id}
             interrupt={message.interrupt}
-            isOps={message.type === 'step'}
+            isOps={message.type === 'step' || message.interrupt.workflow === 'ops' || message.interrupt.resume_endpoint === 'ai_ops_resume_stream'}
           />
         )}
 

@@ -53,6 +53,8 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
     ? detailRequest?.reason?.trim() || extractInterruptPurpose(interrupt.message, contexts)
     : bashRequest?.reason?.trim() || extractInterruptPurpose(interrupt.message, contexts);
   const cardTitle = isDetailSelection ? '补充细节' : (isCommandApproval ? '执行确认' : '人工确认');
+  const resumeViaOps = isOps || interrupt.workflow === 'ops' || interrupt.resume_endpoint === 'ai_ops_resume_stream';
+  const renderOpsPanelStep = isOps && Boolean(opsStepId);
 
   useEffect(() => {
     setIsHandled(Boolean(interrupt.handled));
@@ -79,7 +81,7 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
       setErrorText('缺少 checkpoint_id，无法恢复执行');
       return;
     }
-    if (!isOps && !currentSessionId) {
+    if (!resumeViaOps && !currentSessionId) {
       setErrorText('缺少会话 ID，无法恢复执行');
       return;
     }
@@ -106,7 +108,7 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
 
     setStreaming(true);
     setConnectionStatus('streaming');
-    if (isOps) {
+    if (renderOpsPanelStep) {
       setOpsRunning(true);
       if (opsStepId) {
         markOpsInterruptHandled(opsStepId, true);
@@ -114,7 +116,7 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
       }
     }
 
-    if (!isOps && currentSessionId) {
+    if (!resumeViaOps && currentSessionId) {
       addMessage(currentSessionId, {
         role: 'assistant',
         type: 'text',
@@ -123,7 +125,7 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
     }
 
     const onContent = (content: string) => {
-      if (isOps && opsStepId) {
+      if (renderOpsPanelStep) {
         const normalized = (content || '').trim();
         if (!normalized) {
           return;
@@ -140,7 +142,7 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
     };
 
     const onInterrupt = (nextInterrupt: InterruptData) => {
-      if (isOps && opsStepId) {
+      if (renderOpsPanelStep) {
         pausedByInterrupt = true;
         if (resumedStepId) {
           updateOpsStep(resumedStepId, undefined, 'completed');
@@ -156,7 +158,7 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
     const options = {
       onContent,
       onStep: (step: any) => {
-        if (isOps && opsStepId) {
+        if (renderOpsPanelStep) {
           if (resumedStepId) {
             updateOpsStep(resumedStepId, undefined, 'completed');
           }
@@ -176,7 +178,7 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
         setConnectionStatus('idle');
         setIsSubmitting(false);
         setIsHandled(true);
-        if (isOps && opsStepId) {
+        if (renderOpsPanelStep) {
           if (resumedStepId) {
             updateOpsStep(resumedStepId, undefined, 'completed');
           }
@@ -189,11 +191,11 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
         setStreaming(false);
         setConnectionStatus('error');
         setIsSubmitting(false);
-        if (isOps) {
+        if (renderOpsPanelStep) {
           setOpsRunning(false);
         }
         setErrorText(err || '恢复执行失败');
-        if (isOps && opsStepId) {
+        if (renderOpsPanelStep) {
           const targetStepId = resumedStepId || addOpsStep('流程异常');
           updateOpsStep(targetStepId, `\n\nError: ${err}`, 'error');
           return;
@@ -210,7 +212,7 @@ export const InterruptCard: React.FC<InterruptCardProps> = ({
         ...payload,
         interrupt_ids: interruptIDs
       };
-      if (isOps) {
+      if (resumeViaOps) {
         await resumeOps(checkpointId, requestPayload, options);
       } else if (currentSessionId) {
         await resumeChat(currentSessionId, checkpointId, requestPayload, options);

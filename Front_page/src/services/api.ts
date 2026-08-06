@@ -1,4 +1,4 @@
-import { InterruptData, AIOpsStep, InterruptContext, BashApprovalRequest, DetailOption, DetailRequest } from '../types';
+import { InterruptData, AIOpsStep, InterruptContext, BashApprovalRequest, DetailOption, DetailRequest, SlashCommandInfo, CommandAction, WorkflowKind, ResumeEndpoint } from '../types';
 
 const BASE_URL = 'http://127.0.0.1:6872/api/v1';
 
@@ -22,8 +22,19 @@ interface StreamOptions {
   onContent: (content: string) => void;
   onStep?: (step: AIOpsStep) => void;
   onInterrupt?: (interrupt: InterruptData) => void;
+  onCommandAction?: (action: CommandAction) => void;
   onError?: (error: string) => void;
   onDone?: () => void;
+}
+
+export async function fetchSlashCommands(): Promise<SlashCommandInfo[]> {
+  const response = await fetch(`${BASE_URL}/slash_commands`);
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`);
+  }
+  const payload = await response.json();
+  const commands = payload?.data?.commands ?? payload?.commands ?? [];
+  return Array.isArray(commands) ? commands : [];
 }
 
 export async function streamChat(
@@ -53,7 +64,7 @@ export async function streamOps(options: StreamOptions) {
 
 export async function resumeOps(
   checkpointId: string,
-  data: { approved?: boolean; resolved?: boolean; comment?: string; interrupt_ids?: string[] },
+  data: { approved?: boolean; resolved?: boolean; comment?: string; interrupt_ids?: string[]; selection_value?: string },
   options: StreamOptions
 ) {
   return streamRequest(`${BASE_URL}/ai_ops_resume_stream`, {
@@ -63,7 +74,7 @@ export async function resumeOps(
 }
 
 async function streamRequest(url: string, body: any, options: StreamOptions) {
-  const { onContent, onStep, onInterrupt, onError, onDone } = options;
+  const { onContent, onStep, onInterrupt, onCommandAction, onError, onDone } = options;
 
   try {
     const response = await fetch(url, {
@@ -146,6 +157,15 @@ async function streamRequest(url: string, body: any, options: StreamOptions) {
             continue;
           }
 
+          if (json.type === 'command_action') {
+            if (json.trusted_control === true) {
+              onCommandAction?.(json as CommandAction);
+            } else {
+              onContent(trimmedData);
+            }
+            continue;
+          }
+
           if (json.type === 'content') {
             onContent(json.content);
             continue;
@@ -170,16 +190,27 @@ function mapInterruptData(raw: any): InterruptData {
   const interrupt_contexts = normalizeInterruptContexts(raw?.interrupt_contexts);
   const bash_request = extractBashApprovalRequest(raw, message, interrupt_contexts);
   const detail_request = extractDetailRequest(raw);
+  const workflow = normalizeWorkflow(raw?.workflow);
+  const resume_endpoint = normalizeResumeEndpoint(raw?.resume_endpoint);
 
   return {
     checkpoint_id,
     message,
     interrupt_contexts,
     bash_request,
-    detail_request
+    detail_request,
+    workflow,
+    resume_endpoint
   };
 }
 
+function normalizeWorkflow(value: unknown): WorkflowKind | undefined {
+  return value === 'chat' || value === 'ops' ? value : undefined;
+}
+
+function normalizeResumeEndpoint(value: unknown): ResumeEndpoint | undefined {
+  return value === 'chat_resume_stream' || value === 'ai_ops_resume_stream' ? value : undefined;
+}
 function normalizeInterruptContexts(input: any): InterruptContext[] {
   if (!Array.isArray(input)) {
     return [];

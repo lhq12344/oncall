@@ -1,4 +1,9 @@
 export type MessageType = 'text' | 'step' | 'interrupt' | 'error' | 'user';
+export type WorkflowKind = 'chat' | 'ops';
+export type ResumeEndpoint = 'chat_resume_stream' | 'ai_ops_resume_stream';
+export type SlashCommandType = 'local' | 'prompt' | 'ops_workflow' | 'client_action' | 'deferred';
+export type SlashCommandSource = 'builtin' | 'project' | 'mew_compat';
+export type CommandActionName = 'clear_session';
 
 export interface InterruptContext {
   id: string;
@@ -35,12 +40,30 @@ export interface InterruptData {
   bash_request?: BashApprovalRequest;
   detail_request?: DetailRequest;
   handled?: boolean;
+  workflow?: WorkflowKind;
+  resume_endpoint?: ResumeEndpoint;
 }
 
 export interface AIOpsStep {
   step: number;
   content: string;
   status: 'pending' | 'completed' | 'error';
+}
+
+export interface SlashCommandInfo {
+  name: string;
+  aliases?: string[];
+  description: string;
+  argument_hint?: string;
+  type: SlashCommandType;
+  source: SlashCommandSource;
+}
+
+export interface CommandAction {
+  action: CommandActionName;
+  trusted_control: true;
+  scope?: string;
+  [key: string]: unknown;
 }
 
 export interface OpsStep {

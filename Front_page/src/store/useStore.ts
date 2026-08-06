@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import { Message, Session, AIOpsStep, InterruptData, OpsStep } from '../types';
+import { Message, Session, AIOpsStep, InterruptData, OpsStep, CommandAction } from '../types';
 
 // inferOpsStepTitle 依据内容推断步骤标题，避免无 step 事件时内容丢失。
 // 输入：SSE content 文本。
@@ -55,6 +55,7 @@ interface AppState {
   renameSession: (id: string, title: string) => void;
   setCurrentSession: (id: string) => void;
   addMessage: (sessionId: string, message: Omit<Message, 'id' | 'timestamp'>) => string;
+  clearSessionMessages: (sessionId: string) => void;
   updateLastMessage: (sessionId: string, content: string, steps?: AIOpsStep[], interrupt?: InterruptData) => void;
   appendStepToLastMessage: (sessionId: string, step: AIOpsStep) => void;
   setLastMessageStepStatus: (sessionId: string, status: AIOpsStep['status']) => void;
@@ -137,6 +138,14 @@ export const useStore = create<AppState>()(
         }));
         return id;
       },
+
+      clearSessionMessages: (sessionId) => set((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === sessionId
+            ? { ...s, title: 'New Session', messages: [], updatedAt: Date.now() }
+            : s
+        )
+      })),
 
       updateLastMessage: (sessionId, content, steps, interrupt) => set((state) => ({
         sessions: state.sessions.map((s) => {
@@ -311,6 +320,7 @@ export const useStore = create<AppState>()(
       sendMessage: async (sessionId, content) => {
         const {
           addMessage,
+          clearSessionMessages,
           updateLastMessage,
           appendStepToLastMessage,
           setLastMessageStepStatus,
@@ -342,6 +352,13 @@ export const useStore = create<AppState>()(
               ...step,
               status: 'pending'
             });
+          },
+          onCommandAction: (action: CommandAction) => {
+            if (action.action === 'clear_session') {
+              clearSessionMessages(sessionId);
+            } else {
+              console.warn('Unknown command action', action);
+            }
           },
           onInterrupt: (interrupt) => updateLastMessage(sessionId, '', undefined, interrupt),
           onDone: () => {

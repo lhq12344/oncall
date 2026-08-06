@@ -12,6 +12,23 @@ type ChatStreamReq struct {
 
 type ChatStreamRes struct{}
 
+type SlashCommandsReq struct {
+	g.Meta `path:"/slash_commands" method:"get" summary:"斜杠命令列表"`
+}
+
+type SlashCommandInfo struct {
+	Name         string   `json:"name" dc:"命令名"`
+	Aliases      []string `json:"aliases,omitempty" dc:"别名"`
+	Description  string   `json:"description" dc:"说明"`
+	ArgumentHint string   `json:"argument_hint,omitempty" dc:"参数提示"`
+	Type         string   `json:"type" dc:"命令类型"`
+	Source       string   `json:"source" dc:"来源"`
+}
+
+type SlashCommandsRes struct {
+	Commands []SlashCommandInfo `json:"commands"`
+}
+
 type InterruptContext struct {
 	ID          string `json:"id" dc:"中断点ID，用于resume target"`
 	Address     string `json:"address" dc:"中断点地址"`
@@ -49,12 +66,13 @@ type AIOpsStreamReq struct {
 type AIOpsStreamRes struct{}
 
 type AIOpsResumeStreamReq struct {
-	g.Meta       `path:"/ai_ops_resume_stream" method:"post" summary:"AI运维流式恢复中断"`
-	CheckpointID string   `json:"checkpoint_id" v:"required"`
-	InterruptIDs []string `json:"interrupt_ids,omitempty"`
-	Approved     *bool    `json:"approved,omitempty"`
-	Resolved     *bool    `json:"resolved,omitempty"`
-	Comment      string   `json:"comment,omitempty"`
+	g.Meta         `path:"/ai_ops_resume_stream" method:"post" summary:"AI运维流式恢复中断"`
+	CheckpointID   string   `json:"checkpoint_id" v:"required"`
+	InterruptIDs   []string `json:"interrupt_ids,omitempty"`
+	Approved       *bool    `json:"approved,omitempty"`
+	Resolved       *bool    `json:"resolved,omitempty"`
+	Comment        string   `json:"comment,omitempty"`
+	SelectionValue string   `json:"selection_value,omitempty"`
 }
 
 type AIOpsResumeStreamRes struct{}

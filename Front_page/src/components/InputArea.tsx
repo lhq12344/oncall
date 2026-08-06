@@ -1,20 +1,73 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useStore } from '../store/useStore';
-import { Send, Paperclip, Loader2, X } from 'lucide-react';
+import { Send, Paperclip, Loader2, Terminal } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { streamChat, uploadFile } from '../services/api';
+import { fetchSlashCommands, uploadFile } from '../services/api';
+import { SlashCommandInfo } from '../types';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
+
+const FALLBACK_COMMANDS: SlashCommandInfo[] = [
+  { name: 'help', aliases: ['h', '?'], description: '列出所有斜杠命令', argument_hint: '[command]', type: 'local', source: 'builtin' },
+  { name: 'commands', description: '显示斜杠命令加载来源与警告', type: 'local', source: 'builtin' },
+  { name: 'status', aliases: ['s'], description: '显示 OnCall 运行状态', type: 'local', source: 'builtin' },
+  { name: 'session', description: '显示当前会话概览', type: 'local', source: 'builtin' },
+  { name: 'memory', description: '显示最近会话记忆摘要', argument_hint: '[list]', type: 'local', source: 'builtin' },
+  { name: 'review', description: '审查当前代码变更', argument_hint: '[focus]', type: 'prompt', source: 'builtin' },
+  { name: 'diagnose', aliases: ['diag'], description: '诊断故障症状', argument_hint: '<symptom>', type: 'prompt', source: 'builtin' },
+  { name: 'ops', aliases: ['incident', 'aiops'], description: '触发完整 AI 运维处置', argument_hint: '<incident>', type: 'ops_workflow', source: 'builtin' },
+  { name: 'k8s', aliases: ['pods'], description: '只读检查 Kubernetes 状态', argument_hint: '[resource] [-n namespace]', type: 'prompt', source: 'builtin' },
+  { name: 'metrics', aliases: ['prom'], description: '查询 Prometheus 指标', argument_hint: '<query>', type: 'prompt', source: 'builtin' },
+  { name: 'logs', aliases: ['last-error', 'errors'], description: '查询最近错误日志', argument_hint: '[query|error] [time_range]', type: 'prompt', source: 'builtin' },
+  { name: 'cases', description: '检索历史故障案例', argument_hint: '<query>', type: 'prompt', source: 'builtin' },
+  { name: 'clear', description: '清空当前前端会话', type: 'client_action', source: 'builtin' },
+];
 
 export const InputArea: React.FC = () => {
   const { theme, currentSessionId, addSession, setStreaming, setConnectionStatus, isStreaming, sendMessage, addMessage } = useStore();
   const [input, setInput] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>(FALLBACK_COMMANDS);
+  const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
+  const [dismissedSlashInput, setDismissedSlashInput] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchSlashCommands()
+      .then((commands) => {
+        if (!cancelled && commands.length > 0) {
+          setSlashCommands(commands);
+        }
+      })
+      .catch(() => {
+        // Static fallback keeps slash UX available when backend discovery is unavailable.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const slashQuery = input.startsWith('/') && !/\s/.test(input) ? input.slice(1).toLowerCase() : null;
+  const slashSuggestions = slashQuery === null || dismissedSlashInput === input
+    ? []
+    : slashCommands
+        .filter((cmd) => {
+          const aliases = cmd.aliases || [];
+          return cmd.name.toLowerCase().startsWith(slashQuery)
+            || aliases.some((alias) => alias.toLowerCase().startsWith(slashQuery));
+        })
+        .slice(0, 8);
+  const activeSlashIndex = Math.min(selectedSlashIndex, Math.max(slashSuggestions.length - 1, 0));
+
+  const completeSlashCommand = (command: SlashCommandInfo) => {
+    setInput(`/${command.name} `);
+    setSelectedSlashIndex(0);
+  };
 
   const handleSend = async () => {
     if (!input.trim() || isStreaming) return;
@@ -111,8 +164,35 @@ export const InputArea: React.FC = () => {
 
           <textarea
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value);
+              setDismissedSlashInput('');
+              setSelectedSlashIndex(0);
+            }}
             onKeyDown={(e) => {
+              if (slashSuggestions.length > 0) {
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault();
+                  setSelectedSlashIndex((idx) => (idx + 1) % slashSuggestions.length);
+                  return;
+                }
+                if (e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  setSelectedSlashIndex((idx) => (idx - 1 + slashSuggestions.length) % slashSuggestions.length);
+                  return;
+                }
+                if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+                  e.preventDefault();
+                  completeSlashCommand(slashSuggestions[activeSlashIndex]);
+                  return;
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setDismissedSlashInput(input);
+                  setSelectedSlashIndex(0);
+                  return;
+                }
+              }
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 handleSend();
@@ -122,6 +202,38 @@ export const InputArea: React.FC = () => {
             className="flex-1 bg-transparent border-none outline-none py-3 px-2 resize-none max-h-40 min-h-[44px] text-sm"
             rows={1}
           />
+
+          {slashSuggestions.length > 0 && (
+            <div className="absolute left-16 right-16 bottom-20 z-30 rounded-2xl border border-cyber-neon/20 bg-black/90 shadow-2xl shadow-cyber-neon/10 backdrop-blur-xl overflow-hidden">
+              {slashSuggestions.map((cmd, index) => {
+                const selected = index === activeSlashIndex;
+                const hint = cmd.argument_hint ? ` ${cmd.argument_hint}` : '';
+                return (
+                  <button
+                    key={cmd.name}
+                    type="button"
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      completeSlashCommand(cmd);
+                    }}
+                    className={cn(
+                      'w-full flex items-center gap-3 px-4 py-3 text-left transition-colors',
+                      selected ? 'bg-cyber-neon/15 text-cyber-neon' : 'hover:bg-white/5'
+                    )}
+                  >
+                    <Terminal className="w-4 h-4 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-mono text-sm truncate">
+                        /{cmd.name}<span className="opacity-50">{hint}</span>
+                      </div>
+                      <div className="text-xs opacity-60 truncate">{cmd.description}</div>
+                    </div>
+                    <span className="text-[10px] uppercase tracking-widest opacity-40">{cmd.type}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           <button
             onClick={handleSend}
