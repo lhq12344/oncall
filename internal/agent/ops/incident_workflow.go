@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"go_agent/internal/agent/agentteams"
 	"go_agent/internal/agent/execution"
 	"go_agent/internal/agent/rca"
 	"go_agent/internal/agent/strategy"
@@ -12,6 +13,8 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"go.uber.org/zap"
 )
+
+const incidentDefaultMaxExecutionLoops = agentteams.DefaultLoopMaxIterations
 
 // IncidentWorkflowConfig 四阶段故障处置工作流配置。
 type IncidentWorkflowConfig struct {
@@ -120,33 +123,29 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 	gate := newExecutionGateAgent(cfg.Logger)
 	reporter := newFinalReportAgent(cfg.Logger)
 
-	maxLoops := cfg.MaxExecutionLoops
-	if maxLoops <= 0 {
-		maxLoops = 3
-	}
-
-	executeLoop, err := adk.NewLoopAgent(ctx, &adk.LoopAgentConfig{
-		Name:          "incident_execute_loop",
-		Description:   "Ops 修复提案 -> Execution 命令计划与执行 -> 决策 的循环工作流",
-		SubAgents:     []adk.Agent{opsAgent, executionAgent, gate},
-		MaxIterations: maxLoops,
+	team, maxLoops, err := newIncidentWorkflowTeam(cfg.MaxExecutionLoops, incidentWorkflowMembers{
+		observation: observerAgent,
+		rca:         rcaAgent,
+		ops:         opsAgent,
+		execution:   executionAgent,
+		gate:        gate,
+		strategy:    strategyAgent,
+		reporter:    reporter,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create execution loop failed: %w", err)
+		return nil, fmt.Errorf("create incident workflow team failed: %w", err)
 	}
 
-	workflow, err := adk.NewSequentialAgent(ctx, &adk.SequentialAgentConfig{
-		Name:        "incident_workflow_agent",
-		Description: "统一故障处置代理：观测采集、RCA 分析、Ops 计划、Execution 执行、Strategy 复盘",
-		SubAgents:   []adk.Agent{observerAgent, rcaAgent, executeLoop, strategyAgent, reporter},
-	})
+	workflow, err := team.Build(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("create incident workflow failed: %w", err)
 	}
 
 	if cfg.Logger != nil {
-		cfg.Logger.Info("incident workflow agent initialized",
-			zap.Int("max_execution_loops", maxLoops))
+		cfg.Logger.Info("incident workflow agent team initialized",
+			zap.Int("max_execution_loops", maxLoops),
+			zap.Int("team_members", len(team.Members)),
+			zap.Int("team_stages", len(team.Stages)))
 	}
 
 	withState := adk.AgentWithOptions(ctx, workflow, adk.WithHistoryRewriter(incidentHistoryRewriter))
@@ -155,4 +154,69 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 		return nil, fmt.Errorf("incident workflow agent is not resumable after state binding")
 	}
 	return resumable, nil
+}
+
+type incidentWorkflowMembers struct {
+	observation adk.Agent
+	rca         adk.Agent
+	ops         adk.Agent
+	execution   adk.Agent
+	gate        adk.Agent
+	strategy    adk.Agent
+	reporter    adk.Agent
+}
+
+func newIncidentWorkflowTeam(maxLoops int, members incidentWorkflowMembers) (*agentteams.Team, int, error) {
+	if maxLoops <= 0 {
+		maxLoops = incidentDefaultMaxExecutionLoops
+	}
+
+	team := agentteams.NewTeam(
+		"incident_workflow_agent",
+		"Unified incident response team: observation, RCA, ops planning, execution, strategy review, and final report",
+	)
+
+	registrations := []struct {
+		name        string
+		description string
+		agent       adk.Agent
+	}{
+		{name: "observation", description: "Collect K8s, metrics, and log observations", agent: members.observation},
+		{name: "rca", description: "Analyze root cause from observations and evidence", agent: members.rca},
+		{name: "ops", description: "Plan remediation actions from RCA output", agent: members.ops},
+		{name: "execution", description: "Validate and execute approved remediation steps", agent: members.execution},
+		{name: "gate", description: "Decide whether execution should stop, replan, or request approval", agent: members.gate},
+		{name: "strategy", description: "Evaluate outcome and update strategy knowledge", agent: members.strategy},
+		{name: "final_report", description: "Generate final technical incident report", agent: members.reporter},
+	}
+	for _, registration := range registrations {
+		if err := team.AddMember(registration.name, registration.description, registration.agent); err != nil {
+			return nil, 0, err
+		}
+	}
+
+	if err := team.AddSequentialStage("incident_observation_stage", "Collect the initial incident observation snapshot", "observation"); err != nil {
+		return nil, 0, err
+	}
+	if err := team.AddSequentialStage("incident_rca_stage", "Analyze root cause and persist the RCA state", "rca"); err != nil {
+		return nil, 0, err
+	}
+	if err := team.AddLoopStage(
+		"incident_execute_loop",
+		"Ops remediation proposal -> Execution command planning and execution -> Gate decision loop",
+		maxLoops,
+		"ops",
+		"execution",
+		"gate",
+	); err != nil {
+		return nil, 0, err
+	}
+	if err := team.AddSequentialStage("incident_strategy_stage", "Evaluate the run and update strategy state", "strategy"); err != nil {
+		return nil, 0, err
+	}
+	if err := team.AddSequentialStage("incident_final_report_stage", "Generate the final incident report", "final_report"); err != nil {
+		return nil, 0, err
+	}
+
+	return team, maxLoops, nil
 }
