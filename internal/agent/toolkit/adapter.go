@@ -92,6 +92,23 @@ func NewDefaultRegistryWithHooks(ctx context.Context, checker *permissions.Check
 	reg.Register(&WriteFileTool{FileStateCache: fsc})
 	reg.Register(&GlobTool{})
 	reg.Register(&GrepTool{})
+	registerDeferredAndGateway(ctx, reg, checker, hookEngine, deferredTools...)
+	return reg
+}
+
+// NewDeferredGatewayRegistryWithHooks exposes only ToolSearch and InvokeDeferredTool.
+// It is intended for domain agents that should select business tools on demand without
+// receiving generic file edit/write capabilities.
+func NewDeferredGatewayRegistryWithHooks(ctx context.Context, checker *permissions.Checker, hookEngine *hooks.Engine, deferredTools ...einotool.BaseTool) *Registry {
+	reg := NewRegistry()
+	registerDeferredAndGateway(ctx, reg, checker, hookEngine, deferredTools...)
+	return reg
+}
+
+func registerDeferredAndGateway(ctx context.Context, reg *Registry, checker *permissions.Checker, hookEngine *hooks.Engine, deferredTools ...einotool.BaseTool) {
+	if reg == nil {
+		return
+	}
 	for _, base := range deferredTools {
 		if base == nil {
 			continue
@@ -103,7 +120,6 @@ func NewDefaultRegistryWithHooks(ctx context.Context, checker *permissions.Check
 	}
 	reg.Register(&ToolSearchTool{Registry: reg})
 	reg.Register(&InvokeDeferredTool{Registry: reg, Checker: checker, HookEngine: hookEngine})
-	return reg
 }
 
 func BuildAlwaysEinoTools(ctx context.Context, checker *permissions.Checker, deferredTools ...einotool.BaseTool) []einotool.BaseTool {
@@ -112,6 +128,20 @@ func BuildAlwaysEinoTools(ctx context.Context, checker *permissions.Checker, def
 
 func BuildAlwaysEinoToolsWithHooks(ctx context.Context, checker *permissions.Checker, hookEngine *hooks.Engine, deferredTools ...einotool.BaseTool) []einotool.BaseTool {
 	reg := NewDefaultRegistryWithHooks(ctx, checker, hookEngine, deferredTools...)
+	always := reg.ListAlways()
+	out := make([]einotool.BaseTool, 0, len(always))
+	for _, t := range always {
+		out = append(out, NewEinoAdapterWithHooks(t, checker, hookEngine))
+	}
+	return out
+}
+
+func BuildDeferredGatewayEinoTools(ctx context.Context, checker *permissions.Checker, deferredTools ...einotool.BaseTool) []einotool.BaseTool {
+	return BuildDeferredGatewayEinoToolsWithHooks(ctx, checker, hooks.DefaultEngine(), deferredTools...)
+}
+
+func BuildDeferredGatewayEinoToolsWithHooks(ctx context.Context, checker *permissions.Checker, hookEngine *hooks.Engine, deferredTools ...einotool.BaseTool) []einotool.BaseTool {
+	reg := NewDeferredGatewayRegistryWithHooks(ctx, checker, hookEngine, deferredTools...)
 	always := reg.ListAlways()
 	out := make([]einotool.BaseTool, 0, len(always))
 	for _, t := range always {

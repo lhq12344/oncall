@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -58,22 +60,45 @@ func TestRegistrySearchAndInvokeRequiresDiscovery(t *testing.T) {
 	reg := NewRegistry()
 	target := NewDeferredEinoTool(context.Background(), stubEinoTool{name: "k8s_monitor", desc: "inspect kubernetes", out: "ok"})
 	reg.RegisterDeferred(target)
+	ctx := ContextWithDeferredDiscoverySession(context.Background(), "session-a")
 
 	invoke := &InvokeDeferredTool{Registry: reg, Checker: permissions.NewChecker(permissions.Options{Mode: permissions.ModeBypass})}
-	res := invoke.Execute(context.Background(), map[string]any{"tool_name": "k8s_monitor", "arguments": map[string]any{"value": "pod"}})
+	res := invoke.Execute(ctx, map[string]any{"tool_name": "k8s_monitor", "arguments": map[string]any{"value": "pod"}})
 	if !res.IsError || !strings.Contains(res.Output, "ToolSearch") {
 		t.Fatalf("expected undiscovered tool to fail, got %#v", res)
 	}
 
 	search := &ToolSearchTool{Registry: reg}
-	res = search.Execute(context.Background(), map[string]any{"query": "select:k8s_monitor"})
-	if res.IsError || !reg.IsDiscovered("k8s_monitor") {
+	res = search.Execute(ctx, map[string]any{"query": "select:k8s_monitor"})
+	if res.IsError || !reg.IsDiscovered(ctx, "k8s_monitor") {
 		t.Fatalf("expected discovery to succeed, got %#v", res)
 	}
 
-	res = invoke.Execute(context.Background(), map[string]any{"tool_name": "k8s_monitor", "arguments": map[string]any{"value": "pod"}})
+	res = invoke.Execute(ctx, map[string]any{"tool_name": "k8s_monitor", "arguments": map[string]any{"value": "pod"}})
 	if res.IsError || res.Output != "ok" {
 		t.Fatalf("expected invoked output, got %#v", res)
+	}
+}
+
+func TestRegistryDiscoveryIsScopedBySession(t *testing.T) {
+	t.Parallel()
+	reg := NewRegistry()
+	reg.RegisterDeferred(NewDeferredEinoTool(context.Background(), stubEinoTool{name: "k8s_monitor", desc: "inspect kubernetes", out: "ok"}))
+
+	sessionA := ContextWithDeferredDiscoverySession(context.Background(), "session-a")
+	sessionB := ContextWithDeferredDiscoverySession(context.Background(), "session-b")
+	search := &ToolSearchTool{Registry: reg}
+	invoke := &InvokeDeferredTool{Registry: reg, Checker: permissions.NewChecker(permissions.Options{Mode: permissions.ModeBypass})}
+
+	if res := search.Execute(sessionA, map[string]any{"query": "select:k8s_monitor"}); res.IsError {
+		t.Fatalf("search session A failed: %#v", res)
+	}
+	if res := invoke.Execute(sessionA, map[string]any{"tool_name": "k8s_monitor", "arguments": map[string]any{"value": "pod"}}); res.IsError {
+		t.Fatalf("invoke session A failed after discovery: %#v", res)
+	}
+	res := invoke.Execute(sessionB, map[string]any{"tool_name": "k8s_monitor", "arguments": map[string]any{"value": "pod"}})
+	if !res.IsError || !strings.Contains(res.Output, "current session") {
+		t.Fatalf("expected fresh session to require discovery, got %#v", res)
 	}
 }
 
@@ -81,11 +106,12 @@ func TestInvokeDeferredToolAllowsSafeReadToolInDefaultMode(t *testing.T) {
 	t.Parallel()
 	reg := NewRegistry()
 	reg.RegisterDeferred(NewDeferredEinoTool(context.Background(), stubEinoTool{name: "k8s_monitor", desc: "inspect kubernetes", out: "ok"}))
-	reg.MarkDiscovered("k8s_monitor")
+	ctx := ContextWithDeferredDiscoverySession(context.Background(), "safe-read")
+	reg.MarkDiscovered(ctx, "k8s_monitor")
 
 	checker := permissions.NewChecker(permissions.Options{ProjectRoot: t.TempDir(), Mode: permissions.ModeDefault})
 	invoke := &InvokeDeferredTool{Registry: reg, Checker: checker}
-	res := invoke.Execute(context.Background(), map[string]any{"tool_name": "k8s_monitor", "arguments": map[string]any{"value": "pod"}})
+	res := invoke.Execute(ctx, map[string]any{"tool_name": "k8s_monitor", "arguments": map[string]any{"value": "pod"}})
 	if res.IsError || res.Output != "ok" {
 		t.Fatalf("expected safe deferred read tool to run without approval, got %#v", res)
 	}
@@ -96,11 +122,12 @@ func TestInvokeDeferredToolChecksTargetPermission(t *testing.T) {
 	root := t.TempDir()
 	reg := NewRegistry()
 	reg.RegisterDeferred(NewDeferredEinoTool(context.Background(), stubEinoTool{name: "WriteFile", desc: "write file", out: "should not run"}))
-	reg.MarkDiscovered("WriteFile")
+	ctx := ContextWithDeferredDiscoverySession(context.Background(), "permission-check")
+	reg.MarkDiscovered(ctx, "WriteFile")
 
 	checker := permissions.NewChecker(permissions.Options{ProjectRoot: root, Mode: permissions.ModeBypass})
 	invoke := &InvokeDeferredTool{Registry: reg, Checker: checker}
-	res := invoke.Execute(context.Background(), map[string]any{
+	res := invoke.Execute(ctx, map[string]any{
 		"tool_name": "WriteFile",
 		"arguments": map[string]any{"file_path": filepath.Join(root, ".env"), "content": "SECRET=x"},
 	})
@@ -114,7 +141,8 @@ func TestInvokeDeferredToolHookRejectSkipsTarget(t *testing.T) {
 	reg := NewRegistry()
 	count := 0
 	reg.RegisterDeferred(countingTool{name: "k8s_monitor", count: &count})
-	reg.MarkDiscovered("k8s_monitor")
+	ctx := ContextWithDeferredDiscoverySession(context.Background(), "hook-reject")
+	reg.MarkDiscovered(ctx, "k8s_monitor")
 	engine := hooks.NewEngine()
 	if err := engine.LoadHooks([]hooks.Hook{{
 		ID:           "reject-k8s",
@@ -131,7 +159,7 @@ func TestInvokeDeferredToolHookRejectSkipsTarget(t *testing.T) {
 		Checker:    permissions.NewChecker(permissions.Options{Mode: permissions.ModeBypass}),
 		HookEngine: engine,
 	}
-	res := invoke.Execute(context.Background(), map[string]any{"tool_name": "k8s_monitor", "arguments": map[string]any{"value": "pod"}})
+	res := invoke.Execute(ctx, map[string]any{"tool_name": "k8s_monitor", "arguments": map[string]any{"value": "pod"}})
 	if !res.IsError || !strings.Contains(res.Output, "blocked by hook") {
 		t.Fatalf("expected hook rejection, got %#v", res)
 	}
@@ -144,7 +172,8 @@ func TestInvokeDeferredToolRecordsPostHook(t *testing.T) {
 	t.Parallel()
 	reg := NewRegistry()
 	reg.RegisterDeferred(NewDeferredEinoTool(context.Background(), stubEinoTool{name: "k8s_monitor", desc: "inspect kubernetes", out: "ok"}))
-	reg.MarkDiscovered("k8s_monitor")
+	ctx := ContextWithDeferredDiscoverySession(context.Background(), "post-hook")
+	reg.MarkDiscovered(ctx, "k8s_monitor")
 	engine := hooks.NewEngine()
 	if err := engine.LoadHooks([]hooks.Hook{{
 		ID:     "audit-post",
@@ -158,7 +187,7 @@ func TestInvokeDeferredToolRecordsPostHook(t *testing.T) {
 		Checker:    permissions.NewChecker(permissions.Options{Mode: permissions.ModeBypass}),
 		HookEngine: engine,
 	}
-	res := invoke.Execute(context.Background(), map[string]any{"tool_name": "k8s_monitor", "arguments": map[string]any{"value": "pod"}})
+	res := invoke.Execute(ctx, map[string]any{"tool_name": "k8s_monitor", "arguments": map[string]any{"value": "pod"}})
 	if res.IsError || res.Output != "ok" {
 		t.Fatalf("expected target output, got %#v", res)
 	}
@@ -256,5 +285,29 @@ func TestAdapterDeniesSensitiveWrite(t *testing.T) {
 	}
 	if payload["success"] != false {
 		t.Fatalf("expected denied JSON result, got %s", out)
+	}
+}
+
+func TestBuildDeferredGatewayEinoToolsExposesOnlyGateway(t *testing.T) {
+	t.Parallel()
+
+	tools := BuildDeferredGatewayEinoTools(
+		context.Background(),
+		permissions.NewChecker(permissions.Options{Mode: permissions.ModeDefault}),
+		stubEinoTool{name: "k8s_monitor", desc: "inspect kubernetes", out: "ok"},
+	)
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		info, err := tool.Info(context.Background())
+		if err != nil {
+			t.Fatalf("Info: %v", err)
+		}
+		names = append(names, info.Name)
+	}
+	sort.Strings(names)
+
+	want := []string{"InvokeDeferredTool", "ToolSearch"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("gateway tool names = %v, want %v", names, want)
 	}
 }

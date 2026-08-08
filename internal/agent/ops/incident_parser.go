@@ -21,7 +21,7 @@ func parseRCAReport(messages []adk.Message) (*RCAReport, bool) {
 	return &report, true
 }
 
-// parseRemediationProposal 解析 ops_agent 产出的修复提案。
+// parseRemediationProposal 解析 ops_incident_agent 产出的修复提案。
 // 输入：消息列表。
 // 输出：结构化修复提案与是否解析成功。
 func parseRemediationProposal(messages []adk.Message) (*RemediationProposal, bool) {
@@ -338,7 +338,7 @@ func formatExecutionIssueSummary(severity, component, issue, impact string) stri
 	}
 }
 
-// isActionableExecutionIssue 判断诊断问题是否需要回到 ops_agent 继续规划。
+// isActionableExecutionIssue 判断诊断问题是否需要回到 ops_incident_agent 继续规划。
 // 输入：严重级别、组件、问题描述。
 // 输出：true 表示当前问题不应直接视为执行成功闭环。
 func isActionableExecutionIssue(severity, component, issue string) bool {

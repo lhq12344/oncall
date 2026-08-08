@@ -65,7 +65,7 @@ func NewExecutionAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 		return nil, fmt.Errorf("chat model is required")
 	}
 
-	// ?????????????????????????
+	// 创建执行专用 deferred 工具集，避免暴露通用文件写入工具。
 	deferredTools := []tool.BaseTool{
 		tools.NewNormalizePlanTool(cfg.ChatModel, cfg.Logger),
 		tools.NewGeneratePlanTool(cfg.ChatModel, cfg.Logger),
@@ -75,7 +75,7 @@ func NewExecutionAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 		tools.NewRollbackTool(cfg.Logger),
 	}
 	checker := permissions.NewChecker(permissions.Options{})
-	toolsList := toolkit.BuildAlwaysEinoTools(ctx, checker, deferredTools...)
+	toolsList := toolkit.BuildDeferredGatewayEinoTools(ctx, checker, deferredTools...)
 
 	// 创建 ChatModelAgent
 	env := prompt.DetectEnvironment("")

@@ -250,7 +250,7 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 					generator.Send(a.buildRepeatedIssueStopEvent(ctx, retryDecision.Reason, fallback))
 					return
 				}
-				message := fmt.Sprintf("执行校验发现当前现场与上游故障假设不一致，停止当前计划并回到 ops_agent 重新规划。原因：%s。", reason)
+				message := fmt.Sprintf("执行校验发现当前现场与上游故障假设不一致，停止当前计划并回到 ops_incident_agent 重新规划。原因：%s。", reason)
 				if runtimeSummary != "" {
 					message += " 最新运行时观测：" + clipText(runtimeSummary, 220)
 				}
@@ -325,9 +325,9 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 					generator.Send(a.buildRepeatedIssueStopEvent(ctx, retryDecision.Reason, fallback))
 					return
 				}
-				message := "执行阶段已完成既定检查，但仍发现未闭环问题，将回到 ops_agent 继续生成修复动作。"
+				message := "执行阶段已完成既定检查，但仍发现未闭环问题，将回到 ops_incident_agent 继续生成修复动作。"
 				if summary != "" {
-					message = fmt.Sprintf("执行阶段已完成既定检查，但仍发现未闭环问题：%s。将回到 ops_agent 继续生成修复动作。", clipText(summary, 220))
+					message = fmt.Sprintf("执行阶段已完成既定检查，但仍发现未闭环问题：%s。将回到 ops_incident_agent 继续生成修复动作。", clipText(summary, 220))
 				}
 				generator.Send(assistantEvent(message))
 				return
@@ -345,7 +345,7 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 					a.logger.Warn("execution success without executed steps, fallback to replan",
 						zap.String("execution_status", executionStatusText))
 				}
-				generator.Send(assistantEvent("未检测到执行步骤明细（executed_steps 为空），将回到 ops_agent 重新生成可执行计划。"))
+				generator.Send(assistantEvent("未检测到执行步骤明细（executed_steps 为空），将回到 ops_incident_agent 重新生成可执行计划。"))
 				return
 			}
 			clearRepeatedIssueState(ctx)
@@ -378,7 +378,7 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 			generator.Send(a.buildRepeatedIssueStopEvent(ctx, retryDecision.Reason, fallback))
 			return
 		}
-		generator.Send(assistantEvent("执行未达成预期，回到 ops_agent 重新生成计划。"))
+		generator.Send(assistantEvent("执行未达成预期，回到 ops_incident_agent 重新生成计划。"))
 	}()
 
 	return iterator
@@ -409,7 +409,7 @@ func (a *executionGateAgent) Resume(ctx context.Context, info *adk.ResumeInfo, _
 			if strings.TrimSpace(comment) == "" {
 				comment = "用户已确认"
 			}
-			generator.Send(breakLoopEvent(a.name, fmt.Sprintf("收到确认：%s。结束执行循环，进入 strategy_agent 生成最终报告。", comment)))
+			generator.Send(breakLoopEvent(a.name, fmt.Sprintf("收到确认：%s。结束执行循环，进入 final_reporter 生成最终报告。", comment)))
 			return
 		}
 		if state.RepeatedIssueEscalated {
@@ -430,7 +430,7 @@ func (a *executionGateAgent) Resume(ctx context.Context, info *adk.ResumeInfo, _
 		if strings.TrimSpace(comment) == "" {
 			comment = "用户要求继续重试"
 		}
-		generator.Send(assistantEvent(fmt.Sprintf("收到反馈：%s。将重新进入 ops_agent 生成新计划。", comment)))
+		generator.Send(assistantEvent(fmt.Sprintf("收到反馈：%s。将重新进入 ops_incident_agent 生成新计划。", comment)))
 	}()
 
 	return iterator
@@ -474,9 +474,14 @@ func (a *finalReportAgent) Run(ctx context.Context, _ *adk.AgentInput, _ ...adk.
 	go func() {
 		defer generator.Close()
 		state := getIncidentState(ctx)
+		state.FinalStatus = inferFinalStatus(state)
 		summary := buildFinalOpsSummary(state)
+		state.FinalReport = clipText(summary, 800)
+		state.UpdatedAt = time.Now().Format(time.RFC3339)
+		setIncidentState(ctx, state)
 		if a.logger != nil {
 			a.logger.Info("incident final summary generated",
+				zap.String("final_status", state.FinalStatus),
 				zap.Int("summary_len", len([]rune(summary))))
 		}
 		path, err := persistFinalOpsReport(ctx, state, summary)
@@ -488,8 +493,12 @@ func (a *finalReportAgent) Run(ctx context.Context, _ *adk.AgentInput, _ ...adk.
 			if a.logger != nil {
 				a.logger.Info("incident final report persisted", zap.String("path", path))
 			}
-			if err := archiveFinalOpsReport(ctx, state, summary, path, a.logger); err != nil && a.logger != nil {
-				a.logger.Warn("failed to archive incident final report to knowledge store", zap.Error(err))
+			if eligible, reasons := finalOpsArchiveEligibility(state, summary); eligible {
+				if err := archiveFinalOpsReport(ctx, state, summary, path, a.logger); err != nil && a.logger != nil {
+					a.logger.Warn("failed to archive incident final report to knowledge store", zap.Error(err))
+				}
+			} else if a.logger != nil {
+				a.logger.Info("skip incident final report archive: quality gate not met", zap.Strings("reasons", reasons))
 			}
 		}
 		generator.Send(assistantEvent(summary))
@@ -506,20 +515,7 @@ func buildFinalOpsSummary(state *IncidentState) string {
 		return "运维流程已结束，但未读取到结构化状态。请结合工具日志确认最终处理结果。"
 	}
 
-	finalStatus := strings.TrimSpace(state.FinalStatus)
-	if finalStatus == "" {
-		switch {
-		case state.ExecutionSuccess && len(state.ExecutionIssues) == 0:
-			finalStatus = "resolved"
-		case state.ExecutionSuccess || strings.TrimSpace(state.ExecutionStatus) != "":
-			finalStatus = "partially_resolved"
-		default:
-			finalStatus = "unresolved"
-		}
-	}
-	if state.RepeatedIssueEscalated {
-		finalStatus = "unresolved"
-	}
+	finalStatus := inferFinalStatus(state)
 
 	resolvedText := "待确认"
 	switch strings.ToLower(strings.TrimSpace(finalStatus)) {
@@ -782,6 +778,30 @@ func collectReadableIncidentFacts(state *IncidentState) incidentReadableFacts {
 // buildReadableProblemSection 生成人员可读的问题摘要。
 // 输入：state（流程状态）、facts（抽取事实）。
 // 输出：问题摘要条目。
+func inferFinalStatus(state *IncidentState) string {
+	if state == nil {
+		return "unresolved"
+	}
+	finalStatus := strings.TrimSpace(state.FinalStatus)
+	if finalStatus == "" {
+		switch {
+		case state.ExecutionSuccess && len(state.ExecutionIssues) == 0:
+			finalStatus = "resolved"
+		case state.ExecutionSuccess || strings.TrimSpace(state.ExecutionStatus) != "":
+			finalStatus = "partially_resolved"
+		default:
+			finalStatus = "unresolved"
+		}
+	}
+	if state.RepeatedIssueEscalated {
+		finalStatus = "unresolved"
+	}
+	if finalStatus == "" {
+		return "unresolved"
+	}
+	return finalStatus
+}
+
 func buildReadableProblemSection(state *IncidentState, facts incidentReadableFacts) []string {
 	out := make([]string, 0, 6)
 	seen := make(map[string]struct{}, 6)
@@ -1082,7 +1102,7 @@ func humanizeIncidentTarget(target string) string {
 	return target
 }
 
-// sanitizeReadableSummary 清理 strategy 阶段的 summary 文本。
+// sanitizeReadableSummary 清理最终报告摘要文本。
 // 输入：summary（原始摘要）。
 // 输出：可直接展示的结论摘要。
 func sanitizeReadableSummary(summary string) string {
@@ -1096,7 +1116,7 @@ func sanitizeReadableSummary(summary string) string {
 	return clipText(summary, 220)
 }
 
-// synthesizeIncidentConclusion 在缺少 strategy summary 时生成兜底结论。
+// synthesizeIncidentConclusion 在缺少最终摘要时生成兜底结论。
 // 输入：state（流程状态）、facts（抽取事实）、finalStatus（最终状态）。
 // 输出：面向运维人员的总结结论。
 func synthesizeIncidentConclusion(state *IncidentState, facts incidentReadableFacts, finalStatus string) string {
@@ -1323,14 +1343,17 @@ func archiveFinalOpsReport(ctx context.Context, state *IncidentState, report, pa
 		ID:      reportID,
 		Content: report,
 		MetaData: map[string]any{
-			"type":         "ops_final_report",
-			"title":        title,
-			"session_id":   sessionID,
-			"final_status": firstNonEmptyText(stateValue(state, func(s *IncidentState) string { return s.FinalStatus }), "unknown"),
-			"root_cause":   stateValue(state, func(s *IncidentState) string { return s.RootCause }),
-			"target_node":  stateValue(state, func(s *IncidentState) string { return s.TargetNode }),
-			"report_path":  strings.TrimSpace(path),
-			"updated_at":   time.Now().Format(time.RFC3339),
+			"type":               "ops_final_report",
+			"title":              title,
+			"session_id":         sessionID,
+			"final_status":       firstNonEmptyText(stateValue(state, func(s *IncidentState) string { return s.FinalStatus }), "unknown"),
+			"root_cause":         stateValue(state, func(s *IncidentState) string { return s.RootCause }),
+			"target_node":        stateValue(state, func(s *IncidentState) string { return s.TargetNode }),
+			"report_path":        strings.TrimSpace(path),
+			"knowledge_eligible": true,
+			"evidence_count":     len(stateValueSlice(state, func(s *IncidentState) []string { return s.Evidence })),
+			"confidence":         stateValueFloat(state, func(s *IncidentState) float64 { return s.Confidence }),
+			"updated_at":         time.Now().Format(time.RFC3339),
 		},
 	}
 
@@ -1344,6 +1367,30 @@ func archiveFinalOpsReport(ctx context.Context, state *IncidentState, report, pa
 			zap.String("title", title))
 	}
 	return nil
+}
+
+func finalOpsArchiveEligibility(state *IncidentState, report string) (bool, []string) {
+	var reasons []string
+	report = strings.TrimSpace(report)
+	if state == nil {
+		reasons = append(reasons, "missing_state")
+	}
+	if report == "" || len([]rune(report)) < 80 {
+		reasons = append(reasons, "report_too_short")
+	}
+	if state != nil {
+		status := strings.ToLower(strings.TrimSpace(state.FinalStatus))
+		if status == "" || status == "unknown" {
+			reasons = append(reasons, "missing_final_status")
+		}
+		if len(state.Evidence) == 0 && len(state.ExecutionLogs) == 0 && len(state.RemediationProposalActions) == 0 {
+			reasons = append(reasons, "missing_evidence_or_actions")
+		}
+		if state.Confidence <= 0 && len(state.Evidence) == 0 {
+			reasons = append(reasons, "missing_confidence")
+		}
+	}
+	return len(reasons) == 0, reasons
 }
 
 // buildFinalReportTitle 生成最终技术报告标题。
@@ -1373,6 +1420,20 @@ func stateValue(state *IncidentState, selector func(*IncidentState) string) stri
 		return ""
 	}
 	return strings.TrimSpace(selector(state))
+}
+
+func stateValueSlice(state *IncidentState, selector func(*IncidentState) []string) []string {
+	if state == nil || selector == nil {
+		return nil
+	}
+	return selector(state)
+}
+
+func stateValueFloat(state *IncidentState, selector func(*IncidentState) float64) float64 {
+	if state == nil || selector == nil {
+		return 0
+	}
+	return selector(state)
 }
 
 // sanitizeReportFileToken 清理文件名中的非法字符。

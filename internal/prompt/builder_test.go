@@ -77,7 +77,7 @@ func TestDetectEnvironmentUsesFallbacks(t *testing.T) {
 
 func TestToolUseSectionMentionsDeferredGateway(t *testing.T) {
 	got := ToolUseSection().Content
-	for _, want := range []string{"ReadFile", "Grep", "Glob", "EditFile", "WriteFile", "ToolSearch", "InvokeDeferredTool", "allow", "ask", "deny"} {
+	for _, want := range []string{"ToolSearch", "InvokeDeferredTool", "allow", "ask", "deny", "工具失败"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("tool use section missing %q", want)
 		}
@@ -99,6 +99,15 @@ func TestRolePromptsDescribeRoleSpecificDeferredTools(t *testing.T) {
 	for _, want := range []string{"intent_analysis", "request_detail_selection", "web_search", "bash_execute_with_approval"} {
 		if !strings.Contains(dialogue, want) {
 			t.Fatalf("dialogue prompt missing %q", want)
+		}
+	}
+}
+
+func TestBuildAgentPromptIncludesDeferredToolGuidance(t *testing.T) {
+	got := BuildAgentPrompt(RoleOps, EnvironmentContext{}, BuildOptions{})
+	for _, want := range []string{"ops_incident_agent deferred", "es_log_query", "infer_root_cause", "不要执行变更"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ops prompt missing deferred guidance %q", want)
 		}
 	}
 }

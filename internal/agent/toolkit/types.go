@@ -2,9 +2,12 @@ package toolkit
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/cloudwego/eino/adk"
 )
 
 const MaxOutputChars = 10000
@@ -41,14 +44,14 @@ type DeferrableTool interface {
 }
 
 type Registry struct {
-	mu              sync.RWMutex
-	tools           map[string]Tool
-	deferred        map[string]bool
-	discoveredTools map[string]bool
+	mu                sync.RWMutex
+	tools             map[string]Tool
+	deferred          map[string]bool
+	scopedDiscoveries map[string]map[string]bool
 }
 
 func NewRegistry() *Registry {
-	return &Registry{tools: make(map[string]Tool), deferred: make(map[string]bool), discoveredTools: make(map[string]bool)}
+	return &Registry{tools: make(map[string]Tool), deferred: make(map[string]bool), scopedDiscoveries: make(map[string]map[string]bool)}
 }
 
 func (r *Registry) Register(t Tool) {
@@ -79,18 +82,56 @@ func (r *Registry) IsDeferred(name string) bool {
 	return r.deferred[name]
 }
 
-func (r *Registry) MarkDiscovered(name string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.deferred[name] {
-		r.discoveredTools[name] = true
-	}
+const deferredDiscoverySessionKey = "toolkit.deferred_discovered_tools"
+
+type deferredDiscoveryContextKey struct{}
+
+// ContextWithDeferredDiscoverySession scopes deferred tool discovery outside an ADK run.
+// Production ADK runs use session values keyed by session_id; tests and direct callers can
+// use this helper to avoid cross-session discovery leakage.
+func ContextWithDeferredDiscoverySession(ctx context.Context, sessionID string) context.Context {
+	return context.WithValue(ctx, deferredDiscoveryContextKey{}, strings.TrimSpace(sessionID))
 }
 
-func (r *Registry) IsDiscovered(name string) bool {
+func (r *Registry) MarkDiscovered(ctx context.Context, name string) {
+	name = strings.TrimSpace(name)
+	if name == "" || !r.IsDeferred(name) {
+		return
+	}
+	if discoveries, ok := sessionDiscoverySet(ctx, true); ok {
+		discoveries[name] = true
+		return
+	}
+	scope := deferredDiscoveryScope(ctx)
+	if scope == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.scopedDiscoveries == nil {
+		r.scopedDiscoveries = make(map[string]map[string]bool)
+	}
+	if r.scopedDiscoveries[scope] == nil {
+		r.scopedDiscoveries[scope] = make(map[string]bool)
+	}
+	r.scopedDiscoveries[scope][name] = true
+}
+
+func (r *Registry) IsDiscovered(ctx context.Context, name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if discoveries, ok := sessionDiscoverySet(ctx, false); ok {
+		return discoveries[name]
+	}
+	scope := deferredDiscoveryScope(ctx)
+	if scope == "" {
+		return false
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.discoveredTools[name]
+	return r.scopedDiscoveries[scope] != nil && r.scopedDiscoveries[scope][name]
 }
 
 func (r *Registry) ListAlways() []Tool {
@@ -106,17 +147,74 @@ func (r *Registry) ListAlways() []Tool {
 	return result
 }
 
-func (r *Registry) GetDeferredToolNames() []string {
+func (r *Registry) GetDeferredToolNames(ctx context.Context) []string {
+	discoveries, hasSessionDiscoveries := sessionDiscoverySet(ctx, false)
+	scope := deferredDiscoveryScope(ctx)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var names []string
 	for name := range r.deferred {
-		if !r.discoveredTools[name] {
+		discovered := false
+		if hasSessionDiscoveries {
+			discovered = discoveries[name]
+		} else if scope != "" && r.scopedDiscoveries[scope] != nil {
+			discovered = r.scopedDiscoveries[scope][name]
+		}
+		if !discovered {
 			names = append(names, name)
 		}
 	}
 	sort.Strings(names)
 	return names
+}
+
+func sessionDiscoverySet(ctx context.Context, create bool) (map[string]bool, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	if raw, ok := adk.GetSessionValue(ctx, deferredDiscoverySessionKey); ok {
+		switch typed := raw.(type) {
+		case map[string]bool:
+			return typed, true
+		case map[string]any:
+			out := make(map[string]bool, len(typed))
+			for name, value := range typed {
+				if discovered, ok := value.(bool); ok && discovered {
+					out[name] = true
+				}
+			}
+			adk.AddSessionValue(ctx, deferredDiscoverySessionKey, out)
+			return out, true
+		}
+	}
+	if !create {
+		return nil, false
+	}
+	out := make(map[string]bool)
+	adk.AddSessionValue(ctx, deferredDiscoverySessionKey, out)
+	if raw, ok := adk.GetSessionValue(ctx, deferredDiscoverySessionKey); ok {
+		if typed, ok := raw.(map[string]bool); ok {
+			return typed, true
+		}
+	}
+	return nil, false
+}
+
+func deferredDiscoveryScope(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if value, ok := ctx.Value(deferredDiscoveryContextKey{}).(string); ok {
+		if scope := strings.TrimSpace(value); scope != "" {
+			return scope
+		}
+	}
+	if value, ok := adk.GetSessionValue(ctx, "session_id"); ok && value != nil {
+		if scope := strings.TrimSpace(fmt.Sprint(value)); scope != "" {
+			return scope
+		}
+	}
+	return ""
 }
 
 func (r *Registry) SearchDeferred(query string, maxResults int) []map[string]any {

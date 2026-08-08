@@ -24,7 +24,7 @@ func (t *ToolSearchTool) Schema() map[string]any {
 		"max_results": map[string]any{"type": "integer", "description": "Maximum search results", "default": 5},
 	}, []string{"query"})
 }
-func (t *ToolSearchTool) Execute(_ context.Context, args map[string]any) ToolResult {
+func (t *ToolSearchTool) Execute(ctx context.Context, args map[string]any) ToolResult {
 	if t.Registry == nil {
 		return errorResult("Error: registry is required")
 	}
@@ -51,7 +51,7 @@ func (t *ToolSearchTool) Execute(_ context.Context, args map[string]any) ToolRes
 		schemas = t.Registry.SearchDeferred(query, maxResults)
 	}
 	if len(schemas) == 0 {
-		names := t.Registry.GetDeferredToolNames()
+		names := t.Registry.GetDeferredToolNames(ctx)
 		if len(names) == 0 {
 			return ToolResult{Output: fmt.Sprintf("No deferred tools available for query %q.", query)}
 		}
@@ -59,7 +59,7 @@ func (t *ToolSearchTool) Execute(_ context.Context, args map[string]any) ToolRes
 	}
 	for _, s := range schemas {
 		if name, ok := s["name"].(string); ok {
-			t.Registry.MarkDiscovered(name)
+			t.Registry.MarkDiscovered(ctx, name)
 		}
 	}
 	out, _ := json.MarshalIndent(schemas, "", "  ")
@@ -94,8 +94,8 @@ func (t *InvokeDeferredTool) Execute(ctx context.Context, args map[string]any) T
 	if target == nil || !t.Registry.IsDeferred(toolName) {
 		return errorResult(fmt.Sprintf("Error: deferred tool not found: %s", toolName))
 	}
-	if !t.Registry.IsDiscovered(toolName) {
-		return errorResult(fmt.Sprintf("Error: deferred tool %s has not been discovered. Use ToolSearch first.", toolName))
+	if !t.Registry.IsDiscovered(ctx, toolName) {
+		return errorResult(fmt.Sprintf("Error: deferred tool %s has not been discovered in the current session. Use ToolSearch first.", toolName))
 	}
 	targetArgs, ok := mapArg(args["arguments"])
 	if !ok {

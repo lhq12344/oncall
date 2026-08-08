@@ -109,6 +109,9 @@ func BuildSystemPrompt(env EnvironmentContext, opts BuildOptions) string {
 func BuildAgentPrompt(role Role, env EnvironmentContext, opts BuildOptions) string {
 	b := NewBuilder()
 	addBaseSections(b)
+	if guidance := strings.TrimSpace(DeferredToolGuidance(role)); guidance != "" {
+		b.Add(Section{Name: "DeferredToolGuidance", Priority: 45, Content: guidance})
+	}
 	b.Add(RoleSection(role))
 	addContextSections(b, env, opts)
 	return b.Build()

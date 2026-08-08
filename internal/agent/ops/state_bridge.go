@@ -54,6 +54,9 @@ type IncidentState struct {
 	RemediationProposalFallback string   `json:"remediation_proposal_fallback,omitempty"`
 	RemediationProposalActions  []string `json:"remediation_proposal_actions,omitempty"`
 
+	IncidentContractValid  bool     `json:"incident_contract_valid,omitempty"`
+	IncidentContractIssues []string `json:"incident_contract_issues,omitempty"`
+
 	ValidationBlocked bool   `json:"validation_blocked,omitempty"`
 	ValidationRisk    string `json:"validation_risk,omitempty"`
 
@@ -217,30 +220,23 @@ func (a *stateBridgeAgent) updateByStage(state *IncidentState, msg *schema.Messa
 	}
 	messages := []adk.Message{msg}
 	switch a.stage {
+	case "incident":
+		if report, ok := parseRCAReport(messages); ok && report != nil {
+			applyIncidentRCAReport(state, report)
+		}
+		if proposal, ok := parseRemediationProposal(messages); ok && proposal != nil {
+			applyIncidentRemediationProposal(state, proposal)
+		}
 	case "rca":
 		report, ok := parseRCAReport(messages)
 		if !ok || report == nil {
 			return
 		}
-		state.RootCause = strings.TrimSpace(report.RootCause)
-		state.TargetNode = strings.TrimSpace(report.TargetNode)
-		state.Path = strings.TrimSpace(report.Path)
-		state.Impact = strings.TrimSpace(report.Impact)
-		state.Confidence = report.Confidence
-		state.Evidence = report.Evidence
+		applyIncidentRCAReport(state, report)
 	case "ops":
 		proposal, ok := parseRemediationProposal(messages)
 		if ok && proposal != nil {
-			state.RemediationProposalID = strings.TrimSpace(proposal.ProposalID)
-			state.RemediationProposalSummary = clipText(strings.TrimSpace(proposal.Summary), 600)
-			state.RemediationProposalRisk = strings.TrimSpace(proposal.RiskLevel)
-			state.RemediationProposalFallback = clipText(strings.TrimSpace(proposal.FallbackPlan), 800)
-			state.RemediationProposalActions = summarizeRemediationActions(proposal)
-
-			state.PlanID = state.RemediationProposalID
-			state.PlanSummary = state.RemediationProposalSummary
-			state.PlanRisk = state.RemediationProposalRisk
-			state.FallbackPlan = state.RemediationProposalFallback
+			applyIncidentRemediationProposal(state, proposal)
 		}
 	case "execution":
 		validation, ok := parseValidationResult(messages)
@@ -339,6 +335,34 @@ func (a *stateBridgeAgent) updateByStage(state *IncidentState, msg *schema.Messa
 	}
 }
 
+func applyIncidentRCAReport(state *IncidentState, report *RCAReport) {
+	if state == nil || report == nil {
+		return
+	}
+	state.RootCause = strings.TrimSpace(report.RootCause)
+	state.TargetNode = strings.TrimSpace(report.TargetNode)
+	state.Path = strings.TrimSpace(report.Path)
+	state.Impact = strings.TrimSpace(report.Impact)
+	state.Confidence = report.Confidence
+	state.Evidence = report.Evidence
+}
+
+func applyIncidentRemediationProposal(state *IncidentState, proposal *RemediationProposal) {
+	if state == nil || proposal == nil {
+		return
+	}
+	state.RemediationProposalID = strings.TrimSpace(proposal.ProposalID)
+	state.RemediationProposalSummary = clipText(strings.TrimSpace(proposal.Summary), 600)
+	state.RemediationProposalRisk = strings.TrimSpace(proposal.RiskLevel)
+	state.RemediationProposalFallback = clipText(strings.TrimSpace(proposal.FallbackPlan), 800)
+	state.RemediationProposalActions = summarizeRemediationActions(proposal)
+
+	state.PlanID = state.RemediationProposalID
+	state.PlanSummary = state.RemediationProposalSummary
+	state.PlanRisk = state.RemediationProposalRisk
+	state.FallbackPlan = state.RemediationProposalFallback
+}
+
 func incidentHistoryRewriter(ctx context.Context, entries []*adk.HistoryEntry) ([]adk.Message, error) {
 	out := make([]adk.Message, 0, 3)
 	lastUser := findLastUserInput(entries)
@@ -402,6 +426,8 @@ func renderIncidentState(state *IncidentState) string {
 		"remediation_proposal_risk":     state.RemediationProposalRisk,
 		"remediation_proposal_fallback": state.RemediationProposalFallback,
 		"remediation_proposal_actions":  latestIncidentLogs(state.RemediationProposalActions, 4),
+		"incident_contract_valid":       state.IncidentContractValid,
+		"incident_contract_issues":      latestIncidentLogs(state.IncidentContractIssues, 4),
 		"validation_blocked":            state.ValidationBlocked,
 		"validation_risk":               state.ValidationRisk,
 		"execution_status":              state.ExecutionStatus,

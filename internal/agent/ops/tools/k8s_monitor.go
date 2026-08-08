@@ -138,7 +138,7 @@ func (t *K8sMonitorTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 	if cached, ok := getCachedToolResult(ctx, "k8s_monitor", cacheKey); ok {
 		if t.logger != nil {
 			t.logger.Info("k8s monitor cache hit",
-				zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
+				zap.String("agent", currentAgentForLog(ctx, "ops_incident_agent")),
 				zap.String("resource_type", in.ResourceType),
 				zap.String("namespace", in.Namespace),
 				zap.String("resource_name", in.ResourceName),
@@ -176,7 +176,7 @@ func (t *K8sMonitorTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 	if err != nil {
 		if t.logger != nil {
 			t.logger.Error("k8s monitor failed",
-				zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
+				zap.String("agent", currentAgentForLog(ctx, "ops_incident_agent")),
 				zap.String("resource_type", in.ResourceType),
 				zap.String("namespace", in.Namespace),
 				zap.Error(err))
@@ -191,7 +191,7 @@ func (t *K8sMonitorTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 
 	if t.logger != nil {
 		t.logger.Info("k8s monitor completed",
-			zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
+			zap.String("agent", currentAgentForLog(ctx, "ops_incident_agent")),
 			zap.String("resource_type", in.ResourceType),
 			zap.String("namespace", in.Namespace),
 			zap.Int("call_count", callCount))

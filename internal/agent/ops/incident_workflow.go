@@ -6,8 +6,6 @@ import (
 
 	"go_agent/internal/agent/agentteams"
 	"go_agent/internal/agent/execution"
-	"go_agent/internal/agent/rca"
-	"go_agent/internal/agent/strategy"
 	"go_agent/internal/ai/models"
 
 	"github.com/cloudwego/eino/adk"
@@ -29,44 +27,32 @@ type IncidentWorkflowConfig struct {
 	Logger *zap.Logger
 }
 
-// NewIncidentWorkflowAgent 创建故障处置工作流 Agent。
+// NewIncidentWorkflowAgent 创建可恢复、可审计的故障处置 workflow。
 //
-// 功能：
-// 1. 创建各个子 Agent（观察、RCA、运维、执行、策略）
-// 2. 构建执行循环（Ops -> Execution -> Gate，最多循环 MaxExecutionLoops 次）
-// 3. 构建顺序工作流（Observation -> RCA -> Loop -> Strategy -> FinalReport）
-// 4. 绑定历史重写器，优化 token 消耗
+// 工作流职责边界：
+// 1. ops_incident_agent 自主按需选择只读诊断工具，完成观测、RCA 和修复提案生成。
+// 2. execution_agent 作为独立安全边界，负责命令级计划、风险校验、审批触发、执行和回滚。
+// 3. execution_gate 根据执行结果决定结束、重规划、审批中断或转人工。
+// 4. final_reporter 读取 Graph State 生成最终技术报告并归档。
 //
 // 工作流形态：
 // Sequential(
 //
-//	Observation,
-//	RCA,
-//	Loop(Ops, Execution, Gate),  // 最多循环 3 次
-//	Strategy,
-//	FinalReport
+//	Loop(Incident, IncidentContractGate, Execution, Gate), // 最多 MaxExecutionLoops 次
+//	FinalReport,
 //
 // )
 //
 // 调用位置：
-// - bootstrap/app.go:132 行，应用启动时调用
+// - bootstrap/app.go:132 行，应用启动时调用。
 //
 // 输入：
-// - ctx: 上下文
-// - cfg: 故障处置工作流配置
+// - ctx: 上下文。
+// - cfg: 故障处置工作流配置。
 //
 // 输出：
-// - adk.ResumableAgent: 可恢复的工作流 Agent
-// - error: 创建过程中的错误
-//
-// 使用示例：
-//
-//	opsAgent, err := ops.NewIncidentWorkflowAgent(ctx, &ops.IncidentWorkflowConfig{
-//	    ChatModel:     chatModel,
-//	    KubeConfig:    cfg.KubeConfig,
-//	    PrometheusURL: cfg.PrometheusURL,
-//	    Logger:        logger,
-//	})
+// - adk.ResumableAgent: 可恢复的工作流 Agent。
+// - error: 创建过程中的错误。
 func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) (adk.ResumableAgent, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
@@ -82,19 +68,9 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 		Logger:        cfg.Logger,
 	}
 
-	rcaAgent, err := rca.NewRCAAgent(ctx, &rca.Config{
-		ChatModel:     cfg.ChatModel,
-		KubeConfig:    cfg.KubeConfig,
-		PrometheusURL: cfg.PrometheusURL,
-		Logger:        cfg.Logger,
-	})
+	incidentAgent, err := NewOpsAgent(ctx, opsCfg)
 	if err != nil {
-		return nil, fmt.Errorf("create rca agent failed: %w", err)
-	}
-
-	opsAgent, err := NewOpsAgent(ctx, opsCfg)
-	if err != nil {
-		return nil, fmt.Errorf("create ops agent failed: %w", err)
+		return nil, fmt.Errorf("create ops incident agent failed: %w", err)
 	}
 
 	executionAgent, err := execution.NewExecutionAgent(ctx, &execution.Config{
@@ -105,32 +81,21 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 		return nil, fmt.Errorf("create execution agent failed: %w", err)
 	}
 
-	strategyAgent, err := strategy.NewStrategyAgent(ctx, &strategy.Config{
-		ChatModel: cfg.ChatModel,
-		Logger:    cfg.Logger,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create strategy agent failed: %w", err)
-	}
-
 	// 将结构化结果写入 Graph State（session values），避免把大段日志作为聊天历史反复回灌。
-	observerAgent := newObservationCollectorAgent(ctx, cfg)
-	rcaAgent = wrapWithIncidentState("rca", rcaAgent, cfg.Logger)
-	opsAgent = wrapWithIncidentState("ops", opsAgent, cfg.Logger)
+	incidentAgent = wrapWithIncidentState("incident", incidentAgent, cfg.Logger)
 	executionAgent = wrapWithIncidentState("execution", executionAgent, cfg.Logger)
-	strategyAgent = wrapWithIncidentState("strategy", strategyAgent, cfg.Logger)
+	executionAgent = newContractGuardedExecutionAgent(executionAgent, cfg.Logger)
 
+	contractGate := newIncidentContractGateAgent(cfg.Logger)
 	gate := newExecutionGateAgent(cfg.Logger)
 	reporter := newFinalReportAgent(cfg.Logger)
 
 	team, maxLoops, err := newIncidentWorkflowTeam(cfg.MaxExecutionLoops, incidentWorkflowMembers{
-		observation: observerAgent,
-		rca:         rcaAgent,
-		ops:         opsAgent,
-		execution:   executionAgent,
-		gate:        gate,
-		strategy:    strategyAgent,
-		reporter:    reporter,
+		incident:     incidentAgent,
+		contractGate: contractGate,
+		execution:    executionAgent,
+		gate:         gate,
+		reporter:     reporter,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create incident workflow team failed: %w", err)
@@ -157,13 +122,11 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 }
 
 type incidentWorkflowMembers struct {
-	observation adk.Agent
-	rca         adk.Agent
-	ops         adk.Agent
-	execution   adk.Agent
-	gate        adk.Agent
-	strategy    adk.Agent
-	reporter    adk.Agent
+	incident     adk.Agent
+	contractGate adk.Agent
+	execution    adk.Agent
+	gate         adk.Agent
+	reporter     adk.Agent
 }
 
 func newIncidentWorkflowTeam(maxLoops int, members incidentWorkflowMembers) (*agentteams.Team, int, error) {
@@ -173,7 +136,7 @@ func newIncidentWorkflowTeam(maxLoops int, members incidentWorkflowMembers) (*ag
 
 	team := agentteams.NewTeam(
 		"incident_workflow_agent",
-		"Unified incident response team: observation, RCA, ops planning, execution, strategy review, and final report",
+		"Auditable incident response workflow: agent-led diagnosis, isolated execution, gate review, and final report",
 	)
 
 	registrations := []struct {
@@ -181,12 +144,10 @@ func newIncidentWorkflowTeam(maxLoops int, members incidentWorkflowMembers) (*ag
 		description string
 		agent       adk.Agent
 	}{
-		{name: "observation", description: "Collect K8s, metrics, and log observations", agent: members.observation},
-		{name: "rca", description: "Analyze root cause from observations and evidence", agent: members.rca},
-		{name: "ops", description: "Plan remediation actions from RCA output", agent: members.ops},
+		{name: "incident", description: "Select diagnostic tools on demand, infer root cause, and propose remediation", agent: members.incident},
+		{name: "incident_contract_gate", description: "Validate incident evidence and remediation contract before execution", agent: members.contractGate},
 		{name: "execution", description: "Validate and execute approved remediation steps", agent: members.execution},
 		{name: "gate", description: "Decide whether execution should stop, replan, or request approval", agent: members.gate},
-		{name: "strategy", description: "Evaluate outcome and update strategy knowledge", agent: members.strategy},
 		{name: "final_report", description: "Generate final technical incident report", agent: members.reporter},
 	}
 	for _, registration := range registrations {
@@ -195,23 +156,15 @@ func newIncidentWorkflowTeam(maxLoops int, members incidentWorkflowMembers) (*ag
 		}
 	}
 
-	if err := team.AddSequentialStage("incident_observation_stage", "Collect the initial incident observation snapshot", "observation"); err != nil {
-		return nil, 0, err
-	}
-	if err := team.AddSequentialStage("incident_rca_stage", "Analyze root cause and persist the RCA state", "rca"); err != nil {
-		return nil, 0, err
-	}
 	if err := team.AddLoopStage(
-		"incident_execute_loop",
-		"Ops remediation proposal -> Execution command planning and execution -> Gate decision loop",
+		"incident_response_loop",
+		"Incident diagnosis/proposal -> isolated execution -> gate decision loop",
 		maxLoops,
-		"ops",
+		"incident",
+		"incident_contract_gate",
 		"execution",
 		"gate",
 	); err != nil {
-		return nil, 0, err
-	}
-	if err := team.AddSequentialStage("incident_strategy_stage", "Evaluate the run and update strategy state", "strategy"); err != nil {
 		return nil, 0, err
 	}
 	if err := team.AddSequentialStage("incident_final_report_stage", "Generate the final incident report", "final_report"); err != nil {

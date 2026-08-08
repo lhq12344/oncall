@@ -5,16 +5,19 @@ import (
 	"fmt"
 	"strings"
 
+	"go_agent/internal/agent/toolkit"
 	"go_agent/internal/ai/models"
 	"go_agent/internal/compact"
+	"go_agent/internal/permissions"
 	"go_agent/internal/prompt"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
 )
 
-// Config contains dependencies for the remediation planning agent.
+// Config contains dependencies for the incident diagnosis and remediation planning agent.
 type Config struct {
 	ChatModel     *models.ChatModel
 	KubeConfig    string
@@ -22,7 +25,12 @@ type Config struct {
 	Logger        *zap.Logger
 }
 
-// NewOpsAgent creates the remediation planning agent.
+const defaultOpsIncidentAgentMaxIterations = 48
+
+// NewOpsAgent creates the incident agent that owns diagnosis, evidence collection,
+// root-cause reasoning, and remediation proposal generation. The workflow keeps
+// recovery/audit and execution boundaries; this agent decides which read-only
+// diagnostic tools to call on demand.
 func NewOpsAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
@@ -31,23 +39,37 @@ func NewOpsAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 		return nil, fmt.Errorf("chat model is required")
 	}
 
+	deferredTools, err := buildOpsIncidentDeferredTools(cfg)
+	if err != nil {
+		return nil, err
+	}
+	checker := permissions.NewChecker(permissions.Options{})
+	toolsList := toolkit.BuildDeferredGatewayEinoTools(ctx, checker, deferredTools...)
+
 	env := prompt.DetectEnvironment("")
 	instruction := prompt.BuildAgentPrompt(prompt.RoleOps, env, prompt.BuildOptions{})
 
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
-		Name:          "ops_agent",
-		Description:   "基于 RCA 与执行反馈生成修复策略提案的运维代理",
+		Name:          "ops_incident_agent",
+		Description:   "按需调用观测工具完成故障诊断、根因判断和修复提案生成的运维代理",
 		Model:         cfg.ChatModel.Client,
 		GenModelInput: noFormatGenModelInput,
-		Handlers:      []adk.ChatModelAgentMiddleware{compact.NewMiddleware(compact.Config{Model: cfg.ChatModel.Client})},
-		Instruction:   instruction,
+		MaxIterations: defaultOpsIncidentAgentMaxIterations,
+		ToolsConfig: adk.ToolsConfig{
+			ToolsNodeConfig: compose.ToolsNodeConfig{
+				Tools: toolsList,
+			},
+		},
+		Handlers:    []adk.ChatModelAgentMiddleware{compact.NewMiddleware(compact.Config{Model: cfg.ChatModel.Client})},
+		Instruction: instruction,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create ops agent: %w", err)
+		return nil, fmt.Errorf("failed to create ops incident agent: %w", err)
 	}
 
 	if cfg.Logger != nil {
-		cfg.Logger.Info("ops agent initialized as remediation planner")
+		cfg.Logger.Info("ops incident agent initialized with deferred diagnostic tools",
+			zap.Int("deferred_tools", len(deferredTools)))
 	}
 	return agent, nil
 }

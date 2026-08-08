@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/schema"
 )
 
 type incidentTeamTestAgent struct {
@@ -41,18 +42,15 @@ func TestNewIncidentWorkflowTeamDefaultShape(t *testing.T) {
 	if team.Name != "incident_workflow_agent" {
 		t.Fatalf("team name = %q", team.Name)
 	}
-	if len(team.Members) != 7 {
-		t.Fatalf("member count = %d, want 7", len(team.Members))
+	if len(team.Members) != 5 {
+		t.Fatalf("member count = %d, want 5", len(team.Members))
 	}
 
 	wantStages := []struct {
 		name    string
 		members []string
 	}{
-		{name: "incident_observation_stage", members: []string{"observation"}},
-		{name: "incident_rca_stage", members: []string{"rca"}},
-		{name: "incident_execute_loop", members: []string{"ops", "execution", "gate"}},
-		{name: "incident_strategy_stage", members: []string{"strategy"}},
+		{name: "incident_response_loop", members: []string{"incident", "incident_contract_gate", "execution", "gate"}},
 		{name: "incident_final_report_stage", members: []string{"final_report"}},
 	}
 	if len(team.Stages) != len(wantStages) {
@@ -72,8 +70,8 @@ func TestNewIncidentWorkflowTeamDefaultShape(t *testing.T) {
 			}
 		}
 	}
-	if team.Stages[2].MaxIterations != maxLoops {
-		t.Fatalf("execute loop max = %d, want %d", team.Stages[2].MaxIterations, maxLoops)
+	if team.Stages[0].MaxIterations != maxLoops {
+		t.Fatalf("response loop max = %d, want %d", team.Stages[0].MaxIterations, maxLoops)
 	}
 }
 
@@ -87,8 +85,8 @@ func TestNewIncidentWorkflowTeamHonorsConfiguredLoopCount(t *testing.T) {
 	if maxLoops != 5 {
 		t.Fatalf("maxLoops = %d, want 5", maxLoops)
 	}
-	if team.Stages[2].MaxIterations != 5 {
-		t.Fatalf("execute loop max = %d, want 5", team.Stages[2].MaxIterations)
+	if team.Stages[0].MaxIterations != 5 {
+		t.Fatalf("response loop max = %d, want 5", team.Stages[0].MaxIterations)
 	}
 }
 
@@ -124,12 +122,52 @@ func TestNewIncidentWorkflowTeamRejectsMissingMembers(t *testing.T) {
 
 func completeIncidentWorkflowTestMembers() incidentWorkflowMembers {
 	return incidentWorkflowMembers{
-		observation: incidentTeamTestAgent{name: "observation_collector"},
-		rca:         incidentTeamTestAgent{name: "rca_agent"},
-		ops:         incidentTeamTestAgent{name: "ops_agent"},
-		execution:   incidentTeamTestAgent{name: "execution_agent"},
-		gate:        incidentTeamTestAgent{name: "execution_gate"},
-		strategy:    incidentTeamTestAgent{name: "strategy_agent"},
-		reporter:    incidentTeamTestAgent{name: "final_report"},
+		incident:     incidentTeamTestAgent{name: "ops_incident_agent"},
+		contractGate: incidentTeamTestAgent{name: "incident_contract_gate"},
+		execution:    incidentTeamTestAgent{name: "execution_agent"},
+		gate:         incidentTeamTestAgent{name: "execution_gate"},
+		reporter:     incidentTeamTestAgent{name: "final_report"},
+	}
+}
+
+func TestStateBridgeIncidentStageCapturesRCAAndProposal(t *testing.T) {
+	t.Parallel()
+
+	state := &IncidentState{}
+	msg := &schema.Message{Content: `{
+		"root_cause": "pod_restart",
+		"target_node": "infra/api-0",
+		"path": "infra/api",
+		"impact": "api unavailable",
+		"confidence": 0.72,
+		"evidence": ["k8s restart count > 0", "error logs matched"],
+		"proposal_id": "proposal_1",
+		"summary": "verify rollout and inspect logs",
+		"risk_level": "medium",
+		"actions": [
+			{
+				"step": 1,
+				"goal": "确认 pod 当前状态",
+				"rationale": "先只读验证现场",
+				"command_hint": "kubectl get pod api-0 -n infra",
+				"success_criteria": "pod Running",
+				"rollback_hint": "无需回滚",
+				"read_only": true
+			}
+		],
+		"fallback_plan": "人工检查 pod 事件"
+	}`}
+
+	bridge := &stateBridgeAgent{stage: "incident"}
+	bridge.updateByStage(state, msg)
+
+	if state.RootCause != "pod_restart" || state.TargetNode != "infra/api-0" {
+		t.Fatalf("RCA fields not captured: %#v", state)
+	}
+	if state.RemediationProposalID != "proposal_1" || state.PlanID != "proposal_1" {
+		t.Fatalf("proposal fields not captured: %#v", state)
+	}
+	if len(state.RemediationProposalActions) != 1 {
+		t.Fatalf("proposal actions = %v, want one action", state.RemediationProposalActions)
 	}
 }

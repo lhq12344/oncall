@@ -140,7 +140,7 @@ func (t *MetricsCollectorTool) InvokableRun(ctx context.Context, argumentsInJSON
 	if cached, ok := getCachedToolResult(ctx, "metrics_collector", cacheKey); ok {
 		if t.logger != nil {
 			t.logger.Info("metrics collector cache hit",
-				zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
+				zap.String("agent", currentAgentForLog(ctx, "ops_incident_agent")),
 				zap.String("action", in.Action),
 				zap.String("query", in.Query),
 				zap.String("time_range", in.TimeRange),
@@ -162,7 +162,7 @@ func (t *MetricsCollectorTool) InvokableRun(ctx context.Context, argumentsInJSON
 		if err != nil {
 			if t.logger != nil {
 				t.logger.Error("prometheus source discovery failed",
-					zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
+					zap.String("agent", currentAgentForLog(ctx, "ops_incident_agent")),
 					zap.String("metric", in.Metric),
 					zap.Error(err))
 			}
@@ -176,7 +176,7 @@ func (t *MetricsCollectorTool) InvokableRun(ctx context.Context, argumentsInJSON
 
 		if t.logger != nil {
 			t.logger.Info("metrics source discovery completed",
-				zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
+				zap.String("agent", currentAgentForLog(ctx, "ops_incident_agent")),
 				zap.String("metric", in.Metric),
 				zap.Int("call_count", callCount))
 		}
@@ -215,7 +215,7 @@ func (t *MetricsCollectorTool) InvokableRun(ctx context.Context, argumentsInJSON
 	if err != nil {
 		if t.logger != nil {
 			t.logger.Error("prometheus query failed",
-				zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
+				zap.String("agent", currentAgentForLog(ctx, "ops_incident_agent")),
 				zap.String("query", in.Query),
 				zap.Error(err))
 		}
@@ -229,7 +229,7 @@ func (t *MetricsCollectorTool) InvokableRun(ctx context.Context, argumentsInJSON
 
 	if t.logger != nil {
 		t.logger.Info("metrics collection completed",
-			zap.String("agent", currentAgentForLog(ctx, "ops_agent")),
+			zap.String("agent", currentAgentForLog(ctx, "ops_incident_agent")),
 			zap.String("action", in.Action),
 			zap.String("query", in.Query),
 			zap.Bool("is_range", isRange),
