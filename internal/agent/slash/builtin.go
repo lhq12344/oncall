@@ -31,6 +31,7 @@ func builtinCommands() []Command {
 		{Name: "help", Aliases: []string{"h", "?"}, Type: TypeLocal, Source: SourceBuiltin, Builtin: true, Description: "列出所有斜杠命令，或查看单个命令详情。", ArgumentHint: "[command]", Handler: helpHandler},
 		{Name: "commands", Type: TypeLocal, Source: SourceBuiltin, Builtin: true, Description: "显示斜杠命令加载来源与警告。", Handler: commandsHandler},
 		{Name: "status", Aliases: []string{"s"}, Type: TypeLocal, Source: SourceBuiltin, Builtin: true, Description: "显示 OnCall 运行状态、Agent/Runners 与观测能力可用性。", Handler: statusHandler},
+		{Name: "hooks", Aliases: []string{"hook"}, Type: TypeLocal, Source: SourceBuiltin, Builtin: true, Description: "Show hook engine status, rule count, and pending notifications.", ArgumentHint: "[status]", Handler: hooksHandler},
 		{Name: "session", Type: TypeLocal, Source: SourceBuiltin, Builtin: true, Description: "显示当前会话与最近消息概览。", Handler: sessionHandler},
 		{Name: "memory", Type: TypeLocal, Source: SourceBuiltin, Builtin: true, Description: "显示最近会话记忆摘要。", ArgumentHint: "[list]", Handler: memoryHandler},
 		{Name: "review", Type: TypePrompt, Source: SourceBuiltin, Builtin: true, Description: "审查当前代码变更，关注逻辑、安全、性能和测试。", ArgumentHint: "[focus]", Handler: promptHandler("review", buildReviewPrompt)},
@@ -137,7 +138,21 @@ func statusHandler(ctx *Context) (Result, error) {
 	b.WriteString(fmt.Sprintf("- K8s configured: %s\n", yesNo(status.K8sAvailable)))
 	b.WriteString(fmt.Sprintf("- Prometheus configured: %s\n", yesNo(status.PrometheusAvailable)))
 	b.WriteString(fmt.Sprintf("- ES configured: %s\n", yesNo(status.ESAvailable)))
+	b.WriteString(fmt.Sprintf("- Hooks enabled: %s\n", yesNo(status.HooksEnabled)))
+	b.WriteString(fmt.Sprintf("- Hook rules: %d\n", status.HookRules))
+	b.WriteString(fmt.Sprintf("- Hook notifications: %d\n", status.HookNotifications))
 	b.WriteString(fmt.Sprintf("- Commands: %d total / %d project\n", status.LoadedCommands, status.UserCommands))
+	return Result{Type: TypeLocal, Content: b.String()}, nil
+}
+
+func hooksHandler(ctx *Context) (Result, error) {
+	status := ctx.currentStatus()
+	var b strings.Builder
+	b.WriteString("OnCall Hooks\n\n")
+	b.WriteString(fmt.Sprintf("- Enabled: %s\n", yesNo(status.HooksEnabled)))
+	b.WriteString(fmt.Sprintf("- Rules: %d\n", status.HookRules))
+	b.WriteString(fmt.Sprintf("- Pending notifications: %d\n", status.HookNotifications))
+	b.WriteString("- Safety: command hooks are disabled by default; hooks cannot bypass permission checks.")
 	return Result{Type: TypeLocal, Content: b.String()}, nil
 }
 

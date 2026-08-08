@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"go_agent/internal/hooks"
 	"go_agent/internal/permissions"
 
 	einotool "github.com/cloudwego/eino/components/tool"
@@ -32,6 +33,24 @@ func (s stubEinoTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 
 func (s stubEinoTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...einotool.Option) (string, error) {
 	return s.out, nil
+}
+
+type countingTool struct {
+	name  string
+	count *int
+}
+
+func (t countingTool) Name() string           { return t.name }
+func (t countingTool) Description() string    { return "count invocations" }
+func (t countingTool) Category() ToolCategory { return CategoryRead }
+func (t countingTool) Schema() map[string]any {
+	return schemaMap(t.name, t.Description(), map[string]any{
+		"value": map[string]any{"type": "string", "description": "value"},
+	}, []string{"value"})
+}
+func (t countingTool) Execute(ctx context.Context, args map[string]any) ToolResult {
+	*t.count = *t.count + 1
+	return ToolResult{Output: "ran"}
 }
 
 func TestRegistrySearchAndInvokeRequiresDiscovery(t *testing.T) {
@@ -87,6 +106,65 @@ func TestInvokeDeferredToolChecksTargetPermission(t *testing.T) {
 	})
 	if !res.IsError || !strings.Contains(res.Output, "permission denied") {
 		t.Fatalf("expected target permission denial, got %#v", res)
+	}
+}
+
+func TestInvokeDeferredToolHookRejectSkipsTarget(t *testing.T) {
+	t.Parallel()
+	reg := NewRegistry()
+	count := 0
+	reg.RegisterDeferred(countingTool{name: "k8s_monitor", count: &count})
+	reg.MarkDiscovered("k8s_monitor")
+	engine := hooks.NewEngine()
+	if err := engine.LoadHooks([]hooks.Hook{{
+		ID:           "reject-k8s",
+		Event:        hooks.EventToolPreUse,
+		Condition:    "tool == \"k8s_monitor\"",
+		Action:       hooks.Action{Type: hooks.ActionMessage, Message: "blocked"},
+		Reject:       true,
+		RejectReason: "blocked by policy",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	invoke := &InvokeDeferredTool{
+		Registry:   reg,
+		Checker:    permissions.NewChecker(permissions.Options{Mode: permissions.ModeBypass}),
+		HookEngine: engine,
+	}
+	res := invoke.Execute(context.Background(), map[string]any{"tool_name": "k8s_monitor", "arguments": map[string]any{"value": "pod"}})
+	if !res.IsError || !strings.Contains(res.Output, "blocked by hook") {
+		t.Fatalf("expected hook rejection, got %#v", res)
+	}
+	if count != 0 {
+		t.Fatalf("target executed despite hook reject: %d", count)
+	}
+}
+
+func TestInvokeDeferredToolRecordsPostHook(t *testing.T) {
+	t.Parallel()
+	reg := NewRegistry()
+	reg.RegisterDeferred(NewDeferredEinoTool(context.Background(), stubEinoTool{name: "k8s_monitor", desc: "inspect kubernetes", out: "ok"}))
+	reg.MarkDiscovered("k8s_monitor")
+	engine := hooks.NewEngine()
+	if err := engine.LoadHooks([]hooks.Hook{{
+		ID:     "audit-post",
+		Event:  hooks.EventToolPostUse,
+		Action: hooks.Action{Type: hooks.ActionAudit, Message: "post"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	invoke := &InvokeDeferredTool{
+		Registry:   reg,
+		Checker:    permissions.NewChecker(permissions.Options{Mode: permissions.ModeBypass}),
+		HookEngine: engine,
+	}
+	res := invoke.Execute(context.Background(), map[string]any{"tool_name": "k8s_monitor", "arguments": map[string]any{"value": "pod"}})
+	if res.IsError || res.Output != "ok" {
+		t.Fatalf("expected target output, got %#v", res)
+	}
+	notes := engine.DrainNotifications(0)
+	if len(notes) != 1 || notes[0].Context.ToolName != "k8s_monitor" || notes[0].Result.Event != hooks.EventToolPostUse {
+		t.Fatalf("expected post hook notification, got %#v", notes)
 	}
 }
 

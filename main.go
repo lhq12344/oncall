@@ -9,6 +9,7 @@ import (
 	"go_agent/utility/middleware"
 	"go_agent/utility/mysql"
 	"log"
+	"os"
 	"time"
 
 	"github.com/gogf/gf/v2/frame/g"
@@ -99,6 +100,7 @@ func main() {
 	logSyncInterval := g.Cfg().MustGet(ctx, "log_sync.interval", "30s").Duration()
 	logSyncTailLines := g.Cfg().MustGet(ctx, "log_sync.tail_lines", 200).Int64()
 	logSyncIndexPrefix := g.Cfg().MustGet(ctx, "log_sync.index_prefix", "logs-k8s").String()
+	hooksConfigPath := os.Getenv("ONCALL_HOOKS_CONFIG")
 
 	app, err := bootstrap.NewApplication(&bootstrap.Config{
 		RedisAddr:          redisAddr.String(),
@@ -112,6 +114,7 @@ func main() {
 		LogSyncInterval:    logSyncInterval,
 		LogSyncTailLines:   logSyncTailLines,
 		LogSyncIndexPrefix: logSyncIndexPrefix,
+		HooksConfigPath:    hooksConfigPath,
 	})
 	if err != nil {
 		log.Fatalf("failed to init application: %v", err)
@@ -129,7 +132,7 @@ func main() {
 		group.Middleware(middleware.ResponseMiddleware)
 		group.Group("/v1", func(v1Group *ghttp.RouterGroup) {
 			// 创建 controller 并传入统一会话 Agent
-			chatController := chat.NewV1(app.DialogueAgent, app.Logger, app.RedisClient, app.OpsAgent, app.KnowledgeAgent)
+			chatController := chat.NewV1WithHooks(app.DialogueAgent, app.Logger, app.RedisClient, app.OpsAgent, app.KnowledgeAgent, app.HookEngine)
 			v1Group.Bind(chatController)
 		})
 	})

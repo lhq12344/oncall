@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"go_agent/internal/hooks"
 	"go_agent/internal/permissions"
 
 	einotool "github.com/cloudwego/eino/components/tool"
@@ -12,12 +13,17 @@ import (
 )
 
 type EinoAdapter struct {
-	Tool    Tool
-	Checker *permissions.Checker
+	Tool       Tool
+	Checker    *permissions.Checker
+	HookEngine *hooks.Engine
 }
 
 func NewEinoAdapter(t Tool, checker *permissions.Checker) einotool.BaseTool {
-	return &EinoAdapter{Tool: t, Checker: checker}
+	return NewEinoAdapterWithHooks(t, checker, hooks.DefaultEngine())
+}
+
+func NewEinoAdapterWithHooks(t Tool, checker *permissions.Checker, hookEngine *hooks.Engine) einotool.BaseTool {
+	return &EinoAdapter{Tool: t, Checker: checker, HookEngine: hookEngine}
 }
 
 func (a *EinoAdapter) Info(ctx context.Context) (*schema.ToolInfo, error) {
@@ -48,15 +54,21 @@ func (a *EinoAdapter) InvokableRun(ctx context.Context, argumentsInJSON string, 
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
+	if result := runPreToolHooks(ctx, a.HookEngine, a.Tool.Name(), args); result.IsError {
+		return marshalToolResult(result)
+	}
 	checker := permissionChecker(a.Checker)
 	decision := checker.Check(a.Tool.Name(), args)
 	if decision.Effect != permissions.Allow {
+		runApprovalRequestedHook(ctx, a.HookEngine, a.Tool.Name(), args, decision.Reason)
 		result := permissionDecisionResult(ctx, checker, a.Tool.Name(), args, decision)
 		if result.IsError || result.Output != "__ONCALL_PERMISSION_APPROVED__" {
+			runPostToolHooks(ctx, a.HookEngine, a.Tool.Name(), args, result)
 			return marshalToolResult(result)
 		}
 	}
 	result := a.Tool.Execute(ctx, args)
+	runPostToolHooks(ctx, a.HookEngine, a.Tool.Name(), args, result)
 	return marshalToolResult(result)
 }
 
@@ -69,6 +81,10 @@ func marshalToolResult(result ToolResult) (string, error) {
 }
 
 func NewDefaultRegistry(ctx context.Context, checker *permissions.Checker, deferredTools ...einotool.BaseTool) *Registry {
+	return NewDefaultRegistryWithHooks(ctx, checker, hooks.DefaultEngine(), deferredTools...)
+}
+
+func NewDefaultRegistryWithHooks(ctx context.Context, checker *permissions.Checker, hookEngine *hooks.Engine, deferredTools ...einotool.BaseTool) *Registry {
 	fsc := NewFileStateCache()
 	reg := NewRegistry()
 	reg.Register(&ReadFileTool{FileStateCache: fsc})
@@ -86,16 +102,20 @@ func NewDefaultRegistry(ctx context.Context, checker *permissions.Checker, defer
 		}
 	}
 	reg.Register(&ToolSearchTool{Registry: reg})
-	reg.Register(&InvokeDeferredTool{Registry: reg, Checker: checker})
+	reg.Register(&InvokeDeferredTool{Registry: reg, Checker: checker, HookEngine: hookEngine})
 	return reg
 }
 
 func BuildAlwaysEinoTools(ctx context.Context, checker *permissions.Checker, deferredTools ...einotool.BaseTool) []einotool.BaseTool {
-	reg := NewDefaultRegistry(ctx, checker, deferredTools...)
+	return BuildAlwaysEinoToolsWithHooks(ctx, checker, hooks.DefaultEngine(), deferredTools...)
+}
+
+func BuildAlwaysEinoToolsWithHooks(ctx context.Context, checker *permissions.Checker, hookEngine *hooks.Engine, deferredTools ...einotool.BaseTool) []einotool.BaseTool {
+	reg := NewDefaultRegistryWithHooks(ctx, checker, hookEngine, deferredTools...)
 	always := reg.ListAlways()
 	out := make([]einotool.BaseTool, 0, len(always))
 	for _, t := range always {
-		out = append(out, NewEinoAdapter(t, checker))
+		out = append(out, NewEinoAdapterWithHooks(t, checker, hookEngine))
 	}
 	return out
 }

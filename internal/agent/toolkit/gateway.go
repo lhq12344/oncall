@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"go_agent/internal/hooks"
 	"go_agent/internal/permissions"
 
 	einotool "github.com/cloudwego/eino/components/tool"
@@ -66,8 +67,9 @@ func (t *ToolSearchTool) Execute(_ context.Context, args map[string]any) ToolRes
 }
 
 type InvokeDeferredTool struct {
-	Registry *Registry
-	Checker  *permissions.Checker
+	Registry   *Registry
+	Checker    *permissions.Checker
+	HookEngine *hooks.Engine
 }
 
 func (t *InvokeDeferredTool) Name() string           { return "InvokeDeferredTool" }
@@ -99,14 +101,21 @@ func (t *InvokeDeferredTool) Execute(ctx context.Context, args map[string]any) T
 	if !ok {
 		return errorResult("Error: arguments must be an object")
 	}
+	if result := runPreToolHooks(ctx, t.HookEngine, toolName, targetArgs); result.IsError {
+		return result
+	}
 	checker := permissionChecker(t.Checker)
 	if decision := checker.Check(toolName, targetArgs); decision.Effect != permissions.Allow {
+		runApprovalRequestedHook(ctx, t.HookEngine, toolName, targetArgs, decision.Reason)
 		result := permissionDecisionResult(ctx, checker, toolName, targetArgs, decision)
 		if result.IsError || result.Output != "__ONCALL_PERMISSION_APPROVED__" {
+			runPostToolHooks(ctx, t.HookEngine, toolName, targetArgs, result)
 			return result
 		}
 	}
-	return target.Execute(ctx, targetArgs)
+	result := target.Execute(ctx, targetArgs)
+	runPostToolHooks(ctx, t.HookEngine, toolName, targetArgs, result)
+	return result
 }
 
 type DeferredEinoTool struct {

@@ -45,6 +45,9 @@ type StatusSnapshot struct {
 	LoadedCommands      int
 	UserCommands        int
 	WorkDir             string
+	HooksEnabled        bool
+	HookRules           int
+	HookNotifications   int
 }
 
 type Context struct {

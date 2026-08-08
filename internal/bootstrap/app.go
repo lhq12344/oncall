@@ -11,6 +11,7 @@ import (
 	aiembedder "go_agent/internal/ai/embedder"
 	"go_agent/internal/ai/models"
 	appcontext "go_agent/internal/context"
+	hookpkg "go_agent/internal/hooks"
 	"go_agent/utility/mem"
 
 	"github.com/cloudwego/eino/adk"
@@ -36,6 +37,7 @@ type Application struct {
 	OpsAgent       adk.Agent
 	Logger         *zap.Logger
 	RedisClient    *redis.Client
+	HookEngine     *hookpkg.Engine
 }
 
 // Config 应用配置结构，用于初始化 Application。
@@ -64,6 +66,8 @@ type Config struct {
 	LogSyncInterval    time.Duration
 	LogSyncTailLines   int64
 	LogSyncIndexPrefix string
+	HooksConfigPath    string
+	Hooks              hookpkg.Config
 }
 
 // NewApplication 创建并初始化应用实例。
@@ -101,6 +105,22 @@ func NewApplication(cfg *Config) (*Application, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to init logger: %w", err)
 	}
+
+	hookConfig := cfg.Hooks
+	if cfg.HooksConfigPath != "" {
+		hookConfig, err = hookpkg.LoadConfigFile(cfg.HooksConfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load hooks config: %w", err)
+		}
+	}
+	hookEngine, err := hookpkg.NewEngineFromConfig(hookConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize hooks: %w", err)
+	}
+	hookpkg.SetDefaultEngine(hookEngine)
+	logger.Info("hook engine initialized",
+		zap.Bool("enabled", hookEngine.Enabled()),
+		zap.Int("rules", hookEngine.RuleCount()))
 
 	// 2. 初始化 Redis 客户端
 	redisClient := redis.NewClient(&redis.Options{
@@ -220,6 +240,7 @@ func NewApplication(cfg *Config) (*Application, error) {
 		OpsAgent:       opsAgent,
 		Logger:         logger,
 		RedisClient:    redisClient,
+		HookEngine:     hookEngine,
 	}, nil
 }
 

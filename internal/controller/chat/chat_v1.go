@@ -16,6 +16,7 @@ import (
 	v1 "go_agent/api/chat/v1"
 	"go_agent/internal/agent/slash"
 	appcontext "go_agent/internal/context"
+	hookpkg "go_agent/internal/hooks"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/compose"
@@ -50,6 +51,7 @@ type ControllerV1 struct {
 	logger           *zap.Logger
 	opsAgent         adk.Agent
 	knowledgeAgent   adk.Agent
+	hookEngine       *hookpkg.Engine
 }
 
 // NewV1 创建 V1 版本的聊天控制器。
@@ -78,6 +80,17 @@ func NewV1(
 	opsAgent adk.Agent,
 	knowledgeAgent adk.Agent,
 ) *ControllerV1 {
+	return NewV1WithHooks(dialogueAgent, logger, redisClient, opsAgent, knowledgeAgent, nil)
+}
+
+func NewV1WithHooks(
+	dialogueAgent adk.ResumableAgent,
+	logger *zap.Logger,
+	redisClient *redis.Client,
+	opsAgent adk.Agent,
+	knowledgeAgent adk.Agent,
+	hookEngine *hookpkg.Engine,
+) *ControllerV1 {
 	ctrl := &ControllerV1{
 		dialogueAgent:    dialogueAgent,
 		rootAgentName:    "dialogue_agent",
@@ -87,6 +100,7 @@ func NewV1(
 		logger:           logger,
 		opsAgent:         opsAgent,
 		knowledgeAgent:   knowledgeAgent,
+		hookEngine:       hookEngine,
 	}
 	ctrl.slashRegistry = slash.CreateDefaultRegistry(ctrl.workDir)
 
@@ -196,12 +210,10 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 			zap.Int("question_len", len([]rune(question))),
 			zap.String("checkpoint_id", checkpointID))
 	}
-	iter := c.chatStreamRunner.Run(ctx, messages,
-		adk.WithCheckPointID(checkpointID),
-		adk.WithSessionValues(map[string]any{
-			"session_id": sessionID,
-		}),
-	)
+	c.runHookEvent(ctx, hookpkg.EventTurnStart, hookpkg.HookContext{SessionID: sessionID, CheckpointID: checkpointID, Message: question})
+	defer c.runHookEvent(ctx, hookpkg.EventTurnEnd, hookpkg.HookContext{SessionID: sessionID, CheckpointID: checkpointID})
+
+	iter := c.chatStreamRunner.Run(ctx, messages, c.agentRunOptions(sessionID, checkpointID)...)
 
 	var fullAnswer strings.Builder
 	interrupted := false
@@ -482,11 +494,12 @@ func (c *ControllerV1) AIOpsStream(ctx context.Context, req *v1.AIOpsStreamReq) 
 	}
 
 	checkpointID := generateCheckpointID("aiops")
+	c.runHookEvent(ctx, hookpkg.EventTurnStart, hookpkg.HookContext{SessionID: "aiops", CheckpointID: checkpointID, Message: opsDiagnosticPrompt})
+	defer c.runHookEvent(ctx, hookpkg.EventTurnEnd, hookpkg.HookContext{SessionID: "aiops", CheckpointID: checkpointID})
+
 	iter := c.opsStreamRunner.Run(ctx, []adk.Message{
 		schema.UserMessage(opsDiagnosticPrompt),
-	}, adk.WithCheckPointID(checkpointID), adk.WithSessionValues(map[string]any{
-		"session_id": "aiops",
-	}))
+	}, c.agentRunOptions("aiops", checkpointID)...)
 
 	stepNum := 1
 	finalReportStepEmitted := false
@@ -670,12 +683,10 @@ func (c *ControllerV1) streamSlashDialoguePrompt(ctx context.Context, r *ghttp.R
 		return
 	}
 	checkpointID := generateCheckpointID(sessionID)
-	iter := c.chatStreamRunner.Run(ctx, messages,
-		adk.WithCheckPointID(checkpointID),
-		adk.WithSessionValues(map[string]any{
-			"session_id": sessionID,
-		}),
-	)
+	c.runHookEvent(ctx, hookpkg.EventTurnStart, hookpkg.HookContext{SessionID: sessionID, CheckpointID: checkpointID, Message: displayInput})
+	defer c.runHookEvent(ctx, hookpkg.EventTurnEnd, hookpkg.HookContext{SessionID: sessionID, CheckpointID: checkpointID})
+
+	iter := c.chatStreamRunner.Run(ctx, messages, c.agentRunOptions(sessionID, checkpointID)...)
 
 	var fullAnswer strings.Builder
 	interrupted := false
@@ -722,11 +733,12 @@ func (c *ControllerV1) streamSlashOpsPrompt(ctx context.Context, r *ghttp.Reques
 		return
 	}
 	checkpointID := generateCheckpointID(sessionID + "-ops")
+	c.runHookEvent(ctx, hookpkg.EventTurnStart, hookpkg.HookContext{SessionID: sessionID, CheckpointID: checkpointID, Message: prompt})
+	defer c.runHookEvent(ctx, hookpkg.EventTurnEnd, hookpkg.HookContext{SessionID: sessionID, CheckpointID: checkpointID})
+
 	iter := c.opsStreamRunner.Run(ctx, []adk.Message{
 		schema.UserMessage(prompt),
-	}, adk.WithCheckPointID(checkpointID), adk.WithSessionValues(map[string]any{
-		"session_id": sessionID,
-	}))
+	}, c.agentRunOptions(sessionID, checkpointID)...)
 
 	stepNum := 1
 	finalReportStepEmitted := false
@@ -839,6 +851,14 @@ func (c *ControllerV1) slashStatusSnapshot(sessionID string, reg *slash.Registry
 			userCommands++
 		}
 	}
+	hooksEnabled := false
+	hookRules := 0
+	hookNotifications := 0
+	if c.hookEngine != nil {
+		hooksEnabled = c.hookEngine.Enabled()
+		hookRules = c.hookEngine.RuleCount()
+		hookNotifications = len(c.hookEngine.PeekNotifications(0))
+	}
 	return slash.StatusSnapshot{
 		SessionID:           sessionID,
 		ChatRunnerReady:     c.chatStreamRunner != nil,
@@ -852,6 +872,9 @@ func (c *ControllerV1) slashStatusSnapshot(sessionID string, reg *slash.Registry
 		LoadedCommands:      len(items),
 		UserCommands:        userCommands,
 		WorkDir:             c.workDir,
+		HooksEnabled:        hooksEnabled,
+		HookRules:           hookRules,
+		HookNotifications:   hookNotifications,
 	}
 }
 
@@ -861,6 +884,42 @@ func (c *ControllerV1) ensureSlashRegistry() *slash.Registry {
 	}
 	c.slashRegistry = slash.CreateDefaultRegistry(c.workDir)
 	return c.slashRegistry
+}
+
+func (c *ControllerV1) runHookEvent(ctx context.Context, event hookpkg.EventName, hctx hookpkg.HookContext) {
+	if c == nil || c.hookEngine == nil {
+		return
+	}
+	c.hookEngine.RunEvent(ctx, event, hctx)
+}
+
+func (c *ControllerV1) agentRunOptions(sessionID, checkpointID string) []adk.AgentRunOption {
+	opts := []adk.AgentRunOption{
+		adk.WithCheckPointID(checkpointID),
+		adk.WithSessionValues(map[string]any{"session_id": sessionID}),
+	}
+	if c != nil && c.hookEngine != nil {
+		opts = append(opts, adk.WithCallbacks(hookpkg.NewEinoCallbackHandler(c.hookEngine, hookpkg.HookContext{
+			SessionID:    sessionID,
+			CheckpointID: checkpointID,
+		})))
+	}
+	return opts
+}
+
+func (c *ControllerV1) resumeRunOptions(sessionValues map[string]any, checkpointID string) []adk.AgentRunOption {
+	opts := make([]adk.AgentRunOption, 0, 2)
+	if len(sessionValues) > 0 {
+		opts = append(opts, adk.WithSessionValues(sessionValues))
+	}
+	if c != nil && c.hookEngine != nil {
+		sessionID, _ := sessionValues["session_id"].(string)
+		opts = append(opts, adk.WithCallbacks(hookpkg.NewEinoCallbackHandler(c.hookEngine, hookpkg.HookContext{
+			SessionID:    sessionID,
+			CheckpointID: checkpointID,
+		})))
+	}
+	return opts
 }
 
 func (c *ControllerV1) recentErrorFallback() string {
@@ -917,10 +976,15 @@ func (c *ControllerV1) resumeAgent(
 	}
 
 	targetIDs := normalizeIDList(interruptIDs)
-	baseOpts := make([]adk.AgentRunOption, 0, 1)
-	if len(sessionValues) > 0 {
-		baseOpts = append(baseOpts, adk.WithSessionValues(sessionValues))
-	}
+	sessionID, _ := sessionValues["session_id"].(string)
+	c.runHookEvent(ctx, hookpkg.EventResumeRequest, hookpkg.HookContext{
+		SessionID:    sessionID,
+		CheckpointID: checkpointID,
+		Metadata: map[string]any{
+			"interrupt_ids": targetIDs,
+		},
+	})
+	baseOpts := c.resumeRunOptions(sessionValues, checkpointID)
 	if len(targetIDs) == 0 {
 		return runner.Resume(ctx, checkpointID, baseOpts...)
 	}
