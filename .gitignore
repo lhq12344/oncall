@@ -47,3 +47,7 @@ go_agent
 
 AGENTS.md
 .gocache/
+.codegraph/
+.codex/
+.cursor/
+.opencode/
