@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,12 +31,166 @@ type executionGateAgent struct {
 	logger *zap.Logger
 }
 
+type verifyPlanAgent struct {
+	name   string
+	desc   string
+	logger *zap.Logger
+}
+
+type planVerificationResultPayload struct {
+	VerificationStatus        string           `json:"verification_status"`
+	ExecutionStatus           string           `json:"execution_status"`
+	Success                   bool             `json:"success"`
+	PlanID                    string           `json:"plan_id,omitempty"`
+	PlanRevision              int              `json:"plan_revision,omitempty"`
+	FailedStepID              int              `json:"failed_step_id,omitempty"`
+	FailedReason              string           `json:"failed_reason,omitempty"`
+	ManualPlan                string           `json:"manual_plan,omitempty"`
+	RuntimeObservationSummary string           `json:"runtime_observation_summary,omitempty"`
+	ExecutedSteps             []map[string]any `json:"executed_steps,omitempty"`
+}
+
 func newExecutionGateAgent(logger *zap.Logger) adk.ResumableAgent {
 	return &executionGateAgent{
 		name:   "replan_decider",
 		desc:   "根据执行和验证事实归一化输出 ReplanDecision",
 		logger: logger,
 	}
+}
+
+func newVerifyPlanAgent(logger *zap.Logger) adk.Agent {
+	return &verifyPlanAgent{
+		name:   "verify_plan",
+		desc:   "验证完整 canonical plan 的执行结果，并把结果交给 replan_decider",
+		logger: logger,
+	}
+}
+
+func (a *verifyPlanAgent) Name(_ context.Context) string { return a.name }
+
+func (a *verifyPlanAgent) Description(_ context.Context) string { return a.desc }
+
+func (a *verifyPlanAgent) Run(ctx context.Context, _ *adk.AgentInput, _ ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
+	iterator, generator := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+	go func() {
+		defer generator.Close()
+
+		state := getIncidentState(ctx)
+		payload := buildPlanVerificationPayload(state)
+		applyPlanVerificationState(state, map[string]any{
+			"verification_status":         payload.VerificationStatus,
+			"execution_status":            payload.ExecutionStatus,
+			"success":                     payload.Success,
+			"plan_id":                     payload.PlanID,
+			"plan_revision":               payload.PlanRevision,
+			"failed_step_id":              payload.FailedStepID,
+			"failed_reason":               payload.FailedReason,
+			"runtime_observation_summary": payload.RuntimeObservationSummary,
+		})
+		appendIncidentExecutionLog(state, fmt.Sprintf("[verify_plan] status=%s success=%v reason=%s", payload.VerificationStatus, payload.Success, clipText(payload.FailedReason, 240)))
+		state.UpdatedAt = time.Now().Format(time.RFC3339)
+		setIncidentState(ctx, state)
+
+		body, err := json.Marshal(payload)
+		if err != nil {
+			generator.Send(&adk.AgentEvent{Err: fmt.Errorf("marshal plan verification result: %w", err)})
+			return
+		}
+		generator.Send(assistantEvent(string(body)))
+	}()
+	return iterator
+}
+
+func buildPlanVerificationPayload(state *IncidentState) planVerificationResultPayload {
+	payload := planVerificationResultPayload{
+		PlanID:                    canonicalPlanID(state),
+		PlanRevision:              statePlanRevision(state),
+		RuntimeObservationSummary: strings.TrimSpace(stateValue(state, func(s *IncidentState) string { return s.RuntimeObservationSummary })),
+		ExecutedSteps:             planExecutionTracePayload(state),
+	}
+
+	if state == nil || state.PlanState == nil || strings.TrimSpace(state.PlanState.PlanID) == "" {
+		payload.VerificationStatus = "manual_required"
+		payload.ExecutionStatus = "manual_required"
+		payload.Success = false
+		payload.FailedReason = "missing canonical plan for verification"
+		return payload
+	}
+
+	switch strings.ToLower(strings.TrimSpace(state.ExecutionStatus)) {
+	case "success":
+		if state.ExecutionStepCount <= 0 {
+			payload.VerificationStatus = "failed"
+			payload.ExecutionStatus = "failed"
+			payload.Success = false
+			payload.FailedStepID = firstPlanStepID(state)
+			payload.FailedReason = "execution reported success without step execution trace"
+			return payload
+		}
+		if len(state.ExecutionIssues) > 0 {
+			payload.VerificationStatus = "failed"
+			payload.ExecutionStatus = "failed"
+			payload.Success = false
+			payload.FailedReason = firstNonEmptyText(joinExecutionIssueSummaries(state.ExecutionIssues, 2), state.ExecutionReason)
+			return payload
+		}
+		payload.VerificationStatus = "success"
+		payload.ExecutionStatus = "success"
+		payload.Success = true
+		return payload
+	case "manual_required":
+		payload.VerificationStatus = "manual_required"
+		payload.ExecutionStatus = "manual_required"
+		payload.Success = false
+		payload.FailedReason = firstNonEmptyText(state.ExecutionReason, "execution requires manual intervention")
+		payload.ManualPlan = buildFallbackPlan("", nil, nil, state)
+		return payload
+	case "replan_required":
+		payload.VerificationStatus = "failed"
+		payload.ExecutionStatus = "failed"
+		payload.Success = false
+		payload.FailedReason = firstNonEmptyText(state.ObservationRefreshReason, state.ExecutionReason, "execution requires refreshed observation")
+		return payload
+	case "failed":
+		payload.VerificationStatus = "failed"
+		payload.ExecutionStatus = "failed"
+		payload.Success = false
+		payload.FailedReason = firstNonEmptyText(state.ExecutionReason, "execution failed")
+		return payload
+	default:
+		payload.VerificationStatus = "failed"
+		payload.ExecutionStatus = "failed"
+		payload.Success = false
+		payload.FailedReason = "execute_plan did not produce a terminal execution status"
+		payload.FailedStepID = firstPlanStepID(state)
+		return payload
+	}
+}
+
+func planExecutionTracePayload(state *IncidentState) []map[string]any {
+	if state == nil || state.ExecutionStepCount <= 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, state.ExecutionStepCount)
+	for idx := 0; idx < state.ExecutionStepCount; idx++ {
+		entry := map[string]any{"ordinal": idx + 1}
+		if state.PlanState != nil && idx < len(state.PlanState.Steps) {
+			step := state.PlanState.Steps[idx]
+			entry["step_id"] = step.StepID
+			entry["description"] = strings.TrimSpace(step.Description)
+		} else {
+			entry["step_id"] = idx + 1
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func firstPlanStepID(state *IncidentState) int {
+	if state == nil || state.PlanState == nil || len(state.PlanState.Steps) == 0 {
+		return 0
+	}
+	return state.PlanState.Steps[0].StepID
 }
 
 func (a *executionGateAgent) Name(_ context.Context) string {

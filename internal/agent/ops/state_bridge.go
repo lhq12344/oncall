@@ -26,6 +26,7 @@ func init() {
 	gob.Register(&IncidentState{})
 	gob.Register(&PlanState{})
 	gob.Register(&PlanGateState{})
+	gob.Register(&PlanVerificationState{})
 	gob.Register(&ReplanState{})
 	gob.Register(&PlanApprovalState{})
 }
@@ -55,6 +56,16 @@ type PlanGateState struct {
 	UnsafeCommands   []string `json:"unsafe_commands,omitempty"`
 	ReviewCommands   []string `json:"review_commands,omitempty"`
 	ValidatedAt      string   `json:"validated_at,omitempty"`
+}
+
+type PlanVerificationState struct {
+	PlanID       string `json:"plan_id,omitempty"`
+	Revision     int    `json:"revision,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Success      bool   `json:"success"`
+	FailedStepID int    `json:"failed_step_id,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	VerifiedAt   string `json:"verified_at,omitempty"`
 }
 
 type ReplanState struct {
@@ -115,10 +126,11 @@ type IncidentState struct {
 	RemediationProposalFallback string   `json:"remediation_proposal_fallback,omitempty"`
 	RemediationProposalActions  []string `json:"remediation_proposal_actions,omitempty"`
 
-	PlanState         *PlanState         `json:"plan_state,omitempty"`
-	PlanGateState     *PlanGateState     `json:"plan_gate_state,omitempty"`
-	ReplanState       *ReplanState       `json:"replan_state,omitempty"`
-	PlanApprovalState *PlanApprovalState `json:"plan_approval_state,omitempty"`
+	PlanState         *PlanState             `json:"plan_state,omitempty"`
+	PlanGateState     *PlanGateState         `json:"plan_gate_state,omitempty"`
+	PlanVerification  *PlanVerificationState `json:"plan_verification,omitempty"`
+	ReplanState       *ReplanState           `json:"replan_state,omitempty"`
+	PlanApprovalState *PlanApprovalState     `json:"plan_approval_state,omitempty"`
 
 	IncidentContractValid  bool     `json:"incident_contract_valid,omitempty"`
 	IncidentContractIssues []string `json:"incident_contract_issues,omitempty"`
@@ -286,7 +298,7 @@ func (a *stateBridgeAgent) updateByStage(state *IncidentState, msg *schema.Messa
 	}
 	messages := []adk.Message{msg}
 	switch a.stage {
-	case "incident":
+	case "incident", "incident_analysis":
 		if report, ok := parseRCAReport(messages); ok && report != nil {
 			applyIncidentRCAReport(state, report)
 		}
@@ -314,7 +326,12 @@ func (a *stateBridgeAgent) updateByStage(state *IncidentState, msg *schema.Messa
 		if ok && validation != nil {
 			applyPlanGateValidationState(state, validation)
 		}
-	case "execution":
+	case "execution", "execute_plan", "verify_plan":
+		if a.stage == "verify_plan" {
+			if result, ok := parseExecutionResult(messages); ok && result != nil {
+				applyPlanVerificationState(state, result)
+			}
+		}
 		validation, ok := parseValidationResult(messages)
 		if ok && validation != nil {
 			state.ValidationBlocked = validation.Blocked
@@ -548,6 +565,63 @@ func applyPlanGateValidationState(state *IncidentState, validation *PlanValidati
 	}
 }
 
+func applyPlanVerificationState(state *IncidentState, result map[string]any) {
+	if state == nil || result == nil {
+		return
+	}
+	status := strings.TrimSpace(stringFromMap(result, "verification_status"))
+	if status == "" {
+		status = strings.TrimSpace(stringFromMap(result, "execution_status"))
+	}
+	success, _ := boolFromAny(result["success"])
+	reason := strings.TrimSpace(firstNonEmptyText(
+		stringFromMap(result, "failed_reason"),
+		stringFromMap(result, "reason"),
+		state.ExecutionReason,
+	))
+	planID := canonicalPlanID(state)
+	revision := statePlanRevision(state)
+	if rawPlanID := strings.TrimSpace(stringFromMap(result, "plan_id")); rawPlanID != "" {
+		planID = rawPlanID
+	}
+	if rawRevision := intFromAny(result["plan_revision"]); rawRevision > 0 {
+		revision = rawRevision
+	}
+	state.PlanVerification = &PlanVerificationState{
+		PlanID:       planID,
+		Revision:     revision,
+		Status:       status,
+		Success:      success,
+		FailedStepID: intFromAny(result["failed_step_id"]),
+		Reason:       clipText(reason, 600),
+		VerifiedAt:   time.Now().Format(time.RFC3339),
+	}
+}
+
+func intFromAny(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case float32:
+		return int(typed)
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err == nil {
+			return int(parsed)
+		}
+	case string:
+		var parsed int
+		if _, err := fmt.Sscanf(strings.TrimSpace(typed), "%d", &parsed); err == nil {
+			return parsed
+		}
+	}
+	return 0
+}
+
 func planValidationRequiresApproval(validation *PlanValidationResult) bool {
 	if validation == nil {
 		return false
@@ -706,6 +780,21 @@ func compactPlanGateStateForRender(gate *PlanGateState) map[string]any {
 	}
 }
 
+func compactPlanVerificationForRender(verification *PlanVerificationState) map[string]any {
+	if verification == nil {
+		return nil
+	}
+	return map[string]any{
+		"plan_id":        verification.PlanID,
+		"revision":       verification.Revision,
+		"status":         verification.Status,
+		"success":        verification.Success,
+		"failed_step_id": verification.FailedStepID,
+		"reason":         verification.Reason,
+		"verified_at":    verification.VerifiedAt,
+	}
+}
+
 func incidentHistoryRewriter(ctx context.Context, entries []*adk.HistoryEntry) ([]adk.Message, error) {
 	out := make([]adk.Message, 0, 3)
 	lastUser := findLastUserInput(entries)
@@ -776,6 +865,7 @@ func renderIncidentState(state *IncidentState) string {
 		"remediation_proposal_actions":  latestIncidentLogs(state.RemediationProposalActions, 4),
 		"plan_state":                    compactPlanStateForRender(state.PlanState),
 		"plan_gate_state":               compactPlanGateStateForRender(state.PlanGateState),
+		"plan_verification":             compactPlanVerificationForRender(state.PlanVerification),
 		"replan_state":                  state.ReplanState,
 		"plan_approval_state":           state.PlanApprovalState,
 		"incident_contract_valid":       state.IncidentContractValid,

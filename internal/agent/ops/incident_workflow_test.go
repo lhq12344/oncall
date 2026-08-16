@@ -43,15 +43,15 @@ func TestNewIncidentWorkflowTeamDefaultShape(t *testing.T) {
 	if team.Name != "incident_workflow_agent" {
 		t.Fatalf("team name = %q", team.Name)
 	}
-	if len(team.Members) != 8 {
-		t.Fatalf("member count = %d, want 8", len(team.Members))
+	if len(team.Members) != 9 {
+		t.Fatalf("member count = %d, want 9", len(team.Members))
 	}
 
 	wantStages := []struct {
 		name    string
 		members []string
 	}{
-		{name: "incident_response_loop", members: []string{"incident", "diagnosis_gate", "plan", "plan_gate", "plan_approval", "execution", "replan_decider"}},
+		{name: "incident_response_loop", members: []string{"incident_analysis", "diagnosis_gate", "plan", "plan_gate", "plan_approval", "execute_plan", "verify_plan", "replan_decider"}},
 		{name: "incident_final_report_stage", members: []string{"final_report"}},
 	}
 	if len(team.Stages) != len(wantStages) {
@@ -114,10 +114,10 @@ func TestNewIncidentWorkflowTeamRejectsMissingMembers(t *testing.T) {
 	t.Parallel()
 
 	members := completeIncidentWorkflowTestMembers()
-	members.execution = nil
+	members.executePlan = nil
 	_, _, err := newIncidentWorkflowTeam(1, members)
 	if err == nil {
-		t.Fatal("expected error for missing execution member")
+		t.Fatal("expected error for missing execute_plan member")
 	}
 }
 
@@ -128,7 +128,8 @@ func completeIncidentWorkflowTestMembers() incidentWorkflowMembers {
 		plan:          incidentTeamTestAgent{name: "plan_agent"},
 		planGate:      incidentTeamTestAgent{name: "plan_gate"},
 		planApproval:  incidentTeamTestAgent{name: "plan_approval"},
-		execution:     incidentTeamTestAgent{name: "execution_agent"},
+		executePlan:   incidentTeamTestAgent{name: "execution_agent"},
+		verifyPlan:    incidentTeamTestAgent{name: "verify_plan"},
 		gate:          incidentTeamTestAgent{name: "replan_decider"},
 		reporter:      incidentTeamTestAgent{name: "final_report"},
 	}
@@ -275,6 +276,41 @@ func TestReplanDecisionStateReferencesCanonicalPlan(t *testing.T) {
 	}
 	if rendered := renderIncidentState(state); !strings.Contains(rendered, "replan_state") || !strings.Contains(rendered, "refresh_observation") {
 		t.Fatalf("rendered state missing replan decision: %s", rendered)
+	}
+}
+
+func TestVerifyPlanPayloadRequiresExecutionTrace(t *testing.T) {
+	t.Parallel()
+
+	state := &IncidentState{ExecutionStatus: "success", ExecutionSuccess: true}
+	applyExecutionPlanState(state, &GeneratedExecutionPlan{
+		PlanID:      "plan_001",
+		Description: "inspect pod health",
+		RiskLevel:   "low",
+		Steps: []GeneratedExecutionStep{{
+			StepID:         7,
+			Description:    "check pod status",
+			Command:        "kubectl",
+			Args:           []string{"get", "pod", "api-0", "-n", "infra"},
+			ExpectedResult: "pod Running",
+		}},
+	})
+
+	payload := buildPlanVerificationPayload(state)
+	if payload.Success || payload.VerificationStatus != "failed" || payload.ExecutionStatus != "failed" {
+		t.Fatalf("expected missing trace to fail verification, got %#v", payload)
+	}
+	if payload.FailedStepID != 7 {
+		t.Fatalf("failed step = %d, want 7", payload.FailedStepID)
+	}
+
+	state.ExecutionStepCount = 1
+	payload = buildPlanVerificationPayload(state)
+	if !payload.Success || payload.VerificationStatus != "success" || payload.ExecutionStatus != "success" {
+		t.Fatalf("expected traced success to pass verification, got %#v", payload)
+	}
+	if len(payload.ExecutedSteps) != 1 || payload.ExecutedSteps[0]["step_id"] != 7 {
+		t.Fatalf("executed step trace not emitted: %#v", payload.ExecutedSteps)
 	}
 }
 

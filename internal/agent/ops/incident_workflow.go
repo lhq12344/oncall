@@ -33,14 +33,15 @@ type IncidentWorkflowConfig struct {
 // 1. ops_incident_agent 自主按需选择只读诊断工具，完成观测、RCA 和修复提案生成。
 // 2. diagnosis_gate 校验诊断证据是否足够进入规划阶段。
 // 3. plan_agent 生成 canonical ExecutionPlan，plan_gate 校验 Graph State 中的最终计划。
-// 4. plan_approval 将审批绑定到完整 plan snapshot，execution_agent 只消费已批准计划。
-// 5. replan_decider 根据执行结果决定结束、重规划、审批中断或转人工。
-// 6. final_reporter 读取 Graph State 生成最终技术报告并归档。
+// 4. plan_approval 将审批绑定到完整 plan snapshot，execute_plan 只消费已批准计划。
+// 5. verify_plan 根据 Graph State 验证完整计划执行结果并定位失败原因。
+// 6. replan_decider 根据执行和验证结果决定结束、重规划、审批中断或转人工。
+// 7. final_reporter 读取 Graph State 生成最终技术报告并归档。
 //
 // 工作流形态：
 // Sequential(
 //
-//	Loop(Incident, DiagnosisGate, Plan, PlanGate, PlanApproval, Execution, ReplanDecider), // 最多 MaxExecutionLoops 次
+//	Loop(IncidentAnalysis, DiagnosisGate, Plan, PlanGate, PlanApproval, ExecutePlan, VerifyPlan, ReplanDecider), // 最多 MaxExecutionLoops 次
 //	FinalReport,
 //
 // )
@@ -92,14 +93,15 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 	}
 
 	// 将结构化结果写入 Graph State（session values），避免把大段日志作为聊天历史反复回灌。
-	incidentAgent = wrapWithIncidentState("incident", incidentAgent, cfg.Logger)
+	incidentAgent = wrapWithIncidentState("incident_analysis", incidentAgent, cfg.Logger)
 	planAgent = wrapWithIncidentState("plan", planAgent, cfg.Logger)
-	executionAgent = wrapWithIncidentState("execution", executionAgent, cfg.Logger)
+	executionAgent = wrapWithIncidentState("execute_plan", executionAgent, cfg.Logger)
 	executionAgent = newContractGuardedExecutionAgent(executionAgent, cfg.Logger)
 
 	diagnosisGate := newDiagnosisGateAgent(cfg.Logger)
 	planGate := wrapWithIncidentState("plan_gate", newPlanGateAgent(cfg.Logger), cfg.Logger)
 	planApproval := newPlanApprovalAgent(cfg.Logger)
+	verifyPlan := wrapWithIncidentState("verify_plan", newVerifyPlanAgent(cfg.Logger), cfg.Logger)
 	replanDecider := newExecutionGateAgent(cfg.Logger)
 	reporter := newFinalReportAgent(cfg.Logger)
 
@@ -109,7 +111,8 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 		plan:          planAgent,
 		planGate:      planGate,
 		planApproval:  planApproval,
-		execution:     executionAgent,
+		executePlan:   executionAgent,
+		verifyPlan:    verifyPlan,
 		gate:          replanDecider,
 		reporter:      reporter,
 	})
@@ -143,7 +146,8 @@ type incidentWorkflowMembers struct {
 	plan          adk.Agent
 	planGate      adk.Agent
 	planApproval  adk.Agent
-	execution     adk.Agent
+	executePlan   adk.Agent
+	verifyPlan    adk.Agent
 	gate          adk.Agent
 	reporter      adk.Agent
 }
@@ -163,12 +167,13 @@ func newIncidentWorkflowTeam(maxLoops int, members incidentWorkflowMembers) (*ag
 		description string
 		agent       adk.Agent
 	}{
-		{name: "incident", description: "Select diagnostic tools on demand, infer root cause, and propose remediation", agent: members.incident},
+		{name: "incident_analysis", description: "Select diagnostic tools on demand, infer root cause, and propose remediation", agent: members.incident},
 		{name: "diagnosis_gate", description: "Validate incident evidence before planning", agent: members.diagnosisGate},
 		{name: "plan", description: "Generate canonical execution plan from diagnosis and remediation proposal", agent: members.plan},
 		{name: "plan_gate", description: "Validate canonical execution plan before approval", agent: members.planGate},
 		{name: "plan_approval", description: "Bind approval to the full canonical plan snapshot", agent: members.planApproval},
-		{name: "execution", description: "Execute only the approved canonical plan", agent: members.execution},
+		{name: "execute_plan", description: "Execute only the approved canonical plan", agent: members.executePlan},
+		{name: "verify_plan", description: "Verify complete plan execution results against canonical success criteria", agent: members.verifyPlan},
 		{name: "replan_decider", description: "Normalize execution and verification facts into a ReplanDecision", agent: members.gate},
 		{name: "final_report", description: "Generate final technical incident report", agent: members.reporter},
 	}
@@ -182,12 +187,13 @@ func newIncidentWorkflowTeam(maxLoops int, members incidentWorkflowMembers) (*ag
 		"incident_response_loop",
 		"Incident diagnosis -> plan -> plan gate/approval -> isolated execution -> gate decision loop",
 		maxLoops,
-		"incident",
+		"incident_analysis",
 		"diagnosis_gate",
 		"plan",
 		"plan_gate",
 		"plan_approval",
-		"execution",
+		"execute_plan",
+		"verify_plan",
 		"replan_decider",
 	); err != nil {
 		return nil, 0, err
