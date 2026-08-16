@@ -1005,6 +1005,11 @@ func inferFinalStatus(state *IncidentState) string {
 	if finalStatus == "" {
 		return "unresolved"
 	}
+	if state.PlanVerification != nil &&
+		strings.TrimSpace(state.PlanVerification.Status) != "" &&
+		!state.PlanVerification.Success {
+		finalStatus = "unresolved"
+	}
 	return finalStatus
 }
 
@@ -1125,28 +1130,52 @@ func buildReadableMethodSection(state *IncidentState, facts incidentReadableFact
 // 输入：state（流程状态）。
 // 输出：流程条目。
 func buildReadableProcessSection(state *IncidentState) []string {
-	out := make([]string, 0, 5)
+	out := make([]string, 0, 6)
 	if planID := strings.TrimSpace(canonicalPlanID(state)); planID != "" {
 		stepCount := len(canonicalPlanStepSummaries(state))
+		revisionText := ""
+		if revision := statePlanRevision(state); revision > 0 {
+			revisionText = fmt.Sprintf("，revision=%d", revision)
+		}
 		if stepCount > 0 {
-			out = append(out, fmt.Sprintf("生成命令级执行计划 %s，风险等级 %s，计划共 %d 步", planID, firstNonEmptyText(canonicalPlanRisk(state), "unknown"), stepCount))
+			out = append(out, fmt.Sprintf("生成命令级执行计划 %s%s，风险等级 %s，计划共 %d 步", planID, revisionText, firstNonEmptyText(canonicalPlanRisk(state), "unknown"), stepCount))
 		} else {
-			out = append(out, fmt.Sprintf("生成命令级执行计划 %s，并完成执行前风险校验", planID))
+			out = append(out, fmt.Sprintf("生成命令级执行计划 %s%s，并完成执行前风险校验", planID, revisionText))
 		}
 	}
 	if state.ExecutionStepCount > 0 {
 		out = append(out, fmt.Sprintf("自动执行/核查阶段实际完成 %d 个关键步骤", state.ExecutionStepCount))
 	}
+	if verificationLine := buildReadablePlanVerificationLine(state.PlanVerification); verificationLine != "" {
+		out = append(out, verificationLine)
+	}
 	if state.ValidationBlocked {
 		out = append(out, fmt.Sprintf("执行前风险校验提示当前计划存在阻断风险，风险等级为 %s", firstNonEmptyText(state.ValidationRisk, "unknown")))
+	}
+	if state.ReplanState != nil && strings.TrimSpace(state.ReplanState.Decision) != "" {
+		out = append(out, fmt.Sprintf("重规划决策：%s；原因：%s", state.ReplanState.Decision, clipText(state.ReplanState.Reason, 180)))
 	}
 	for _, item := range summarizeExecutionCategories(canonicalPlanStepSummaries(state)) {
 		out = append(out, "流程重点："+item)
 	}
-	if state.ReplanState != nil && strings.TrimSpace(state.ReplanState.Decision) != "" {
-		out = append(out, fmt.Sprintf("Replan decision=%s; reason=%s", state.ReplanState.Decision, clipText(state.ReplanState.Reason, 180)))
+	return limitReadableItems(out, 6)
+}
+
+// buildReadablePlanVerificationLine 生成 verify_plan 阶段的可读摘要。
+// 输入：verification（计划验证状态）。
+// 输出：可放入最终报告的单行验证结果。
+func buildReadablePlanVerificationLine(verification *PlanVerificationState) string {
+	if verification == nil || strings.TrimSpace(verification.Status) == "" {
+		return ""
 	}
-	return limitReadableItems(out, 5)
+	parts := []string{fmt.Sprintf("verify_plan 验证结果：status=%s，success=%v", verification.Status, verification.Success)}
+	if verification.FailedStepID > 0 {
+		parts = append(parts, fmt.Sprintf("failed_step_id=%d", verification.FailedStepID))
+	}
+	if reason := strings.TrimSpace(verification.Reason); reason != "" {
+		parts = append(parts, "reason="+clipText(reason, 180))
+	}
+	return strings.Join(parts, "，")
 }
 
 func canonicalPlanID(state *IncidentState) string {
@@ -1216,6 +1245,14 @@ func buildReadableResultSection(state *IncidentState, facts incidentReadableFact
 	if len(state.ExecutionIssues) > 0 {
 		for _, issue := range limitReadableItems(state.ExecutionIssues, 2) {
 			out = append(out, "当前仍需跟进的问题："+clipText(issue, 180))
+		}
+	}
+	if state.PlanVerification != nil && strings.TrimSpace(state.PlanVerification.Status) != "" {
+		if state.PlanVerification.Success {
+			out = append(out, "计划验证已通过，执行结果与 success criteria 基本一致")
+		} else {
+			reason := firstNonEmptyText(state.PlanVerification.Reason, "验证未通过，需结合失败步骤继续处置")
+			out = append(out, "计划验证未闭环："+clipText(reason, 180))
 		}
 	}
 	if facts.PrometheusNoData || facts.ElasticsearchNoHits {
@@ -1554,6 +1591,13 @@ func persistFinalOpsReport(ctx context.Context, state *IncidentState, report str
 		"---",
 		fmt.Sprintf("session_id: %s", sessionID),
 		fmt.Sprintf("final_status: %s", status),
+		fmt.Sprintf("plan_id: %s", firstNonEmptyText(canonicalPlanID(state), "unknown")),
+		fmt.Sprintf("plan_revision: %d", statePlanRevision(state)),
+		fmt.Sprintf("verification_status: %s", firstNonEmptyText(statePlanVerificationStatus(state), "unknown")),
+		fmt.Sprintf("verification_success: %t", statePlanVerificationSuccess(state)),
+		fmt.Sprintf("verification_failed_step_id: %d", statePlanVerificationFailedStepID(state)),
+		fmt.Sprintf("replan_count: %d", stateReplanCount(state)),
+		fmt.Sprintf("terminal_decision: %s", firstNonEmptyText(stateTerminalDecision(state), "unknown")),
 		fmt.Sprintf("generated_at: %s", now.Format(time.RFC3339)),
 		"---",
 		"",
@@ -1592,21 +1636,25 @@ func archiveFinalOpsReport(ctx context.Context, state *IncidentState, report, pa
 		ID:      reportID,
 		Content: report,
 		MetaData: map[string]any{
-			"type":               "ops_final_report",
-			"title":              title,
-			"session_id":         sessionID,
-			"final_status":       firstNonEmptyText(stateValue(state, func(s *IncidentState) string { return s.FinalStatus }), "unknown"),
-			"root_cause":         stateValue(state, func(s *IncidentState) string { return s.RootCause }),
-			"target_node":        stateValue(state, func(s *IncidentState) string { return s.TargetNode }),
-			"plan_id":            canonicalPlanID(state),
-			"plan_revision":      statePlanRevision(state),
-			"replan_count":       stateReplanCount(state),
-			"terminal_decision":  stateTerminalDecision(state),
-			"report_path":        strings.TrimSpace(path),
-			"knowledge_eligible": true,
-			"evidence_count":     len(stateValueSlice(state, func(s *IncidentState) []string { return s.Evidence })),
-			"confidence":         stateValueFloat(state, func(s *IncidentState) float64 { return s.Confidence }),
-			"updated_at":         time.Now().Format(time.RFC3339),
+			"type":                        "ops_final_report",
+			"title":                       title,
+			"session_id":                  sessionID,
+			"final_status":                firstNonEmptyText(stateValue(state, func(s *IncidentState) string { return s.FinalStatus }), "unknown"),
+			"root_cause":                  stateValue(state, func(s *IncidentState) string { return s.RootCause }),
+			"target_node":                 stateValue(state, func(s *IncidentState) string { return s.TargetNode }),
+			"plan_id":                     canonicalPlanID(state),
+			"plan_revision":               statePlanRevision(state),
+			"verification_status":         statePlanVerificationStatus(state),
+			"verification_success":        statePlanVerificationSuccess(state),
+			"verification_failed_step_id": statePlanVerificationFailedStepID(state),
+			"verification_reason":         statePlanVerificationReason(state),
+			"replan_count":                stateReplanCount(state),
+			"terminal_decision":           stateTerminalDecision(state),
+			"report_path":                 strings.TrimSpace(path),
+			"knowledge_eligible":          true,
+			"evidence_count":              len(stateValueSlice(state, func(s *IncidentState) []string { return s.Evidence })),
+			"confidence":                  stateValueFloat(state, func(s *IncidentState) float64 { return s.Confidence }),
+			"updated_at":                  time.Now().Format(time.RFC3339),
 		},
 	}
 
@@ -1700,6 +1748,34 @@ func stateTerminalDecision(state *IncidentState) string {
 		return strings.TrimSpace(state.ReplanState.Decision)
 	}
 	return strings.TrimSpace(state.ExecutionStatus)
+}
+
+func statePlanVerificationStatus(state *IncidentState) string {
+	if state == nil || state.PlanVerification == nil {
+		return ""
+	}
+	return strings.TrimSpace(state.PlanVerification.Status)
+}
+
+func statePlanVerificationSuccess(state *IncidentState) bool {
+	if state == nil || state.PlanVerification == nil {
+		return false
+	}
+	return state.PlanVerification.Success
+}
+
+func statePlanVerificationFailedStepID(state *IncidentState) int {
+	if state == nil || state.PlanVerification == nil {
+		return 0
+	}
+	return state.PlanVerification.FailedStepID
+}
+
+func statePlanVerificationReason(state *IncidentState) string {
+	if state == nil || state.PlanVerification == nil {
+		return ""
+	}
+	return clipText(strings.TrimSpace(state.PlanVerification.Reason), 600)
 }
 
 func stateValueSlice(state *IncidentState, selector func(*IncidentState) []string) []string {

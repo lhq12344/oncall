@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -112,6 +113,23 @@ func TestInferFinalStatusResolvedWithoutStrategyStage(t *testing.T) {
 	}
 }
 
+func TestInferFinalStatusPlanVerificationFailureIsUnresolved(t *testing.T) {
+	t.Parallel()
+
+	state := &IncidentState{
+		ExecutionSuccess: true,
+		PlanVerification: &PlanVerificationState{
+			Status:       "failed",
+			Success:      false,
+			FailedStepID: 7,
+			Reason:       "success criteria mismatch",
+		},
+	}
+	if got := inferFinalStatus(state); got != "unresolved" {
+		t.Fatalf("FinalStatus = %q, want unresolved when verify_plan fails", got)
+	}
+}
+
 func TestBuildFinalOpsSummaryIncludesCanonicalPlanAndReplan(t *testing.T) {
 	t.Parallel()
 
@@ -135,6 +153,14 @@ func TestBuildFinalOpsSummaryIncludesCanonicalPlanAndReplan(t *testing.T) {
 			PlanID:       "plan_001",
 			PlanRevision: 2,
 		},
+		PlanVerification: &PlanVerificationState{
+			PlanID:       "plan_001",
+			Revision:     2,
+			Status:       "failed",
+			Success:      false,
+			FailedStepID: 7,
+			Reason:       "runtime state changed during verification",
+		},
 	}
 
 	report := buildFinalOpsSummary(state)
@@ -144,6 +170,9 @@ func TestBuildFinalOpsSummaryIncludesCanonicalPlanAndReplan(t *testing.T) {
 	if !strings.Contains(report, "refresh_observation") {
 		t.Fatalf("final report missing replan decision: %s", report)
 	}
+	if !strings.Contains(report, "verify_plan") || !strings.Contains(report, "failed_step_id=7") {
+		t.Fatalf("final report missing plan verification result: %s", report)
+	}
 	if statePlanRevision(state) != 2 {
 		t.Fatalf("plan revision helper = %d, want 2", statePlanRevision(state))
 	}
@@ -152,6 +181,67 @@ func TestBuildFinalOpsSummaryIncludesCanonicalPlanAndReplan(t *testing.T) {
 	}
 	if stateTerminalDecision(state) != "refresh_observation" {
 		t.Fatalf("terminal decision = %q, want refresh_observation", stateTerminalDecision(state))
+	}
+	if statePlanVerificationStatus(state) != "failed" || statePlanVerificationFailedStepID(state) != 7 {
+		t.Fatalf("verification helpers returned unexpected values: status=%q step=%d", statePlanVerificationStatus(state), statePlanVerificationFailedStepID(state))
+	}
+}
+
+func TestPersistFinalOpsReportIncludesPlanMetadata(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get wd: %v", err)
+	}
+	tmp := t.TempDir()
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatalf("chdir temp: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(wd); err != nil {
+			t.Fatalf("restore wd: %v", err)
+		}
+	}()
+
+	state := &IncidentState{
+		FinalStatus:     "unresolved",
+		ExecutionStatus: "failed",
+		PlanState: &PlanState{
+			PlanID:   "plan_001",
+			Revision: 3,
+		},
+		PlanVerification: &PlanVerificationState{
+			Status:       "failed",
+			Success:      false,
+			FailedStepID: 7,
+			Reason:       "verification mismatch",
+		},
+		ReplanState: &ReplanState{
+			Decision: "manual_required",
+			Reason:   "retry budget reached",
+		},
+	}
+
+	path, err := persistFinalOpsReport(context.Background(), state, "## report\nbody")
+	if err != nil {
+		t.Fatalf("persist report: %v", err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	text := string(content)
+	for _, want := range []string{
+		"plan_id: plan_001",
+		"plan_revision: 3",
+		"verification_status: failed",
+		"verification_success: false",
+		"verification_failed_step_id: 7",
+		"replan_count: 1",
+		"terminal_decision: manual_required",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("persisted report missing %q:\n%s", want, text)
+		}
 	}
 }
 
