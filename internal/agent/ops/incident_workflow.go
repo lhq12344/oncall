@@ -14,7 +14,7 @@ import (
 
 const incidentDefaultMaxExecutionLoops = agentteams.DefaultLoopMaxIterations
 
-// IncidentWorkflowConfig 四阶段故障处置工作流配置。
+// IncidentWorkflowConfig 显式 Plan -> Execute -> Replan 故障处置工作流配置。
 type IncidentWorkflowConfig struct {
 	ChatModel *models.ChatModel
 
@@ -31,14 +31,16 @@ type IncidentWorkflowConfig struct {
 //
 // 工作流职责边界：
 // 1. ops_incident_agent 自主按需选择只读诊断工具，完成观测、RCA 和修复提案生成。
-// 2. execution_agent 作为独立安全边界，负责命令级计划、风险校验、审批触发、执行和回滚。
-// 3. execution_gate 根据执行结果决定结束、重规划、审批中断或转人工。
-// 4. final_reporter 读取 Graph State 生成最终技术报告并归档。
+// 2. diagnosis_gate 校验诊断证据是否足够进入规划阶段。
+// 3. plan_agent 生成 canonical ExecutionPlan，plan_gate 校验 Graph State 中的最终计划。
+// 4. plan_approval 将审批绑定到完整 plan snapshot，execution_agent 只消费已批准计划。
+// 5. replan_decider 根据执行结果决定结束、重规划、审批中断或转人工。
+// 6. final_reporter 读取 Graph State 生成最终技术报告并归档。
 //
 // 工作流形态：
 // Sequential(
 //
-//	Loop(Incident, IncidentContractGate, Execution, Gate), // 最多 MaxExecutionLoops 次
+//	Loop(Incident, DiagnosisGate, Plan, PlanGate, PlanApproval, Execution, ReplanDecider), // 最多 MaxExecutionLoops 次
 //	FinalReport,
 //
 // )
@@ -73,6 +75,14 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 		return nil, fmt.Errorf("create ops incident agent failed: %w", err)
 	}
 
+	planAgent, err := NewPlanAgent(ctx, &PlanAgentConfig{
+		ChatModel: cfg.ChatModel,
+		Logger:    cfg.Logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create plan agent failed: %w", err)
+	}
+
 	executionAgent, err := execution.NewExecutionAgent(ctx, &execution.Config{
 		ChatModel: cfg.ChatModel,
 		Logger:    cfg.Logger,
@@ -83,19 +93,25 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 
 	// 将结构化结果写入 Graph State（session values），避免把大段日志作为聊天历史反复回灌。
 	incidentAgent = wrapWithIncidentState("incident", incidentAgent, cfg.Logger)
+	planAgent = wrapWithIncidentState("plan", planAgent, cfg.Logger)
 	executionAgent = wrapWithIncidentState("execution", executionAgent, cfg.Logger)
 	executionAgent = newContractGuardedExecutionAgent(executionAgent, cfg.Logger)
 
-	contractGate := newIncidentContractGateAgent(cfg.Logger)
-	gate := newExecutionGateAgent(cfg.Logger)
+	diagnosisGate := newDiagnosisGateAgent(cfg.Logger)
+	planGate := wrapWithIncidentState("plan_gate", newPlanGateAgent(cfg.Logger), cfg.Logger)
+	planApproval := newPlanApprovalAgent(cfg.Logger)
+	replanDecider := newExecutionGateAgent(cfg.Logger)
 	reporter := newFinalReportAgent(cfg.Logger)
 
 	team, maxLoops, err := newIncidentWorkflowTeam(cfg.MaxExecutionLoops, incidentWorkflowMembers{
-		incident:     incidentAgent,
-		contractGate: contractGate,
-		execution:    executionAgent,
-		gate:         gate,
-		reporter:     reporter,
+		incident:      incidentAgent,
+		diagnosisGate: diagnosisGate,
+		plan:          planAgent,
+		planGate:      planGate,
+		planApproval:  planApproval,
+		execution:     executionAgent,
+		gate:          replanDecider,
+		reporter:      reporter,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create incident workflow team failed: %w", err)
@@ -122,11 +138,14 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 }
 
 type incidentWorkflowMembers struct {
-	incident     adk.Agent
-	contractGate adk.Agent
-	execution    adk.Agent
-	gate         adk.Agent
-	reporter     adk.Agent
+	incident      adk.Agent
+	diagnosisGate adk.Agent
+	plan          adk.Agent
+	planGate      adk.Agent
+	planApproval  adk.Agent
+	execution     adk.Agent
+	gate          adk.Agent
+	reporter      adk.Agent
 }
 
 func newIncidentWorkflowTeam(maxLoops int, members incidentWorkflowMembers) (*agentteams.Team, int, error) {
@@ -145,9 +164,12 @@ func newIncidentWorkflowTeam(maxLoops int, members incidentWorkflowMembers) (*ag
 		agent       adk.Agent
 	}{
 		{name: "incident", description: "Select diagnostic tools on demand, infer root cause, and propose remediation", agent: members.incident},
-		{name: "incident_contract_gate", description: "Validate incident evidence and remediation contract before execution", agent: members.contractGate},
-		{name: "execution", description: "Validate and execute approved remediation steps", agent: members.execution},
-		{name: "gate", description: "Decide whether execution should stop, replan, or request approval", agent: members.gate},
+		{name: "diagnosis_gate", description: "Validate incident evidence before planning", agent: members.diagnosisGate},
+		{name: "plan", description: "Generate canonical execution plan from diagnosis and remediation proposal", agent: members.plan},
+		{name: "plan_gate", description: "Validate canonical execution plan before approval", agent: members.planGate},
+		{name: "plan_approval", description: "Bind approval to the full canonical plan snapshot", agent: members.planApproval},
+		{name: "execution", description: "Execute only the approved canonical plan", agent: members.execution},
+		{name: "replan_decider", description: "Normalize execution and verification facts into a ReplanDecision", agent: members.gate},
 		{name: "final_report", description: "Generate final technical incident report", agent: members.reporter},
 	}
 	for _, registration := range registrations {
@@ -158,12 +180,15 @@ func newIncidentWorkflowTeam(maxLoops int, members incidentWorkflowMembers) (*ag
 
 	if err := team.AddLoopStage(
 		"incident_response_loop",
-		"Incident diagnosis/proposal -> isolated execution -> gate decision loop",
+		"Incident diagnosis -> plan -> plan gate/approval -> isolated execution -> gate decision loop",
 		maxLoops,
 		"incident",
-		"incident_contract_gate",
+		"diagnosis_gate",
+		"plan",
+		"plan_gate",
+		"plan_approval",
 		"execution",
-		"gate",
+		"replan_decider",
 	); err != nil {
 		return nil, 0, err
 	}

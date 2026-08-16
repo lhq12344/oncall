@@ -32,8 +32,8 @@ type executionGateAgent struct {
 
 func newExecutionGateAgent(logger *zap.Logger) adk.ResumableAgent {
 	return &executionGateAgent{
-		name:   "execution_gate",
-		desc:   "根据执行结果决定中断、重规划或结束循环",
+		name:   "replan_decider",
+		desc:   "根据执行和验证事实归一化输出 ReplanDecision",
 		logger: logger,
 	}
 }
@@ -165,15 +165,26 @@ func (a *executionGateAgent) buildRepeatedIssueStopEvent(ctx context.Context, re
 	if state.RepeatedIssueRetryCount <= 0 {
 		state.RepeatedIssueRetryCount = retryCount
 	}
+	applyReplanDecisionState(state, "manual_required", state.ExecutionReason, "repeated_issue", state.RuntimeObservationSummary)
 	if strings.TrimSpace(state.FinalStatus) == "" {
 		state.FinalStatus = "unresolved"
 	}
-	appendIncidentExecutionLog(state, fmt.Sprintf("[execution_gate] 同一问题重试达到上限，停止自动执行：%s", stopReason))
+	appendIncidentExecutionLog(state, fmt.Sprintf("[replan_decider] 同一问题重试达到上限，停止自动执行：%s", stopReason))
 	state.UpdatedAt = time.Now().Format(time.RFC3339)
 	setIncidentState(ctx, state)
 
 	message := fmt.Sprintf("同一问题已连续重试 %d 次仍未解决，停止自动调用并转人工处理。问题：%s。建议人工方案：%s", retryCount, stopReason, clipText(fallback, 220))
 	return breakLoopEvent(a.name, message)
+}
+
+func (a *executionGateAgent) recordReplanDecision(ctx context.Context, decision, reason, source, runtimeSummary string) *IncidentState {
+	state := getIncidentState(ctx)
+	applyReplanDecisionState(state, decision, reason, source, runtimeSummary)
+	appendIncidentExecutionLog(state, fmt.Sprintf("[replan_decider] decision=%s source=%s reason=%s",
+		normalizeReplanDecision(decision), strings.TrimSpace(source), clipText(reason, 240)))
+	state.UpdatedAt = time.Now().Format(time.RFC3339)
+	setIncidentState(ctx, state)
+	return state
 }
 
 func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
@@ -198,6 +209,15 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 		manualPlan := parseExecutionManualPlan(execResult)
 		diagnostic := parseExecutionDiagnosticInsight(execResult)
 
+		state := getIncidentState(ctx)
+		if strings.EqualFold(strings.TrimSpace(state.ExecutionStatus), "manual_required") &&
+			strings.Contains(strings.ToLower(state.ExecutionReason), "execution stage attempted to emit") {
+			reason := strings.TrimSpace(state.ExecutionReason)
+			a.recordReplanDecision(ctx, "manual_required", reason, "execution_plan_boundary", state.RuntimeObservationSummary)
+			generator.Send(breakLoopEvent(a.name, reason))
+			return
+		}
+
 		if hasValidation && validation.Blocked {
 			reason := formatReasons(validation.Reasons)
 			fallback := ""
@@ -208,6 +228,11 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 			}
 			if executionPlan != nil && strings.TrimSpace(planID) == "" {
 				planID = executionPlan.PlanID
+			}
+			state := a.recordReplanDecision(ctx, "manual_required", reason, "execution_validation", "")
+			if fallback != "" {
+				state.ExecutionFallback = clipText(fallback, 800)
+				setIncidentState(ctx, state)
 			}
 			message := fmt.Sprintf("执行前校验阻断：%s。请先人工修正计划后再继续。", reason)
 			generator.Send(interruptEvent(ctx, &IncidentInterruptInfo{
@@ -230,6 +255,11 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 			if executionPlan != nil && strings.TrimSpace(planID) == "" {
 				planID = executionPlan.PlanID
 			}
+			state := a.recordReplanDecision(ctx, "manual_required", reason, "execution_validation", "")
+			if fallback != "" {
+				state.ExecutionFallback = clipText(fallback, 800)
+				setIncidentState(ctx, state)
+			}
 			message := fmt.Sprintf("计划包含高风险命令，需要你确认后再执行。风险说明：%s。", reason)
 			generator.Send(interruptEvent(ctx, &IncidentInterruptInfo{
 				Type:         "approval_required",
@@ -250,6 +280,7 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 					generator.Send(a.buildRepeatedIssueStopEvent(ctx, retryDecision.Reason, fallback))
 					return
 				}
+				a.recordReplanDecision(ctx, "refresh_observation", firstNonEmptyText(reason, runtimeSummary), "validate_result", runtimeSummary)
 				message := fmt.Sprintf("执行校验发现当前现场与上游故障假设不一致，停止当前计划并回到 ops_incident_agent 重新规划。原因：%s。", reason)
 				if runtimeSummary != "" {
 					message += " 最新运行时观测：" + clipText(runtimeSummary, 220)
@@ -274,6 +305,9 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 			if fallback == "" {
 				fallback = "请根据技术报告中的执行计划逐步人工执行，并在完成后反馈结果。"
 			}
+			state := a.recordReplanDecision(ctx, "manual_required", reason, "validate_result", firstNonEmptyText(stepValidation.RuntimeSummary, stepValidation.MismatchReason, stepValidation.Actual))
+			state.ExecutionFallback = clipText(fallback, 800)
+			setIncidentState(ctx, state)
 			message := fmt.Sprintf("连续步骤校验失败，已停止当前自动执行并转人工处理。原因：%s。建议人工方案：%s", reason, fallback)
 			generator.Send(interruptEvent(ctx, &IncidentInterruptInfo{
 				Type:         "manual_required",
@@ -303,6 +337,9 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 			if fallback == "" {
 				fallback = "请根据当前告警信息执行人工排查并反馈结果。"
 			}
+			state := a.recordReplanDecision(ctx, "manual_required", strings.TrimSpace(execStatus.RawMessageHint), "execution_result", diagnostic.Summary)
+			state.ExecutionFallback = clipText(fallback, 800)
+			setIncidentState(ctx, state)
 			message := fmt.Sprintf("自动工具未能完成修复，请按计划人工执行后回复确认。建议人工方案：%s", fallback)
 			generator.Send(interruptEvent(ctx, &IncidentInterruptInfo{
 				Type:         "manual_required",
@@ -325,6 +362,7 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 					generator.Send(a.buildRepeatedIssueStopEvent(ctx, retryDecision.Reason, fallback))
 					return
 				}
+				a.recordReplanDecision(ctx, "refresh_observation", summary, "execution_diagnostic", diagnostic.Summary)
 				message := "执行阶段已完成既定检查，但仍发现未闭环问题，将回到 ops_incident_agent 继续生成修复动作。"
 				if summary != "" {
 					message = fmt.Sprintf("执行阶段已完成既定检查，但仍发现未闭环问题：%s。将回到 ops_incident_agent 继续生成修复动作。", clipText(summary, 220))
@@ -345,10 +383,12 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 					a.logger.Warn("execution success without executed steps, fallback to replan",
 						zap.String("execution_status", executionStatusText))
 				}
+				a.recordReplanDecision(ctx, "refresh_observation", "execution_agent returned success without executed_steps", "execution_empty_steps", diagnostic.Summary)
 				generator.Send(assistantEvent("未检测到执行步骤明细（executed_steps 为空），将回到 ops_incident_agent 重新生成可执行计划。"))
 				return
 			}
 			clearRepeatedIssueState(ctx)
+			a.recordReplanDecision(ctx, "complete", strings.TrimSpace(execStatus.RawMessageHint), "execution_status", diagnostic.Summary)
 			generator.Send(breakLoopEvent(a.name, "执行步骤已成功，停止重规划循环，进入策略复盘。"))
 			return
 		}
@@ -360,6 +400,11 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 			if proposal != nil {
 				fallback = proposal.FallbackPlan
 				planID = proposal.ProposalID
+			}
+			state := a.recordReplanDecision(ctx, "manual_required", strings.TrimSpace(execStatus.RawMessageHint), "execution_status", diagnostic.Summary)
+			if fallback != "" {
+				state.ExecutionFallback = clipText(fallback, 800)
+				setIncidentState(ctx, state)
 			}
 			message := fmt.Sprintf("自动工具未能完成修复，请按计划人工执行后回复确认。建议人工方案：%s", fallback)
 			generator.Send(interruptEvent(ctx, &IncidentInterruptInfo{
@@ -378,6 +423,7 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 			generator.Send(a.buildRepeatedIssueStopEvent(ctx, retryDecision.Reason, fallback))
 			return
 		}
+		a.recordReplanDecision(ctx, "refresh_observation", replanReason, "execution_status", diagnostic.Summary)
 		generator.Send(assistantEvent("执行未达成预期，回到 ops_incident_agent 重新生成计划。"))
 	}()
 
@@ -409,12 +455,16 @@ func (a *executionGateAgent) Resume(ctx context.Context, info *adk.ResumeInfo, _
 			if strings.TrimSpace(comment) == "" {
 				comment = "用户已确认"
 			}
+			a.recordReplanDecision(ctx, "complete", comment, "manual_resume", "")
 			generator.Send(breakLoopEvent(a.name, fmt.Sprintf("收到确认：%s。结束执行循环，进入 final_reporter 生成最终报告。", comment)))
 			return
 		}
 		if state.RepeatedIssueEscalated {
 			reason := firstNonEmptyText(state.RepeatedIssueReason, state.ExecutionReason, "同一问题重复重试后仍未解决")
 			fallback := buildFallbackPlan("", nil, nil, state)
+			state = a.recordReplanDecision(ctx, "manual_required", reason, "repeated_issue_resume", state.RuntimeObservationSummary)
+			state.ExecutionFallback = clipText(fallback, 800)
+			setIncidentState(ctx, state)
 			generator.Send(breakLoopEvent(a.name, fmt.Sprintf("同一问题已达到自动重试上限（%d 次），不再继续自动执行。问题：%s。请按人工方案处理：%s", maxIntValue(state.RepeatedIssueRetryCount, maxRepeatedIssueRetries), clipText(reason, 220), clipText(fallback, 220))))
 			return
 		}
@@ -430,6 +480,7 @@ func (a *executionGateAgent) Resume(ctx context.Context, info *adk.ResumeInfo, _
 		if strings.TrimSpace(comment) == "" {
 			comment = "用户要求继续重试"
 		}
+		a.recordReplanDecision(ctx, "refresh_observation", comment, "manual_resume", "")
 		generator.Send(assistantEvent(fmt.Sprintf("收到反馈：%s。将重新进入 ops_incident_agent 生成新计划。", comment)))
 	}()
 
@@ -891,11 +942,11 @@ func buildReadableCauseSection(state *IncidentState, facts incidentReadableFacts
 // 输出：解决方法条目。
 func buildReadableMethodSection(state *IncidentState, facts incidentReadableFacts) []string {
 	out := make([]string, 0, 5)
-	if summary := strings.TrimSpace(firstNonEmptyText(state.RemediationProposalSummary, state.PlanSummary)); summary != "" {
+	if summary := strings.TrimSpace(firstNonEmptyText(canonicalPlanDescription(state), state.RemediationProposalSummary, state.PlanSummary)); summary != "" {
 		out = append(out, "总体策略："+clipText(summary, 180))
 	}
 
-	categories := summarizeExecutionCategories(state.ExecutionPlanSteps)
+	categories := summarizeExecutionCategories(canonicalPlanStepSummaries(state))
 	if len(categories) > 0 {
 		for _, item := range categories {
 			out = append(out, item)
@@ -920,10 +971,10 @@ func buildReadableMethodSection(state *IncidentState, facts incidentReadableFact
 // 输出：流程条目。
 func buildReadableProcessSection(state *IncidentState) []string {
 	out := make([]string, 0, 5)
-	if planID := strings.TrimSpace(state.ExecutionPlanID); planID != "" {
-		stepCount := len(state.ExecutionPlanSteps)
+	if planID := strings.TrimSpace(canonicalPlanID(state)); planID != "" {
+		stepCount := len(canonicalPlanStepSummaries(state))
 		if stepCount > 0 {
-			out = append(out, fmt.Sprintf("生成命令级执行计划 %s，风险等级 %s，计划共 %d 步", planID, firstNonEmptyText(state.ExecutionPlanRisk, "unknown"), stepCount))
+			out = append(out, fmt.Sprintf("生成命令级执行计划 %s，风险等级 %s，计划共 %d 步", planID, firstNonEmptyText(canonicalPlanRisk(state), "unknown"), stepCount))
 		} else {
 			out = append(out, fmt.Sprintf("生成命令级执行计划 %s，并完成执行前风险校验", planID))
 		}
@@ -934,10 +985,53 @@ func buildReadableProcessSection(state *IncidentState) []string {
 	if state.ValidationBlocked {
 		out = append(out, fmt.Sprintf("执行前风险校验提示当前计划存在阻断风险，风险等级为 %s", firstNonEmptyText(state.ValidationRisk, "unknown")))
 	}
-	for _, item := range summarizeExecutionCategories(state.ExecutionPlanSteps) {
+	for _, item := range summarizeExecutionCategories(canonicalPlanStepSummaries(state)) {
 		out = append(out, "流程重点："+item)
 	}
+	if state.ReplanState != nil && strings.TrimSpace(state.ReplanState.Decision) != "" {
+		out = append(out, fmt.Sprintf("Replan decision=%s; reason=%s", state.ReplanState.Decision, clipText(state.ReplanState.Reason, 180)))
+	}
 	return limitReadableItems(out, 5)
+}
+
+func canonicalPlanID(state *IncidentState) string {
+	if state == nil {
+		return ""
+	}
+	if state.PlanState != nil && strings.TrimSpace(state.PlanState.PlanID) != "" {
+		return strings.TrimSpace(state.PlanState.PlanID)
+	}
+	return strings.TrimSpace(state.ExecutionPlanID)
+}
+
+func canonicalPlanDescription(state *IncidentState) string {
+	if state == nil {
+		return ""
+	}
+	if state.PlanState != nil && strings.TrimSpace(state.PlanState.Description) != "" {
+		return strings.TrimSpace(state.PlanState.Description)
+	}
+	return strings.TrimSpace(state.ExecutionPlanDesc)
+}
+
+func canonicalPlanRisk(state *IncidentState) string {
+	if state == nil {
+		return ""
+	}
+	if state.PlanState != nil && strings.TrimSpace(state.PlanState.RiskLevel) != "" {
+		return strings.TrimSpace(state.PlanState.RiskLevel)
+	}
+	return strings.TrimSpace(state.ExecutionPlanRisk)
+}
+
+func canonicalPlanStepSummaries(state *IncidentState) []string {
+	if state == nil {
+		return nil
+	}
+	if state.PlanState != nil && len(state.PlanState.StepSummaries) > 0 {
+		return state.PlanState.StepSummaries
+	}
+	return state.ExecutionPlanSteps
 }
 
 // buildReadableResultSection 生成处理结果摘要。
@@ -1349,6 +1443,10 @@ func archiveFinalOpsReport(ctx context.Context, state *IncidentState, report, pa
 			"final_status":       firstNonEmptyText(stateValue(state, func(s *IncidentState) string { return s.FinalStatus }), "unknown"),
 			"root_cause":         stateValue(state, func(s *IncidentState) string { return s.RootCause }),
 			"target_node":        stateValue(state, func(s *IncidentState) string { return s.TargetNode }),
+			"plan_id":            canonicalPlanID(state),
+			"plan_revision":      statePlanRevision(state),
+			"replan_count":       stateReplanCount(state),
+			"terminal_decision":  stateTerminalDecision(state),
 			"report_path":        strings.TrimSpace(path),
 			"knowledge_eligible": true,
 			"evidence_count":     len(stateValueSlice(state, func(s *IncidentState) []string { return s.Evidence })),
@@ -1420,6 +1518,33 @@ func stateValue(state *IncidentState, selector func(*IncidentState) string) stri
 		return ""
 	}
 	return strings.TrimSpace(selector(state))
+}
+
+func statePlanRevision(state *IncidentState) int {
+	if state == nil || state.PlanState == nil {
+		return 0
+	}
+	return state.PlanState.Revision
+}
+
+func stateReplanCount(state *IncidentState) int {
+	if state == nil || state.ReplanState == nil || strings.TrimSpace(state.ReplanState.Decision) == "" {
+		return 0
+	}
+	if state.RepeatedIssueRetryCount > 0 {
+		return state.RepeatedIssueRetryCount
+	}
+	return 1
+}
+
+func stateTerminalDecision(state *IncidentState) string {
+	if state == nil {
+		return ""
+	}
+	if state.ReplanState != nil && strings.TrimSpace(state.ReplanState.Decision) != "" {
+		return strings.TrimSpace(state.ReplanState.Decision)
+	}
+	return strings.TrimSpace(state.ExecutionStatus)
 }
 
 func stateValueSlice(state *IncidentState, selector func(*IncidentState) []string) []string {

@@ -76,6 +76,21 @@ func TestValidateIncidentContractRejectsClaimedExecution(t *testing.T) {
 	assertIncidentContractIssue(t, result, "action_1_claims_execution")
 }
 
+func TestValidateIncidentDiagnosisRejectsSingleEvidence(t *testing.T) {
+	t.Parallel()
+
+	json := `{
+		"root_cause": "pod_restart",
+		"target_node": "infra/api-0",
+		"impact": "api unavailable",
+		"confidence": 0.76,
+		"evidence": ["restart count increased"]
+	}`
+	result := validateIncidentDiagnosis([]adk.Message{incidentContractMessage(json)}, nil)
+
+	assertIncidentContractIssue(t, result, "insufficient_evidence")
+}
+
 func TestInferFinalStatusResolvedWithoutStrategyStage(t *testing.T) {
 	t.Parallel()
 
@@ -94,6 +109,49 @@ func TestInferFinalStatusResolvedWithoutStrategyStage(t *testing.T) {
 	}
 	if eligible, reasons := finalOpsArchiveEligibility(state, state.FinalReport); !eligible {
 		t.Fatalf("expected archive eligible final report, reasons: %v", reasons)
+	}
+}
+
+func TestBuildFinalOpsSummaryIncludesCanonicalPlanAndReplan(t *testing.T) {
+	t.Parallel()
+
+	state := &IncidentState{
+		RootCause:       "pod_restart",
+		TargetNode:      "infra/api-0",
+		Evidence:        []string{"restart count increased"},
+		Confidence:      0.8,
+		ExecutionStatus: "replan_required",
+		PlanState: &PlanState{
+			PlanID:        "plan_001",
+			Revision:      2,
+			Description:   "canonical pod health inspection",
+			RiskLevel:     "low",
+			StepSummaries: []string{"step 1 check pod status"},
+			SnapshotHash:  "abcdef1234567890",
+		},
+		ReplanState: &ReplanState{
+			Decision:     "refresh_observation",
+			Reason:       "runtime state changed",
+			PlanID:       "plan_001",
+			PlanRevision: 2,
+		},
+	}
+
+	report := buildFinalOpsSummary(state)
+	if !strings.Contains(report, "plan_001") {
+		t.Fatalf("final report missing canonical plan id: %s", report)
+	}
+	if !strings.Contains(report, "refresh_observation") {
+		t.Fatalf("final report missing replan decision: %s", report)
+	}
+	if statePlanRevision(state) != 2 {
+		t.Fatalf("plan revision helper = %d, want 2", statePlanRevision(state))
+	}
+	if stateReplanCount(state) != 1 {
+		t.Fatalf("replan count helper = %d, want 1", stateReplanCount(state))
+	}
+	if stateTerminalDecision(state) != "refresh_observation" {
+		t.Fatalf("terminal decision = %q, want refresh_observation", stateTerminalDecision(state))
 	}
 }
 
@@ -155,6 +213,29 @@ func TestIncidentContractAllowsExecutionRequiresValidGate(t *testing.T) {
 	}
 	if allowed, reason := incidentContractAllowsExecution(&IncidentState{IncidentContractValid: true}); !allowed || reason != "" {
 		t.Fatalf("valid contract allowed=%v reason=%q", allowed, reason)
+	}
+}
+
+func TestApplyIncidentContractValidationWritesCanonicalReplanDecision(t *testing.T) {
+	t.Parallel()
+
+	state := &IncidentState{}
+	applyIncidentContractValidation(context.Background(), state, incidentContractValidation{
+		Valid:  false,
+		Issues: []string{"missing_evidence"},
+	})
+
+	if state.ReplanState == nil {
+		t.Fatal("expected contract gate to write ReplanState")
+	}
+	if state.ReplanState.Decision != "refresh_observation" {
+		t.Fatalf("decision = %q, want refresh_observation", state.ReplanState.Decision)
+	}
+	if state.ExecutionStatus != "replan_required" || !state.ObservationRefreshNeeded {
+		t.Fatalf("expected replan-required refresh state, got status=%q refresh=%v", state.ExecutionStatus, state.ObservationRefreshNeeded)
+	}
+	if !strings.Contains(state.ExecutionReason, "missing_evidence") {
+		t.Fatalf("execution reason missing issue: %q", state.ExecutionReason)
 	}
 }
 

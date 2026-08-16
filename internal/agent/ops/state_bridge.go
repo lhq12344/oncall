@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,60 @@ const (
 
 func init() {
 	gob.Register(&IncidentState{})
+	gob.Register(&PlanState{})
+	gob.Register(&PlanGateState{})
+	gob.Register(&ReplanState{})
+	gob.Register(&PlanApprovalState{})
+}
+
+type PlanState struct {
+	PlanID        string                   `json:"plan_id,omitempty"`
+	Revision      int                      `json:"revision,omitempty"`
+	Description   string                   `json:"description,omitempty"`
+	RiskLevel     string                   `json:"risk_level,omitempty"`
+	Steps         []GeneratedExecutionStep `json:"steps,omitempty"`
+	StepSummaries []string                 `json:"step_summaries,omitempty"`
+	TotalSteps    int                      `json:"total_steps,omitempty"`
+	EstimatedTime int                      `json:"estimated_time,omitempty"`
+	SnapshotHash  string                   `json:"snapshot_hash,omitempty"`
+	GeneratedAt   string                   `json:"generated_at,omitempty"`
+}
+
+type PlanGateState struct {
+	PlanID           string   `json:"plan_id,omitempty"`
+	Revision         int      `json:"revision,omitempty"`
+	SnapshotHash     string   `json:"snapshot_hash,omitempty"`
+	Valid            bool     `json:"valid"`
+	Blocked          bool     `json:"blocked,omitempty"`
+	RequiresApproval bool     `json:"requires_approval,omitempty"`
+	RiskLevel        string   `json:"risk_level,omitempty"`
+	Reasons          []string `json:"reasons,omitempty"`
+	UnsafeCommands   []string `json:"unsafe_commands,omitempty"`
+	ReviewCommands   []string `json:"review_commands,omitempty"`
+	ValidatedAt      string   `json:"validated_at,omitempty"`
+}
+
+type ReplanState struct {
+	Decision                  string `json:"decision,omitempty"`
+	Reason                    string `json:"reason,omitempty"`
+	Source                    string `json:"source,omitempty"`
+	PlanID                    string `json:"plan_id,omitempty"`
+	PlanRevision              int    `json:"plan_revision,omitempty"`
+	ObservationRefreshNeeded  bool   `json:"observation_refresh_needed,omitempty"`
+	RuntimeObservationSummary string `json:"runtime_observation_summary,omitempty"`
+	UpdatedAt                 string `json:"updated_at,omitempty"`
+}
+
+type PlanApprovalState struct {
+	PlanID         string `json:"plan_id,omitempty"`
+	Revision       int    `json:"revision,omitempty"`
+	SnapshotHash   string `json:"snapshot_hash,omitempty"`
+	ApprovalStatus string `json:"approval_status,omitempty"`
+	Approved       bool   `json:"approved,omitempty"`
+	ApprovedBy     string `json:"approved_by,omitempty"`
+	ApprovedAt     string `json:"approved_at,omitempty"`
+	RejectedReason string `json:"rejected_reason,omitempty"`
+	ApprovalScope  string `json:"approval_scope,omitempty"`
 }
 
 type IncidentState struct {
@@ -43,6 +98,12 @@ type IncidentState struct {
 	Confidence float64  `json:"confidence,omitempty"`
 	Evidence   []string `json:"evidence,omitempty"`
 
+	NextVerification    []string `json:"next_verification,omitempty"`
+	MissingData         []string `json:"missing_data,omitempty"`
+	RemediationIntent   string   `json:"remediation_intent,omitempty"`
+	PlanningConstraints []string `json:"planning_constraints,omitempty"`
+	FallbackGuidance    string   `json:"fallback_guidance,omitempty"`
+
 	PlanID       string `json:"plan_id,omitempty"`      // 兼容旧字段：映射 remediation proposal id
 	PlanSummary  string `json:"plan_summary,omitempty"` // 兼容旧字段：映射 remediation proposal summary
 	PlanRisk     string `json:"plan_risk,omitempty"`    // 兼容旧字段：映射 remediation proposal risk
@@ -53,6 +114,11 @@ type IncidentState struct {
 	RemediationProposalRisk     string   `json:"remediation_proposal_risk,omitempty"`
 	RemediationProposalFallback string   `json:"remediation_proposal_fallback,omitempty"`
 	RemediationProposalActions  []string `json:"remediation_proposal_actions,omitempty"`
+
+	PlanState         *PlanState         `json:"plan_state,omitempty"`
+	PlanGateState     *PlanGateState     `json:"plan_gate_state,omitempty"`
+	ReplanState       *ReplanState       `json:"replan_state,omitempty"`
+	PlanApprovalState *PlanApprovalState `json:"plan_approval_state,omitempty"`
 
 	IncidentContractValid  bool     `json:"incident_contract_valid,omitempty"`
 	IncidentContractIssues []string `json:"incident_contract_issues,omitempty"`
@@ -238,6 +304,16 @@ func (a *stateBridgeAgent) updateByStage(state *IncidentState, msg *schema.Messa
 		if ok && proposal != nil {
 			applyIncidentRemediationProposal(state, proposal)
 		}
+	case "plan":
+		plan, ok := parseGeneratedExecutionPlan(messages)
+		if ok && plan != nil {
+			applyExecutionPlanState(state, plan)
+		}
+	case "plan_gate":
+		validation, ok := parseValidationResult(messages)
+		if ok && validation != nil {
+			applyPlanGateValidationState(state, validation)
+		}
 	case "execution":
 		validation, ok := parseValidationResult(messages)
 		if ok && validation != nil {
@@ -246,20 +322,27 @@ func (a *stateBridgeAgent) updateByStage(state *IncidentState, msg *schema.Messa
 		}
 		plan, ok := parseGeneratedExecutionPlan(messages)
 		if ok && plan != nil {
-			state.ExecutionPlanID = strings.TrimSpace(plan.PlanID)
-			state.ExecutionPlanDesc = clipText(strings.TrimSpace(plan.Description), 600)
-			state.ExecutionPlanRisk = strings.TrimSpace(plan.RiskLevel)
-			state.ExecutionPlanSteps = summarizeGeneratedExecutionPlan(plan)
+			reason := "execution stage attempted to emit a new execution plan after plan approval"
+			state.ExecutionStatus = "manual_required"
+			state.ExecutionSuccess = false
+			state.ExecutionReason = clipText(reason, 600)
+			appendIncidentExecutionLog(state, "[execution] boundary violation: "+reason)
 		}
 		stepValidation, ok := parseStepValidationResult(messages)
 		if ok && stepValidation != nil && stepValidation.ShouldStop {
 			if strings.EqualFold(strings.TrimSpace(stepValidation.StopAction), "replan") {
 				state.ExecutionStatus = "replan_required"
+				state.ExecutionSuccess = false
 				state.ObservationRefreshNeeded = true
-				state.ObservationRefreshReason = clipText(firstNonEmptyText(stepValidation.StopReason, stepValidation.MismatchReason, stepValidation.Message), 600)
-				state.RuntimeObservationSummary = clipText(firstNonEmptyText(stepValidation.RuntimeSummary, stepValidation.MismatchReason, stepValidation.Actual), 800)
+				if reason := firstNonEmptyText(stepValidation.StopReason, stepValidation.MismatchReason, stepValidation.Message); reason != "" {
+					state.ObservationRefreshReason = clipText(reason, 600)
+				}
+				if runtimeSummary := firstNonEmptyText(stepValidation.RuntimeSummary, stepValidation.MismatchReason, stepValidation.Actual); runtimeSummary != "" {
+					state.RuntimeObservationSummary = clipText(runtimeSummary, 800)
+				}
 			} else {
 				state.ExecutionStatus = "manual_required"
+				state.ExecutionSuccess = false
 			}
 			state.ExecutionReason = clipText(firstNonEmptyText(stepValidation.StopReason, stepValidation.Message), 600)
 		}
@@ -308,13 +391,19 @@ func (a *stateBridgeAgent) updateByStage(state *IncidentState, msg *schema.Messa
 				state.ExecutionRecommendations = latestIncidentLogs(diagnostic.Recommendations, 5)
 			}
 			if diagnostic.ActionableIssueCount > 0 && strings.EqualFold(strings.TrimSpace(state.ExecutionStatus), "success") {
-				state.ExecutionStatus = "replan_required"
-				state.ExecutionSuccess = false
-				state.ExecutionReason = clipText(firstNonEmptyText(
+				reason := clipText(firstNonEmptyText(
 					joinExecutionIssueSummaries(diagnostic.Issues, 2),
 					diagnostic.Summary,
 					state.ExecutionReason,
 				), 600)
+				state.ExecutionStatus = "replan_required"
+				state.ExecutionSuccess = false
+				state.ObservationRefreshNeeded = true
+				state.ObservationRefreshReason = reason
+				if diagnostic.Summary != "" {
+					state.RuntimeObservationSummary = clipText(diagnostic.Summary, 800)
+				}
+				state.ExecutionReason = reason
 			}
 		}
 	case "strategy":
@@ -345,6 +434,11 @@ func applyIncidentRCAReport(state *IncidentState, report *RCAReport) {
 	state.Impact = strings.TrimSpace(report.Impact)
 	state.Confidence = report.Confidence
 	state.Evidence = report.Evidence
+	state.NextVerification = nonEmptyStrings(report.NextVerification)
+	state.MissingData = nonEmptyStrings(report.MissingData)
+	state.RemediationIntent = clipText(report.RemediationIntent, 600)
+	state.PlanningConstraints = nonEmptyStrings(report.PlanningConstraints)
+	state.FallbackGuidance = clipText(report.FallbackGuidance, 800)
 }
 
 func applyIncidentRemediationProposal(state *IncidentState, proposal *RemediationProposal) {
@@ -361,6 +455,255 @@ func applyIncidentRemediationProposal(state *IncidentState, proposal *Remediatio
 	state.PlanSummary = state.RemediationProposalSummary
 	state.PlanRisk = state.RemediationProposalRisk
 	state.FallbackPlan = state.RemediationProposalFallback
+}
+
+func applyExecutionPlanState(state *IncidentState, plan *GeneratedExecutionPlan) {
+	if state == nil || plan == nil {
+		return
+	}
+
+	snapshotHash := computeExecutionPlanSnapshotHash(plan)
+	revision := 1
+	planChanged := true
+	if state.PlanState != nil {
+		previousRevision := state.PlanState.Revision
+		if previousRevision <= 0 {
+			previousRevision = 1
+		}
+		if snapshotHash != "" && snapshotHash == strings.TrimSpace(state.PlanState.SnapshotHash) {
+			revision = previousRevision
+			planChanged = false
+		} else {
+			revision = previousRevision + 1
+		}
+	}
+
+	stepSummaries := summarizeGeneratedExecutionPlan(plan)
+	totalSteps := plan.TotalSteps
+	if totalSteps <= 0 {
+		totalSteps = len(plan.Steps)
+	}
+	state.PlanState = &PlanState{
+		PlanID:        strings.TrimSpace(plan.PlanID),
+		Revision:      revision,
+		Description:   clipText(strings.TrimSpace(plan.Description), 600),
+		RiskLevel:     strings.TrimSpace(plan.RiskLevel),
+		Steps:         cloneGeneratedExecutionSteps(plan.Steps),
+		StepSummaries: stepSummaries,
+		TotalSteps:    totalSteps,
+		EstimatedTime: plan.EstimatedTime,
+		SnapshotHash:  snapshotHash,
+		GeneratedAt:   time.Now().Format(time.RFC3339),
+	}
+
+	state.ExecutionPlanID = state.PlanState.PlanID
+	state.ExecutionPlanDesc = state.PlanState.Description
+	state.ExecutionPlanRisk = state.PlanState.RiskLevel
+	state.ExecutionPlanSteps = append([]string(nil), stepSummaries...)
+
+	if planChanged && state.PlanApprovalState != nil && !strings.EqualFold(strings.TrimSpace(state.PlanApprovalState.ApprovalStatus), "pending") {
+		state.PlanApprovalState = &PlanApprovalState{
+			PlanID:         state.PlanState.PlanID,
+			Revision:       state.PlanState.Revision,
+			SnapshotHash:   state.PlanState.SnapshotHash,
+			ApprovalStatus: "pending",
+			ApprovalScope:  "full_plan",
+		}
+	}
+}
+
+func applyPlanGateValidationState(state *IncidentState, validation *PlanValidationResult) {
+	if state == nil || validation == nil {
+		return
+	}
+	planID := strings.TrimSpace(validation.PlanID)
+	revision := 0
+	snapshotHash := ""
+	if state.PlanState != nil {
+		planID = strings.TrimSpace(firstNonEmptyText(planID, state.PlanState.PlanID))
+		revision = state.PlanState.Revision
+		snapshotHash = strings.TrimSpace(state.PlanState.SnapshotHash)
+	}
+	state.ValidationBlocked = validation.Blocked
+	state.ValidationRisk = strings.TrimSpace(validation.RiskLevel)
+	state.PlanGateState = &PlanGateState{
+		PlanID:           planID,
+		Revision:         revision,
+		SnapshotHash:     snapshotHash,
+		Valid:            validation.Valid,
+		Blocked:          validation.Blocked,
+		RequiresApproval: validation.RequiresConfirmation || planValidationRequiresApproval(validation),
+		RiskLevel:        strings.TrimSpace(validation.RiskLevel),
+		Reasons:          latestIncidentLogs(validation.Reasons, 6),
+		UnsafeCommands:   latestIncidentLogs(validation.UnsafeCommands, 6),
+		ReviewCommands:   latestIncidentLogs(validation.ReviewCommands, 6),
+		ValidatedAt:      time.Now().Format(time.RFC3339),
+	}
+	if validation.Blocked || !validation.Valid {
+		reason := "plan gate rejected canonical execution plan"
+		if details := formatReasons(validation.Reasons); strings.TrimSpace(details) != "" {
+			reason += ": " + details
+		}
+		applyReplanDecisionState(state, "refresh_observation", reason, "plan_gate", "")
+	}
+}
+
+func planValidationRequiresApproval(validation *PlanValidationResult) bool {
+	if validation == nil {
+		return false
+	}
+	if validation.RequiresConfirmation || len(validation.ReviewCommands) > 0 {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(validation.RiskLevel)) {
+	case "medium", "high", "critical":
+		return true
+	default:
+		return false
+	}
+}
+
+func computeExecutionPlanSnapshotHash(plan *GeneratedExecutionPlan) string {
+	if plan == nil {
+		return ""
+	}
+	payload, err := json.Marshal(struct {
+		PlanID        string
+		Description   string
+		Steps         []GeneratedExecutionStep
+		TotalSteps    int
+		EstimatedTime int
+		RiskLevel     string
+	}{
+		PlanID:        strings.TrimSpace(plan.PlanID),
+		Description:   strings.TrimSpace(plan.Description),
+		Steps:         cloneGeneratedExecutionSteps(plan.Steps),
+		TotalSteps:    plan.TotalSteps,
+		EstimatedTime: plan.EstimatedTime,
+		RiskLevel:     strings.TrimSpace(plan.RiskLevel),
+	})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", sum)
+}
+
+func cloneGeneratedExecutionSteps(steps []GeneratedExecutionStep) []GeneratedExecutionStep {
+	if len(steps) == 0 {
+		return nil
+	}
+	out := make([]GeneratedExecutionStep, 0, len(steps))
+	for _, step := range steps {
+		copied := step
+		copied.Args = append([]string(nil), step.Args...)
+		copied.RollbackArgs = append([]string(nil), step.RollbackArgs...)
+		out = append(out, copied)
+	}
+	return out
+}
+
+func applyReplanDecisionState(state *IncidentState, decision, reason, source, runtimeSummary string) {
+	if state == nil {
+		return
+	}
+	decision = normalizeReplanDecision(decision)
+	if decision == "" {
+		return
+	}
+	reason = clipText(reason, 600)
+	runtimeSummary = clipText(runtimeSummary, 800)
+
+	planID := strings.TrimSpace(state.ExecutionPlanID)
+	planRevision := 0
+	if state.PlanState != nil {
+		planID = strings.TrimSpace(firstNonEmptyText(state.PlanState.PlanID, planID))
+		planRevision = state.PlanState.Revision
+	}
+
+	switch decision {
+	case "refresh_observation":
+		state.ExecutionStatus = "replan_required"
+		state.ExecutionSuccess = false
+		state.ObservationRefreshNeeded = true
+		if reason != "" {
+			state.ObservationRefreshReason = reason
+		}
+		if runtimeSummary != "" {
+			state.RuntimeObservationSummary = runtimeSummary
+		}
+	case "manual_required", "abort":
+		state.ExecutionStatus = "manual_required"
+		state.ExecutionSuccess = false
+	case "complete":
+		state.ExecutionStatus = "success"
+		state.ExecutionSuccess = true
+	}
+	if reason != "" {
+		state.ExecutionReason = reason
+	}
+
+	state.ReplanState = &ReplanState{
+		Decision:                  decision,
+		Reason:                    reason,
+		Source:                    strings.TrimSpace(source),
+		PlanID:                    planID,
+		PlanRevision:              planRevision,
+		ObservationRefreshNeeded:  decision == "refresh_observation",
+		RuntimeObservationSummary: runtimeSummary,
+		UpdatedAt:                 time.Now().Format(time.RFC3339),
+	}
+}
+
+func normalizeReplanDecision(decision string) string {
+	switch strings.ToLower(strings.TrimSpace(decision)) {
+	case "complete", "success", "succeeded", "resolved", "done":
+		return "complete"
+	case "refresh_observation", "replan_required", "replan", "revise_plan", "refresh", "retry":
+		return "refresh_observation"
+	case "manual_required", "approval_required", "validator_blocked", "blocked":
+		return "manual_required"
+	case "abort", "aborted", "cancelled", "canceled":
+		return "abort"
+	default:
+		return ""
+	}
+}
+
+func compactPlanStateForRender(plan *PlanState) map[string]any {
+	if plan == nil {
+		return nil
+	}
+	return map[string]any{
+		"plan_id":        plan.PlanID,
+		"revision":       plan.Revision,
+		"description":    plan.Description,
+		"risk_level":     plan.RiskLevel,
+		"total_steps":    plan.TotalSteps,
+		"estimated_time": plan.EstimatedTime,
+		"snapshot_hash":  plan.SnapshotHash,
+		"step_summaries": latestIncidentLogs(plan.StepSummaries, 4),
+		"generated_at":   plan.GeneratedAt,
+	}
+}
+
+func compactPlanGateStateForRender(gate *PlanGateState) map[string]any {
+	if gate == nil {
+		return nil
+	}
+	return map[string]any{
+		"plan_id":           gate.PlanID,
+		"revision":          gate.Revision,
+		"snapshot_hash":     gate.SnapshotHash,
+		"valid":             gate.Valid,
+		"blocked":           gate.Blocked,
+		"requires_approval": gate.RequiresApproval,
+		"risk_level":        gate.RiskLevel,
+		"reasons":           latestIncidentLogs(gate.Reasons, 4),
+		"unsafe_commands":   latestIncidentLogs(gate.UnsafeCommands, 4),
+		"review_commands":   latestIncidentLogs(gate.ReviewCommands, 4),
+		"validated_at":      gate.ValidatedAt,
+	}
 }
 
 func incidentHistoryRewriter(ctx context.Context, entries []*adk.HistoryEntry) ([]adk.Message, error) {
@@ -417,6 +760,11 @@ func renderIncidentState(state *IncidentState) string {
 		"path":                          state.Path,
 		"impact":                        state.Impact,
 		"confidence":                    state.Confidence,
+		"next_verification":             latestIncidentLogs(state.NextVerification, 4),
+		"missing_data":                  latestIncidentLogs(state.MissingData, 4),
+		"remediation_intent":            state.RemediationIntent,
+		"planning_constraints":          latestIncidentLogs(state.PlanningConstraints, 4),
+		"fallback_guidance":             state.FallbackGuidance,
 		"plan_id":                       state.PlanID,
 		"plan_summary":                  state.PlanSummary,
 		"plan_risk":                     state.PlanRisk,
@@ -426,6 +774,10 @@ func renderIncidentState(state *IncidentState) string {
 		"remediation_proposal_risk":     state.RemediationProposalRisk,
 		"remediation_proposal_fallback": state.RemediationProposalFallback,
 		"remediation_proposal_actions":  latestIncidentLogs(state.RemediationProposalActions, 4),
+		"plan_state":                    compactPlanStateForRender(state.PlanState),
+		"plan_gate_state":               compactPlanGateStateForRender(state.PlanGateState),
+		"replan_state":                  state.ReplanState,
+		"plan_approval_state":           state.PlanApprovalState,
 		"incident_contract_valid":       state.IncidentContractValid,
 		"incident_contract_issues":      latestIncidentLogs(state.IncidentContractIssues, 4),
 		"validation_blocked":            state.ValidationBlocked,

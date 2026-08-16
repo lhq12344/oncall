@@ -15,6 +15,7 @@ const (
 	RoleDialogue  Role = "dialogue"
 	RoleRCA       Role = "rca"
 	RoleOps       Role = "ops"
+	RolePlan      Role = "plan"
 	RoleExecution Role = "execution"
 	RoleStrategy  Role = "strategy"
 )

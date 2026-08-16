@@ -1,6 +1,10 @@
 package tools
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+)
 
 func TestNormalizeExecutionFailureKey_RemovesNoise(t *testing.T) {
 	left := normalizeExecutionFailureKey("Step 3 failed at 2026-03-16 10:00:00 plan_001 tooluse_abcd invalid arguments: command is required")
@@ -50,6 +54,57 @@ func TestRecordExecutionToolFailureLocked_ResetsForDifferentIssue(t *testing.T) 
 	}
 	if second.Key == first.Key {
 		t.Fatalf("expected different normalized keys for different failure classes")
+	}
+}
+
+func TestExecuteStepRequiresPreparedPlan(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	tool := NewExecuteStepTool(nil).(*ExecuteStepTool)
+	args := "{\"step_id\":1,\"command\":\"echo\",\"args\":[\"ok\"],\"dry_run\":true}"
+
+	if _, err := tool.InvokableRun(ctx, args); err == nil || !strings.Contains(err.Error(), "execution plan not prepared") {
+		t.Fatalf("expected missing prepared plan error, got %v", err)
+	}
+}
+
+func TestPrepareApprovedExecutionPlanStateSeedsPreparedAndValidatedPlan(t *testing.T) {
+	t.Parallel()
+
+	state := &executionToolState{
+		planPrepared:    true,
+		planID:          "old_plan",
+		planValidated:   false,
+		executedStepIDs: []int{9},
+	}
+	plan := &ExecutionPlan{
+		PlanID:      "plan_001",
+		Description: "approved plan",
+		RiskLevel:   "low",
+		Steps: []ExecutionStep{{
+			StepID:         1,
+			Description:    "echo ok",
+			Command:        "echo",
+			Args:           []string{"ok"},
+			ExpectedResult: "ok",
+			Timeout:        1,
+		}},
+		TotalSteps:    1,
+		EstimatedTime: 1,
+	}
+
+	if err := prepareApprovedExecutionPlanState(state, plan); err != nil {
+		t.Fatalf("prepareApprovedExecutionPlanState: %v", err)
+	}
+	if !state.planPrepared || state.planID != "plan_001" {
+		t.Fatalf("prepared plan not seeded: %#v", state)
+	}
+	if !state.planValidated || state.validatedPlanID != "plan_001" {
+		t.Fatalf("validated plan not seeded: %#v", state)
+	}
+	if state.preparedPlanJSON == "" || len(state.executedStepIDs) != 0 {
+		t.Fatalf("prepared plan json/reset state not set correctly: %#v", state)
 	}
 }
 

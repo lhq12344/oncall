@@ -125,6 +125,8 @@ func RoleSection(role Role) Section {
 		return Section{Name: "RCARole", Priority: 50, Content: "# RCA Agent 指令\n" + rcaPrompt}
 	case RoleOps:
 		return Section{Name: "OpsRole", Priority: 50, Content: "# Ops Agent 指令\n" + opsPrompt}
+	case RolePlan:
+		return Section{Name: "PlanRole", Priority: 50, Content: "# Plan Agent 指令\n" + planPrompt}
 	case RoleExecution:
 		return Section{Name: "ExecutionRole", Priority: 50, Content: "# Execution Agent 指令\n" + executionPrompt}
 	case RoleStrategy:
@@ -151,8 +153,8 @@ func DeferredToolGuidance(role Role) string {
 		}
 	case RoleExecution:
 		deferred = []string{
-			" - execution_agent deferred：normalize_plan、generate_plan、validate_plan、execute_step、validate_result、rollback。",
-			" - 推荐顺序：normalize/generate -> validate_plan -> execute_step -> validate_result；失败且安全时 rollback。",
+			" - execution_agent deferred：execute_step、validate_result、rollback。",
+			" - 推荐顺序：按已批准 canonical plan 的 step 顺序调用 execute_step -> validate_result；失败且安全时 rollback。",
 		}
 	case RoleRCA:
 		deferred = []string{
@@ -162,7 +164,12 @@ func DeferredToolGuidance(role Role) string {
 	case RoleOps:
 		deferred = []string{
 			" - ops_incident_agent deferred：k8s_monitor、metrics_collector、es_log_query、time_query、build_dependency_graph、correlate_signals、infer_root_cause、analyze_impact。",
-			" - 推荐顺序：按需选择最小证据 -> 输出 RCA 字段 + RemediationProposal；不要执行变更。",
+			" - 推荐顺序：按需选择最小证据 -> 输出 RCA/Diagnosis 字段 + remediation_intent；不要执行变更或生成最终命令计划。",
+		}
+	case RolePlan:
+		deferred = []string{
+			" - plan_agent deferred：normalize_plan、generate_plan、validate_plan。",
+			" - 推荐顺序：从 Graph State/RemediationProposal 生成 canonical ExecutionPlan -> validate_plan 预检；不要调用 execute_step、validate_result 或 rollback。",
 		}
 	case RoleStrategy:
 		deferred = []string{

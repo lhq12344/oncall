@@ -214,10 +214,10 @@ func (t *ExecuteStepTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 	rendered := renderedCommand(in.Command, in.Args, in.Script)
 
 	if ok, _ := hasPreparedExecutionPlan(ctx); !ok {
-		return fail(fmt.Errorf("execution plan not prepared: call generate_plan first with intent/context before execute_step"))
+		return fail(fmt.Errorf("execution plan not prepared: approved canonical plan was not seeded before execute_step"))
 	}
 	if ok, _ := hasValidatedExecutionPlan(ctx); !ok {
-		return fail(fmt.Errorf("execution plan not validated: call validate_plan after normalize_plan/generate_plan before execute_step"))
+		return fail(fmt.Errorf("execution plan not validated: approved canonical plan must pass plan_gate before execute_step"))
 	}
 
 	if shouldSkip, reason := shouldSkipExecutionStep(ctx, in.StepID); shouldSkip {

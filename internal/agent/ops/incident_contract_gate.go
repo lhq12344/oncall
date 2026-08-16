@@ -2,18 +2,22 @@ package ops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	executiontools "go_agent/internal/agent/execution/tools"
 
 	"github.com/cloudwego/eino/adk"
 	"go.uber.org/zap"
 )
 
 type incidentContractGateAgent struct {
-	name   string
-	desc   string
-	logger *zap.Logger
+	name          string
+	desc          string
+	diagnosisOnly bool
+	logger        *zap.Logger
 }
 
 func newIncidentContractGateAgent(logger *zap.Logger) adk.Agent {
@@ -21,6 +25,15 @@ func newIncidentContractGateAgent(logger *zap.Logger) adk.Agent {
 		name:   "incident_contract_gate",
 		desc:   "validates incident RCA and remediation proposal before execution",
 		logger: logger,
+	}
+}
+
+func newDiagnosisGateAgent(logger *zap.Logger) adk.Agent {
+	return &incidentContractGateAgent{
+		name:          "diagnosis_gate",
+		desc:          "validates incident diagnosis evidence before planning",
+		diagnosisOnly: true,
+		logger:        logger,
 	}
 }
 
@@ -43,23 +56,28 @@ func (a *incidentContractGateAgent) Run(ctx context.Context, input *adk.AgentInp
 		}
 		state := getIncidentState(ctx)
 		result := validateIncidentContract(messages, state)
-		applyIncidentContractValidation(ctx, state, result)
+		if a.diagnosisOnly {
+			result = validateIncidentDiagnosis(messages, state)
+		}
+		applyIncidentContractValidationForGate(ctx, state, result, a.name)
 
 		if result.Valid {
 			if a.logger != nil {
-				a.logger.Info("incident contract passed",
+				a.logger.Info("incident diagnosis contract passed",
+					zap.String("gate", a.name),
 					zap.String("risk", result.RiskLevel),
 					zap.Int("evidence_count", result.EvidenceCount))
 			}
-			generator.Send(assistantEvent("incident_contract_gate passed: RCA evidence and remediation proposal are safe to hand to execution_agent."))
+			generator.Send(assistantEvent(a.name + " passed: incident evidence is sufficient for the next workflow stage."))
 			return
 		}
 
 		if a.logger != nil {
-			a.logger.Warn("incident contract blocked execution", zap.Strings("issues", result.Issues))
+			a.logger.Warn("incident diagnosis contract blocked workflow", zap.String("gate", a.name), zap.Strings("issues", result.Issues))
 		}
 		generator.Send(assistantEvent(fmt.Sprintf(
-			"incident_contract_gate blocked execution and returned to ops_incident_agent for replanning: %s",
+			"%s blocked workflow and returned to ops_incident_agent for replanning: %s",
+			a.name,
 			strings.Join(result.Issues, "; "),
 		)))
 	}()
@@ -91,14 +109,14 @@ func (a *contractGuardedExecutionAgent) Description(ctx context.Context) string 
 
 func (a *contractGuardedExecutionAgent) Run(ctx context.Context, input *adk.AgentInput, opts ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
 	state := getIncidentState(ctx)
-	if allowed, reason := incidentContractAllowsExecution(state); !allowed {
+	if allowed, reason := executionGuardAllowsExecution(state); !allowed {
 		iterator, generator := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
 		go func() {
 			defer generator.Close()
 			if a.logger != nil {
 				a.logger.Warn("skip execution because incident contract is invalid", zap.String("reason", reason))
 			}
-			generator.Send(assistantEvent("execution_agent skipped: incident contract is invalid; ops_incident_agent must replan before execution."))
+			generator.Send(assistantEvent("execution_agent skipped: " + reason))
 		}()
 		return iterator
 	}
@@ -107,6 +125,17 @@ func (a *contractGuardedExecutionAgent) Run(ctx context.Context, input *adk.Agen
 		go func() {
 			defer generator.Close()
 			generator.Send(&adk.AgentEvent{Err: fmt.Errorf("execution agent is required")})
+		}()
+		return iterator
+	}
+	if err := prepareExecutionToolStateFromApprovedPlan(ctx, state); err != nil {
+		iterator, generator := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+		go func() {
+			defer generator.Close()
+			if a.logger != nil {
+				a.logger.Warn("skip execution because approved plan could not seed execution tool state", zap.Error(err))
+			}
+			generator.Send(assistantEvent("execution_agent skipped: " + err.Error()))
 		}()
 		return iterator
 	}
@@ -136,6 +165,39 @@ func incidentContractAllowsExecution(state *IncidentState) (bool, string) {
 		return false, "incident contract gate has not passed"
 	}
 	return true, ""
+}
+
+func executionGuardAllowsExecution(state *IncidentState) (bool, string) {
+	if allowed, reason := incidentContractAllowsExecution(state); !allowed {
+		return false, reason
+	}
+	if state == nil || state.PlanState == nil || strings.TrimSpace(state.PlanState.PlanID) == "" {
+		return false, "canonical plan is missing; run plan_agent before execution_agent"
+	}
+	if state.PlanGateState == nil {
+		return false, "plan_gate has not validated the canonical plan"
+	}
+	if !planGateMatchesCurrentPlan(state) {
+		return false, "plan_gate result is stale for the current plan snapshot"
+	}
+	if state.PlanGateState.Blocked || !state.PlanGateState.Valid {
+		return false, "plan_gate blocked the canonical plan"
+	}
+	if !currentPlanApproved(state) {
+		return false, "plan_approval has not approved the current full plan snapshot"
+	}
+	return true, ""
+}
+
+func prepareExecutionToolStateFromApprovedPlan(ctx context.Context, state *IncidentState) error {
+	if allowed, reason := executionGuardAllowsExecution(state); !allowed {
+		return errors.New(reason)
+	}
+	plan := planStateToExecutionToolPlan(state.PlanState)
+	if plan == nil || strings.TrimSpace(plan.PlanID) == "" || len(plan.Steps) == 0 {
+		return fmt.Errorf("approved canonical plan is empty or invalid")
+	}
+	return executiontools.PrepareApprovedExecutionPlanFromGraphState(ctx, plan)
 }
 
 type incidentContractValidation struct {
@@ -222,10 +284,51 @@ func validateIncidentContract(messages []adk.Message, state *IncidentState) inci
 	return result
 }
 
+func validateIncidentDiagnosis(messages []adk.Message, state *IncidentState) incidentContractValidation {
+	report, _ := parseRCAReport(messages)
+	if report == nil {
+		report = rcaReportFromState(state)
+	}
+
+	result := incidentContractValidation{Valid: true}
+	addIssue := func(issue string) {
+		issue = strings.TrimSpace(issue)
+		if issue == "" {
+			return
+		}
+		result.Valid = false
+		result.Issues = append(result.Issues, issue)
+	}
+
+	if report == nil {
+		addIssue("missing_rca_report")
+		return result
+	}
+	result.Confidence = report.Confidence
+	result.EvidenceCount = len(nonEmptyStrings(report.Evidence))
+	if strings.TrimSpace(report.RootCause) == "" {
+		addIssue("missing_root_cause")
+	}
+	if result.EvidenceCount < 2 {
+		addIssue("insufficient_evidence")
+	}
+	if report.Confidence <= 0 || report.Confidence > 1 {
+		addIssue("invalid_confidence")
+	} else if report.Confidence < 0.35 {
+		addIssue("confidence_too_low")
+	}
+	return result
+}
+
 func applyIncidentContractValidation(ctx context.Context, state *IncidentState, result incidentContractValidation) {
+	applyIncidentContractValidationForGate(ctx, state, result, "incident_contract_gate")
+}
+
+func applyIncidentContractValidationForGate(ctx context.Context, state *IncidentState, result incidentContractValidation, gateName string) {
 	if state == nil {
 		state = &IncidentState{}
 	}
+	gateName = strings.TrimSpace(firstNonEmptyText(gateName, "incident_contract_gate"))
 	state.IncidentContractValid = result.Valid
 	state.IncidentContractIssues = append([]string(nil), result.Issues...)
 	state.UpdatedAt = time.Now().Format(time.RFC3339)
@@ -234,16 +337,14 @@ func applyIncidentContractValidation(ctx context.Context, state *IncidentState, 
 		if strings.EqualFold(strings.TrimSpace(state.ValidationRisk), "contract_invalid") {
 			state.ValidationRisk = ""
 		}
-		appendIncidentExecutionLog(state, "[incident_contract_gate] contract passed")
+		appendIncidentExecutionLog(state, "["+gateName+"] contract passed")
 		setIncidentState(ctx, state)
 		return
 	}
 	state.ValidationBlocked = true
 	state.ValidationRisk = "contract_invalid"
-	state.ExecutionStatus = "replan_required"
-	state.ExecutionSuccess = false
-	state.ExecutionReason = clipText("incident contract invalid: "+strings.Join(result.Issues, "; "), 600)
-	appendIncidentExecutionLog(state, "[incident_contract_gate] blocked execution: "+strings.Join(result.Issues, "; "))
+	applyReplanDecisionState(state, "refresh_observation", gateName+" invalid: "+strings.Join(result.Issues, "; "), gateName, "")
+	appendIncidentExecutionLog(state, "["+gateName+"] blocked workflow: "+strings.Join(result.Issues, "; "))
 	setIncidentState(ctx, state)
 }
 

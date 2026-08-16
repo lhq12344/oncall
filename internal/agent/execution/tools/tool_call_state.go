@@ -271,6 +271,54 @@ func rememberExecutionPlan(ctx context.Context, plan *ExecutionPlan) error {
 	return nil
 }
 
+// PrepareApprovedExecutionPlanFromGraphState seeds the execution tool cache from
+// the workflow's canonical Graph State plan after plan_gate and plan_approval
+// have already accepted the same snapshot. This is the only supported way for
+// the ops execution stage to satisfy execute_step's prepared/validated guards.
+func PrepareApprovedExecutionPlanFromGraphState(ctx context.Context, plan *ExecutionPlan) error {
+	state := getExecutionToolState(ctx)
+	return prepareApprovedExecutionPlanState(state, plan)
+}
+
+func prepareApprovedExecutionPlanState(state *executionToolState, plan *ExecutionPlan) error {
+	if plan == nil {
+		return fmt.Errorf("execution plan is nil")
+	}
+	payload, err := json.Marshal(plan)
+	if err != nil {
+		return fmt.Errorf("marshal execution plan failed: %w", err)
+	}
+	if state == nil {
+		return nil
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.planPrepared = true
+	state.planID = strings.TrimSpace(plan.PlanID)
+	state.preparedPlanJSON = string(payload)
+	state.executedStepIDs = nil
+	state.validatedStepIDs = nil
+	state.stepAttemptCount = nil
+	state.stepCommandAttemptCount = nil
+	state.stepCommandSucceeded = nil
+	state.stepCommandLastResultJSON = nil
+	state.lastExecutedStepID = 0
+	state.lastExecutionResultJSON = ""
+	state.planValidated = true
+	state.validatedPlanID = strings.TrimSpace(plan.PlanID)
+	state.hasValidStep = false
+	state.lastValidStepID = 0
+	state.consecutiveHardInvalids = 0
+	state.consecutivePlanMismatches = 0
+	state.stopExecution = false
+	state.stopReason = ""
+	state.stopAction = ""
+	state.lastRuntimeSummary = ""
+	clearRepeatedExecutionToolFailureLocked(state)
+	return nil
+}
+
 // getPreparedExecutionPlan 读取当前执行轮次已缓存的完整执行计划。
 // 输入：ctx（Agent 运行上下文）。
 // 输出：执行计划、是否命中。

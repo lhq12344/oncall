@@ -84,6 +84,13 @@ func (t *ValidatePlanTool) InvokableRun(ctx context.Context, argumentsInJSON str
 	return string(output), nil
 }
 
+// ValidateExecutionPlan runs the same deterministic risk validation used by the
+// validate_plan tool. Workflow-level plan gates use this pure function so the
+// canonical Graph State plan is validated without exposing execution tools.
+func ValidateExecutionPlan(plan *ExecutionPlan) *PlanValidationResult {
+	return validateExecutionPlan(plan)
+}
+
 // parseValidatePlanInput 解析 validate_plan 入参，兼容包装对象、原始计划对象与空参复用三种形态。
 // 输入：ctx、argumentsInJSON。
 // 输出：可校验的 ExecutionPlan。
@@ -163,6 +170,10 @@ func isNullJSON(raw []byte) bool {
 // 输入：ExecutionPlan。
 // 输出：结构化风险判断结果。
 func (t *ValidatePlanTool) validate(plan *ExecutionPlan) *PlanValidationResult {
+	return validateExecutionPlan(plan)
+}
+
+func validateExecutionPlan(plan *ExecutionPlan) *PlanValidationResult {
 	result := &PlanValidationResult{
 		Valid:     true,
 		RiskLevel: "low",

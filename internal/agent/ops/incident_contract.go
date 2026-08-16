@@ -16,12 +16,17 @@ func init() {
 
 // RCAReport RCA -> Ops 的结构化契约。
 type RCAReport struct {
-	RootCause  string   `json:"root_cause"`
-	TargetNode string   `json:"target_node"`
-	Path       string   `json:"path"`
-	Impact     string   `json:"impact"`
-	Confidence float64  `json:"confidence"`
-	Evidence   []string `json:"evidence"`
+	RootCause           string   `json:"root_cause"`
+	TargetNode          string   `json:"target_node"`
+	Path                string   `json:"path"`
+	Impact              string   `json:"impact"`
+	Confidence          float64  `json:"confidence"`
+	Evidence            []string `json:"evidence"`
+	NextVerification    []string `json:"next_verification,omitempty"`
+	MissingData         []string `json:"missing_data,omitempty"`
+	RemediationIntent   string   `json:"remediation_intent,omitempty"`
+	PlanningConstraints []string `json:"planning_constraints,omitempty"`
+	FallbackGuidance    string   `json:"fallback_guidance,omitempty"`
 }
 
 // RemediationAction Ops 输出的修复动作提案。
@@ -111,6 +116,8 @@ type IncidentInterruptInfo struct {
 	Type         string `json:"type"`
 	Reason       string `json:"reason"`
 	PlanID       string `json:"plan_id,omitempty"`
+	PlanRevision int    `json:"plan_revision,omitempty"`
+	SnapshotHash string `json:"snapshot_hash,omitempty"`
 	FallbackPlan string `json:"fallback_plan,omitempty"`
 }
 

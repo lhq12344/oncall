@@ -22,7 +22,7 @@ import (
 // Config Execution Agent 配置结构。
 //
 // 字段说明：
-// - ChatModel: 聊天模型，用于生成执行计划
+// - ChatModel: 聊天模型，用于执行已批准计划
 // - Logger: 日志记录器
 type Config struct {
 	ChatModel *models.ChatModel
@@ -31,10 +31,10 @@ type Config struct {
 
 const defaultExecutionAgentMaxIterations = 96
 
-// NewExecutionAgent 创建 Execution Agent（执行计划生成 + 安全执行）。
+// NewExecutionAgent 创建 Execution Agent（安全执行已批准计划）。
 //
 // 功能：
-// 1. 创建工具集（规范化、生成计划、校验计划、执行步骤、验证结果、回滚）
+// 1. 创建工具集（执行步骤、验证结果、回滚）
 // 2. 创建 ChatModelAgent 并配置工具和指令
 // 3. 返回执行代理实例
 //
@@ -50,12 +50,10 @@ const defaultExecutionAgentMaxIterations = 96
 // - error: 创建过程中的错误
 //
 // 执行流程：
-// 1. 规范化提案（normalize_plan）
-// 2. 生成执行计划（generate_plan，如果 command_hint 不足）
-// 3. 校验计划风险（validate_plan）
-// 4. 逐步执行命令（execute_step）
-// 5. 验证执行结果（validate_result）
-// 6. 必要时回滚（rollback）
+// 1. 从 Graph State 中已通过 plan_gate 和 plan_approval 的 canonical plan 消费步骤
+// 2. 逐步执行命令（execute_step）
+// 3. 验证执行结果（validate_result）
+// 4. 必要时回滚（rollback）
 func NewExecutionAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
@@ -65,11 +63,8 @@ func NewExecutionAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 		return nil, fmt.Errorf("chat model is required")
 	}
 
-	// 创建执行专用 deferred 工具集，避免暴露通用文件写入工具。
+	// 创建执行专用 deferred 工具集，避免 execution 阶段重新生成或校验计划。
 	deferredTools := []tool.BaseTool{
-		tools.NewNormalizePlanTool(cfg.ChatModel, cfg.Logger),
-		tools.NewGeneratePlanTool(cfg.ChatModel, cfg.Logger),
-		tools.NewValidatePlanTool(cfg.Logger),
 		tools.NewExecuteStepTool(cfg.Logger),
 		tools.NewValidateResultTool(cfg.Logger),
 		tools.NewRollbackTool(cfg.Logger),
@@ -83,7 +78,7 @@ func NewExecutionAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:          "execution_agent",
-		Description:   "唯一负责命令级计划生成、风险校验、执行与回滚的执行代理",
+		Description:   "只消费已批准 canonical plan 的命令执行与验证代理",
 		Model:         cfg.ChatModel.Client,
 		GenModelInput: noFormatGenModelInput,
 		MaxIterations: defaultExecutionAgentMaxIterations,
@@ -101,7 +96,7 @@ func NewExecutionAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	}
 
 	if cfg.Logger != nil {
-		cfg.Logger.Info("execution agent initialized with 6 tools")
+		cfg.Logger.Info("execution agent initialized with execution-only tools", zap.Int("deferred_tools", len(deferredTools)))
 	}
 
 	return agent, nil

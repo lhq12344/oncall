@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/adk"
@@ -42,15 +43,15 @@ func TestNewIncidentWorkflowTeamDefaultShape(t *testing.T) {
 	if team.Name != "incident_workflow_agent" {
 		t.Fatalf("team name = %q", team.Name)
 	}
-	if len(team.Members) != 5 {
-		t.Fatalf("member count = %d, want 5", len(team.Members))
+	if len(team.Members) != 8 {
+		t.Fatalf("member count = %d, want 8", len(team.Members))
 	}
 
 	wantStages := []struct {
 		name    string
 		members []string
 	}{
-		{name: "incident_response_loop", members: []string{"incident", "incident_contract_gate", "execution", "gate"}},
+		{name: "incident_response_loop", members: []string{"incident", "diagnosis_gate", "plan", "plan_gate", "plan_approval", "execution", "replan_decider"}},
 		{name: "incident_final_report_stage", members: []string{"final_report"}},
 	}
 	if len(team.Stages) != len(wantStages) {
@@ -122,11 +123,14 @@ func TestNewIncidentWorkflowTeamRejectsMissingMembers(t *testing.T) {
 
 func completeIncidentWorkflowTestMembers() incidentWorkflowMembers {
 	return incidentWorkflowMembers{
-		incident:     incidentTeamTestAgent{name: "ops_incident_agent"},
-		contractGate: incidentTeamTestAgent{name: "incident_contract_gate"},
-		execution:    incidentTeamTestAgent{name: "execution_agent"},
-		gate:         incidentTeamTestAgent{name: "execution_gate"},
-		reporter:     incidentTeamTestAgent{name: "final_report"},
+		incident:      incidentTeamTestAgent{name: "ops_incident_agent"},
+		diagnosisGate: incidentTeamTestAgent{name: "diagnosis_gate"},
+		plan:          incidentTeamTestAgent{name: "plan_agent"},
+		planGate:      incidentTeamTestAgent{name: "plan_gate"},
+		planApproval:  incidentTeamTestAgent{name: "plan_approval"},
+		execution:     incidentTeamTestAgent{name: "execution_agent"},
+		gate:          incidentTeamTestAgent{name: "replan_decider"},
+		reporter:      incidentTeamTestAgent{name: "final_report"},
 	}
 }
 
@@ -141,6 +145,10 @@ func TestStateBridgeIncidentStageCapturesRCAAndProposal(t *testing.T) {
 		"impact": "api unavailable",
 		"confidence": 0.72,
 		"evidence": ["k8s restart count > 0", "error logs matched"],
+		"next_verification": ["confirm pod status"],
+		"remediation_intent": "restore api pod health without unsafe changes",
+		"planning_constraints": ["read-only first"],
+		"fallback_guidance": "manual pod event inspection",
 		"proposal_id": "proposal_1",
 		"summary": "verify rollout and inspect logs",
 		"risk_level": "medium",
@@ -164,10 +172,142 @@ func TestStateBridgeIncidentStageCapturesRCAAndProposal(t *testing.T) {
 	if state.RootCause != "pod_restart" || state.TargetNode != "infra/api-0" {
 		t.Fatalf("RCA fields not captured: %#v", state)
 	}
+	if state.RemediationIntent != "restore api pod health without unsafe changes" || len(state.PlanningConstraints) != 1 {
+		t.Fatalf("diagnosis planning intent not captured: %#v", state)
+	}
 	if state.RemediationProposalID != "proposal_1" || state.PlanID != "proposal_1" {
 		t.Fatalf("proposal fields not captured: %#v", state)
 	}
 	if len(state.RemediationProposalActions) != 1 {
 		t.Fatalf("proposal actions = %v, want one action", state.RemediationProposalActions)
+	}
+}
+
+func TestStateBridgePlanStageCapturesCanonicalPlanState(t *testing.T) {
+	t.Parallel()
+
+	state := &IncidentState{
+		PlanApprovalState: &PlanApprovalState{
+			PlanID:       "plan_old",
+			Revision:     1,
+			SnapshotHash: "old_hash",
+			Approved:     true,
+			ApprovedAt:   "2026-08-16T00:00:00Z",
+		},
+	}
+	planJSON := "{\"plan_id\":\"plan_001\",\"description\":\"inspect pod health\",\"risk_level\":\"low\",\"total_steps\":1,\"estimated_time\":5,\"steps\":[{\"step_id\":1,\"description\":\"check pod status\",\"command\":\"kubectl\",\"args\":[\"get\",\"pod\",\"api-0\",\"-n\",\"infra\"],\"expected_result\":\"pod Running\",\"timeout\":15}]}"
+	msg := &schema.Message{Content: planJSON}
+
+	bridge := &stateBridgeAgent{stage: "plan"}
+	bridge.updateByStage(state, msg)
+
+	if state.PlanState == nil {
+		t.Fatal("expected canonical PlanState to be captured")
+	}
+	if state.PlanState.PlanID != "plan_001" || state.ExecutionPlanID != "plan_001" {
+		t.Fatalf("plan id not mirrored: plan_state=%#v execution_plan_id=%q", state.PlanState, state.ExecutionPlanID)
+	}
+	if state.PlanState.Revision != 1 {
+		t.Fatalf("initial revision = %d, want 1", state.PlanState.Revision)
+	}
+	if state.PlanState.SnapshotHash == "" {
+		t.Fatal("expected plan snapshot hash")
+	}
+	if len(state.PlanState.StepSummaries) != 1 || len(state.ExecutionPlanSteps) != 1 {
+		t.Fatalf("step summaries not captured: plan=%v legacy=%v", state.PlanState.StepSummaries, state.ExecutionPlanSteps)
+	}
+	if state.PlanApprovalState == nil || state.PlanApprovalState.Approved {
+		t.Fatalf("expected changed plan to invalidate prior approval: %#v", state.PlanApprovalState)
+	}
+
+	firstHash := state.PlanState.SnapshotHash
+	bridge.updateByStage(state, msg)
+	if state.PlanState.Revision != 1 || state.PlanState.SnapshotHash != firstHash {
+		t.Fatalf("same plan should keep revision/hash, got revision=%d hash=%q", state.PlanState.Revision, state.PlanState.SnapshotHash)
+	}
+
+	changedMsg := &schema.Message{Content: strings.Replace(planJSON, "pod Running", "pod Ready", 1)}
+	bridge.updateByStage(state, changedMsg)
+	if state.PlanState.Revision != 2 {
+		t.Fatalf("changed plan revision = %d, want 2", state.PlanState.Revision)
+	}
+	if state.PlanState.SnapshotHash == firstHash {
+		t.Fatal("changed plan should produce a new snapshot hash")
+	}
+	if rendered := renderIncidentState(state); !strings.Contains(rendered, "plan_state") || !strings.Contains(rendered, "snapshot_hash") {
+		t.Fatalf("rendered state missing canonical plan summary: %s", rendered)
+	}
+}
+
+func TestReplanDecisionStateReferencesCanonicalPlan(t *testing.T) {
+	t.Parallel()
+
+	state := &IncidentState{}
+	applyExecutionPlanState(state, &GeneratedExecutionPlan{
+		PlanID:      "plan_001",
+		Description: "inspect pod health",
+		RiskLevel:   "low",
+		Steps: []GeneratedExecutionStep{{
+			StepID:         1,
+			Description:    "check pod status",
+			Command:        "kubectl",
+			Args:           []string{"get", "pod", "api-0", "-n", "infra"},
+			ExpectedResult: "pod Running",
+		}},
+	})
+
+	applyReplanDecisionState(state, "refresh_observation", "pod is already healthy", "validate_result", "api-0 is Running and Ready")
+
+	if state.ReplanState == nil {
+		t.Fatal("expected ReplanState")
+	}
+	if state.ReplanState.Decision != "refresh_observation" {
+		t.Fatalf("decision = %q, want refresh_observation", state.ReplanState.Decision)
+	}
+	if state.ReplanState.PlanID != "plan_001" || state.ReplanState.PlanRevision != 1 {
+		t.Fatalf("replan should reference canonical plan, got %#v", state.ReplanState)
+	}
+	if !state.ObservationRefreshNeeded || state.ExecutionStatus != "replan_required" {
+		t.Fatalf("refresh flags not set: status=%q refresh=%v", state.ExecutionStatus, state.ObservationRefreshNeeded)
+	}
+	if !strings.Contains(state.RuntimeObservationSummary, "Running") {
+		t.Fatalf("runtime summary not captured: %q", state.RuntimeObservationSummary)
+	}
+	if rendered := renderIncidentState(state); !strings.Contains(rendered, "replan_state") || !strings.Contains(rendered, "refresh_observation") {
+		t.Fatalf("rendered state missing replan decision: %s", rendered)
+	}
+}
+
+func TestStateBridgeExecutionStageCannotOverwriteCanonicalPlan(t *testing.T) {
+	t.Parallel()
+
+	state := &IncidentState{}
+	applyExecutionPlanState(state, &GeneratedExecutionPlan{
+		PlanID:      "plan_001",
+		Description: "approved plan",
+		RiskLevel:   "low",
+		Steps: []GeneratedExecutionStep{{
+			StepID:         1,
+			Description:    "check pod status",
+			Command:        "kubectl",
+			Args:           []string{"get", "pod", "api-0", "-n", "infra"},
+			ExpectedResult: "pod Running",
+		}},
+	})
+	approvedHash := state.PlanState.SnapshotHash
+
+	planJSON := "{\"plan_id\":\"plan_002\",\"description\":\"new execution-stage plan\",\"risk_level\":\"low\",\"total_steps\":1,\"steps\":[{\"step_id\":1,\"description\":\"changed\",\"command\":\"echo\",\"args\":[\"bad\"],\"expected_result\":\"bad\"}]}"
+	msg := &schema.Message{Content: planJSON}
+	bridge := &stateBridgeAgent{stage: "execution"}
+	bridge.updateByStage(state, msg)
+
+	if state.PlanState == nil || state.PlanState.PlanID != "plan_001" || state.PlanState.SnapshotHash != approvedHash {
+		t.Fatalf("execution stage overwrote canonical plan: %#v", state.PlanState)
+	}
+	if state.ReplanState != nil {
+		t.Fatalf("execution bridge should not write ReplanState, got %#v", state.ReplanState)
+	}
+	if state.ExecutionStatus != "manual_required" || !strings.Contains(state.ExecutionReason, "execution stage attempted") {
+		t.Fatalf("expected bridge to record boundary fact, status=%q reason=%q", state.ExecutionStatus, state.ExecutionReason)
 	}
 }

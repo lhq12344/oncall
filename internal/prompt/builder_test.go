@@ -37,7 +37,7 @@ func TestBuildAgentPromptIncludesRoleEnvironmentAndExtensions(t *testing.T) {
 	for _, want := range []string{
 		"# 身份",
 		"故障修复执行代理",
-		"validate_plan",
+		"canonical ExecutionPlan",
 		"execute_step",
 		"manual_required",
 		"- 工作目录: /repo/oncall",
@@ -86,13 +86,25 @@ func TestToolUseSectionMentionsDeferredGateway(t *testing.T) {
 
 func TestRolePromptsDescribeRoleSpecificDeferredTools(t *testing.T) {
 	execution := BuildAgentPrompt(RoleExecution, EnvironmentContext{}, BuildOptions{})
-	for _, want := range []string{"normalize_plan", "validate_plan", "execute_step", "validate_result", "ToolSearch", "InvokeDeferredTool"} {
+	for _, want := range []string{"execution_agent deferred", "execute_step", "validate_result", "rollback", "ToolSearch", "InvokeDeferredTool"} {
 		if !strings.Contains(execution, want) {
 			t.Fatalf("execution prompt missing %q", want)
 		}
 	}
+	for _, forbidden := range []string{"normalize_plan", "generate_plan", "validate_plan"} {
+		if strings.Contains(execution, forbidden) {
+			t.Fatalf("execution prompt should not advertise planning tool %q", forbidden)
+		}
+	}
 	if strings.Contains(execution, "web_search") {
 		t.Fatalf("execution prompt should not advertise dialogue deferred tools")
+	}
+
+	plan := BuildAgentPrompt(RolePlan, EnvironmentContext{}, BuildOptions{})
+	for _, want := range []string{"plan_agent deferred", "generate_plan", "validate_plan", "canonical ExecutionPlan", "不要调用 execute_step"} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("plan prompt missing %q", want)
+		}
 	}
 
 	dialogue := BuildAgentPrompt(RoleDialogue, EnvironmentContext{}, BuildOptions{})
@@ -105,7 +117,7 @@ func TestRolePromptsDescribeRoleSpecificDeferredTools(t *testing.T) {
 
 func TestBuildAgentPromptIncludesDeferredToolGuidance(t *testing.T) {
 	got := BuildAgentPrompt(RoleOps, EnvironmentContext{}, BuildOptions{})
-	for _, want := range []string{"ops_incident_agent deferred", "es_log_query", "infer_root_cause", "不要执行变更"} {
+	for _, want := range []string{"ops_incident_agent deferred", "es_log_query", "infer_root_cause", "remediation_intent", "不要执行变更"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("ops prompt missing deferred guidance %q", want)
 		}
