@@ -25,7 +25,7 @@ var (
 	repeatedIssueNoisePattern = regexp.MustCompile(`\b(plan_[a-z0-9_-]+|step[_\s-]*\d+|\d{4}-\d{2}-\d{2}[t\s]\d{2}:\d{2}:\d{2}[^\s]*|\d+)\b`)
 )
 
-type executionGateAgent struct {
+type replanDeciderAgent struct {
 	name   string
 	desc   string
 	logger *zap.Logger
@@ -50,8 +50,8 @@ type planVerificationResultPayload struct {
 	ExecutedSteps             []map[string]any `json:"executed_steps,omitempty"`
 }
 
-func newExecutionGateAgent(logger *zap.Logger) adk.ResumableAgent {
-	return &executionGateAgent{
+func newReplanDeciderAgent(logger *zap.Logger) adk.ResumableAgent {
+	return &replanDeciderAgent{
 		name:   "replan_decider",
 		desc:   "根据执行和验证事实归一化输出 ReplanDecision",
 		logger: logger,
@@ -193,11 +193,11 @@ func firstPlanStepID(state *IncidentState) int {
 	return state.PlanState.Steps[0].StepID
 }
 
-func (a *executionGateAgent) Name(_ context.Context) string {
+func (a *replanDeciderAgent) Name(_ context.Context) string {
 	return a.name
 }
 
-func (a *executionGateAgent) Description(_ context.Context) string {
+func (a *replanDeciderAgent) Description(_ context.Context) string {
 	return a.desc
 }
 
@@ -302,7 +302,7 @@ func buildFallbackPlan(manualPlan string, proposal *RemediationProposal, executi
 // buildRepeatedIssueStopEvent 在重复重试达到阈值时写入状态并结束自动循环。
 // 输入：ctx、reason（重复问题摘要）、fallback（人工方案）。
 // 输出：用于结束循环并进入最终报告的 AgentEvent。
-func (a *executionGateAgent) buildRepeatedIssueStopEvent(ctx context.Context, reason, fallback string) *adk.AgentEvent {
+func (a *replanDeciderAgent) buildRepeatedIssueStopEvent(ctx context.Context, reason, fallback string) *adk.AgentEvent {
 	state := getIncidentState(ctx)
 	retryCount := state.RepeatedIssueRetryCount
 	if retryCount <= 0 {
@@ -332,7 +332,7 @@ func (a *executionGateAgent) buildRepeatedIssueStopEvent(ctx context.Context, re
 	return breakLoopEvent(a.name, message)
 }
 
-func (a *executionGateAgent) recordReplanDecision(ctx context.Context, decision, reason, source, runtimeSummary string) *IncidentState {
+func (a *replanDeciderAgent) recordReplanDecision(ctx context.Context, decision, reason, source, runtimeSummary string) *IncidentState {
 	state := getIncidentState(ctx)
 	applyReplanDecisionState(state, decision, reason, source, runtimeSummary)
 	appendIncidentExecutionLog(state, fmt.Sprintf("[replan_decider] decision=%s source=%s reason=%s",
@@ -342,7 +342,7 @@ func (a *executionGateAgent) recordReplanDecision(ctx context.Context, decision,
 	return state
 }
 
-func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
+func (a *replanDeciderAgent) Run(ctx context.Context, input *adk.AgentInput, _ ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
 	iterator, generator := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
 
 	go func() {
@@ -585,7 +585,7 @@ func (a *executionGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ .
 	return iterator
 }
 
-func (a *executionGateAgent) Resume(ctx context.Context, info *adk.ResumeInfo, _ ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
+func (a *replanDeciderAgent) Resume(ctx context.Context, info *adk.ResumeInfo, _ ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
 	iterator, generator := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
 
 	go func() {

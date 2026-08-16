@@ -326,6 +326,7 @@ func (a *stateBridgeAgent) updateByStage(state *IncidentState, msg *schema.Messa
 		if ok && validation != nil {
 			applyPlanGateValidationState(state, validation)
 		}
+	// "execution" remains a checkpoint compatibility alias; new workflow stages use execute_plan/verify_plan.
 	case "execution", "execute_plan", "verify_plan":
 		if a.stage == "verify_plan" {
 			if result, ok := parseExecutionResult(messages); ok && result != nil {
@@ -339,11 +340,11 @@ func (a *stateBridgeAgent) updateByStage(state *IncidentState, msg *schema.Messa
 		}
 		plan, ok := parseGeneratedExecutionPlan(messages)
 		if ok && plan != nil {
-			reason := "execution stage attempted to emit a new execution plan after plan approval"
+			reason := "execute_plan stage attempted to emit a new execution plan after plan approval"
 			state.ExecutionStatus = "manual_required"
 			state.ExecutionSuccess = false
 			state.ExecutionReason = clipText(reason, 600)
-			appendIncidentExecutionLog(state, "[execution] boundary violation: "+reason)
+			appendIncidentExecutionLog(state, "[execute_plan] boundary violation: "+reason)
 		}
 		stepValidation, ok := parseStepValidationResult(messages)
 		if ok && stepValidation != nil && stepValidation.ShouldStop {
@@ -999,7 +1000,7 @@ func summarizeRemediationActions(proposal *RemediationProposal) []string {
 }
 
 // summarizeGeneratedExecutionPlan 将结构化计划转换为可展示的步骤摘要。
-// 输入：execution_agent 生成的计划。
+// 输入：plan_agent 生成的计划。
 // 输出：步骤摘要列表。
 func summarizeGeneratedExecutionPlan(plan *GeneratedExecutionPlan) []string {
 	if plan == nil || len(plan.Steps) == 0 {

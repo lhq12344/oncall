@@ -20,7 +20,7 @@ type NormalizePlanTool struct {
 
 // NewNormalizePlanTool 创建提案规范化工具。
 // 输入：chatModel（用于 command_hint 不完整时降级补全）、logger（日志）。
-// 输出：可供 execution_agent 调用的规范化工具。
+// 输出：可供 plan_agent 调用的规范化工具。
 func NewNormalizePlanTool(chatModel *models.ChatModel, logger *zap.Logger) tool.BaseTool {
 	return &NormalizePlanTool{
 		chatModel: chatModel,

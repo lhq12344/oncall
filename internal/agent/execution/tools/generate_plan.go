@@ -19,7 +19,7 @@ type GeneratePlanTool struct {
 	logger    *zap.Logger
 }
 
-// ProposalActionInput execution_agent 消费的修复提案动作。
+// ProposalActionInput plan_agent 消费的修复提案动作。
 type ProposalActionInput struct {
 	Step            int    `json:"step"`
 	Goal            string `json:"goal"`
@@ -30,7 +30,7 @@ type ProposalActionInput struct {
 	ReadOnly        bool   `json:"read_only"`
 }
 
-// RemediationProposalInput execution_agent 消费的结构化修复提案。
+// RemediationProposalInput plan_agent 消费的结构化修复提案。
 type RemediationProposalInput struct {
 	ProposalID   string                `json:"proposal_id"`
 	Summary      string                `json:"summary"`
@@ -306,7 +306,7 @@ func (t *GeneratePlanTool) generatePlanWithTemplate(proposal *RemediationProposa
 	)
 }
 
-// parseProposalInput 解析 execution_agent 的结构化修复提案输入。
+// parseProposalInput 解析 plan_agent 的结构化修复提案输入。
 // 输入：原始 proposal 对象。
 // 输出：解析后的提案；当未提供 proposal 时返回 nil。
 func parseProposalInput(raw map[string]any) (*RemediationProposalInput, error) {

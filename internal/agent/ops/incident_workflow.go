@@ -102,7 +102,7 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 	planGate := wrapWithIncidentState("plan_gate", newPlanGateAgent(cfg.Logger), cfg.Logger)
 	planApproval := newPlanApprovalAgent(cfg.Logger)
 	verifyPlan := wrapWithIncidentState("verify_plan", newVerifyPlanAgent(cfg.Logger), cfg.Logger)
-	replanDecider := newExecutionGateAgent(cfg.Logger)
+	replanDecider := newReplanDeciderAgent(cfg.Logger)
 	reporter := newFinalReportAgent(cfg.Logger)
 
 	team, maxLoops, err := newIncidentWorkflowTeam(cfg.MaxExecutionLoops, incidentWorkflowMembers{
@@ -159,7 +159,7 @@ func newIncidentWorkflowTeam(maxLoops int, members incidentWorkflowMembers) (*ag
 
 	team := agentteams.NewTeam(
 		"incident_workflow_agent",
-		"Auditable incident response workflow: agent-led diagnosis, isolated execution, gate review, and final report",
+		"Auditable incident response workflow: diagnosis, canonical plan approval, execution, verification, replanning, and final report",
 	)
 
 	registrations := []struct {
@@ -185,7 +185,7 @@ func newIncidentWorkflowTeam(maxLoops int, members incidentWorkflowMembers) (*ag
 
 	if err := team.AddLoopStage(
 		"incident_response_loop",
-		"Incident diagnosis -> plan -> plan gate/approval -> isolated execution -> gate decision loop",
+		"Incident analysis -> diagnosis gate -> canonical plan -> approval -> execute -> verify -> replan decision",
 		maxLoops,
 		"incident_analysis",
 		"diagnosis_gate",

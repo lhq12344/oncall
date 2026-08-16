@@ -332,18 +332,18 @@ func TestStateBridgeExecutionStageCannotOverwriteCanonicalPlan(t *testing.T) {
 	})
 	approvedHash := state.PlanState.SnapshotHash
 
-	planJSON := "{\"plan_id\":\"plan_002\",\"description\":\"new execution-stage plan\",\"risk_level\":\"low\",\"total_steps\":1,\"steps\":[{\"step_id\":1,\"description\":\"changed\",\"command\":\"echo\",\"args\":[\"bad\"],\"expected_result\":\"bad\"}]}"
+	planJSON := "{\"plan_id\":\"plan_002\",\"description\":\"new execute_plan stage plan\",\"risk_level\":\"low\",\"total_steps\":1,\"steps\":[{\"step_id\":1,\"description\":\"changed\",\"command\":\"echo\",\"args\":[\"bad\"],\"expected_result\":\"bad\"}]}"
 	msg := &schema.Message{Content: planJSON}
-	bridge := &stateBridgeAgent{stage: "execution"}
+	bridge := &stateBridgeAgent{stage: "execute_plan"}
 	bridge.updateByStage(state, msg)
 
 	if state.PlanState == nil || state.PlanState.PlanID != "plan_001" || state.PlanState.SnapshotHash != approvedHash {
-		t.Fatalf("execution stage overwrote canonical plan: %#v", state.PlanState)
+		t.Fatalf("execute_plan stage overwrote canonical plan: %#v", state.PlanState)
 	}
 	if state.ReplanState != nil {
-		t.Fatalf("execution bridge should not write ReplanState, got %#v", state.ReplanState)
+		t.Fatalf("execute_plan bridge should not write ReplanState, got %#v", state.ReplanState)
 	}
-	if state.ExecutionStatus != "manual_required" || !strings.Contains(state.ExecutionReason, "execution stage attempted") {
+	if state.ExecutionStatus != "manual_required" || !strings.Contains(state.ExecutionReason, "execute_plan stage attempted") {
 		t.Fatalf("expected bridge to record boundary fact, status=%q reason=%q", state.ExecutionStatus, state.ExecutionReason)
 	}
 }

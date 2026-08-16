@@ -153,8 +153,9 @@ func DeferredToolGuidance(role Role) string {
 		}
 	case RoleExecution:
 		deferred = []string{
-			" - execution_agent deferred：execute_step、validate_result、rollback。",
+			" - execution_agent deferred（execute_plan stage）：execute_step、validate_result、rollback。",
 			" - 推荐顺序：按已批准 canonical plan 的 step 顺序调用 execute_step -> validate_result；失败且安全时 rollback。",
+			" - execution_agent 不负责生成、规范化或预校验计划；计划职责属于 plan_agent/plan_gate。",
 		}
 	case RoleRCA:
 		deferred = []string{

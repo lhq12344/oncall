@@ -105,7 +105,7 @@ func parseValidationResult(messages []adk.Message) (*PlanValidationResult, bool)
 	return &result, true
 }
 
-// parseGeneratedExecutionPlan 解析 execution_agent 生成的结构化执行计划。
+// parseGeneratedExecutionPlan 解析 plan_agent 生成的结构化执行计划。
 // 输入：消息列表。
 // 输出：执行计划及是否解析成功。
 func parseGeneratedExecutionPlan(messages []adk.Message) (*GeneratedExecutionPlan, bool) {
@@ -146,7 +146,7 @@ func parseExecutionResult(messages []adk.Message) (map[string]any, bool) {
 }
 
 // parseExecutedStepCount 提取执行结果中的已执行步骤数量。
-// 输入：execution_agent 输出的结构化结果对象。
+// 输入：execute_plan 输出的结构化结果对象。
 // 输出：执行步骤数；无法识别时返回 0。
 func parseExecutedStepCount(result map[string]any) int {
 	if result == nil {
@@ -166,7 +166,7 @@ func parseExecutedStepCount(result map[string]any) int {
 }
 
 // parseExecutionStatusText 提取 execution_status 字段文本。
-// 输入：execution_agent 输出的结构化结果对象。
+// 输入：execute_plan 输出的结构化结果对象。
 // 输出：标准化后的状态字符串（小写）；缺失时返回空字符串。
 func parseExecutionStatusText(result map[string]any) string {
 	if result == nil {
@@ -183,7 +183,7 @@ func parseExecutionStatusText(result map[string]any) string {
 }
 
 // parseExecutionManualPlan 提取人工兜底执行计划文本。
-// 输入：execution_agent 输出的结构化结果对象。
+// 输入：execute_plan 输出的结构化结果对象。
 // 输出：manual_plan 文本；缺失时返回空字符串。
 func parseExecutionManualPlan(result map[string]any) string {
 	if result == nil {
@@ -208,8 +208,8 @@ type executionDiagnosticInsight struct {
 	Summary              string
 }
 
-// parseExecutionDiagnosticInsight 解析 execution_agent 产出的诊断摘要与新增问题。
-// 输入：execution_agent 结构化结果对象。
+// parseExecutionDiagnosticInsight 解析 execute_plan 产出的诊断摘要与新增问题。
+// 输入：execute_plan 结构化结果对象。
 // 输出：诊断健康度、执行发现、问题摘要、建议以及可动作问题计数。
 func parseExecutionDiagnosticInsight(result map[string]any) executionDiagnosticInsight {
 	insight := executionDiagnosticInsight{

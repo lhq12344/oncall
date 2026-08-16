@@ -63,7 +63,7 @@ type PlanValidationResult struct {
 	PlanID               string   `json:"plan_id,omitempty"`
 }
 
-// GeneratedExecutionStep execution_agent 生成的可执行步骤。
+// GeneratedExecutionStep plan_agent 生成、供 execute_plan 消费的可执行步骤。
 type GeneratedExecutionStep struct {
 	StepID          int      `json:"step_id"`
 	Description     string   `json:"description"`
@@ -76,7 +76,7 @@ type GeneratedExecutionStep struct {
 	Critical        bool     `json:"critical"`
 }
 
-// GeneratedExecutionPlan execution_agent 生成的结构化执行计划。
+// GeneratedExecutionPlan plan_agent 生成的结构化执行计划。
 type GeneratedExecutionPlan struct {
 	PlanID        string                   `json:"plan_id"`
 	Description   string                   `json:"description"`

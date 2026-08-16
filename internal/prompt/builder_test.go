@@ -86,7 +86,7 @@ func TestToolUseSectionMentionsDeferredGateway(t *testing.T) {
 
 func TestRolePromptsDescribeRoleSpecificDeferredTools(t *testing.T) {
 	execution := BuildAgentPrompt(RoleExecution, EnvironmentContext{}, BuildOptions{})
-	for _, want := range []string{"execution_agent deferred", "execute_step", "validate_result", "rollback", "ToolSearch", "InvokeDeferredTool"} {
+	for _, want := range []string{"execution_agent deferred", "execute_plan stage", "execute_step", "validate_result", "rollback", "ToolSearch", "InvokeDeferredTool", "不负责生成、规范化或预校验计划"} {
 		if !strings.Contains(execution, want) {
 			t.Fatalf("execution prompt missing %q", want)
 		}

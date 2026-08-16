@@ -13,39 +13,29 @@ import (
 	"go.uber.org/zap"
 )
 
-type incidentContractGateAgent struct {
-	name          string
-	desc          string
-	diagnosisOnly bool
-	logger        *zap.Logger
+type diagnosisGateAgent struct {
+	name   string
+	desc   string
+	logger *zap.Logger
 }
 
-func newIncidentContractGateAgent(logger *zap.Logger) adk.Agent {
-	return &incidentContractGateAgent{
-		name:   "incident_contract_gate",
-		desc:   "validates incident RCA and remediation proposal before execution",
+func newDiagnosisGateAgent(logger *zap.Logger) adk.Agent {
+	return &diagnosisGateAgent{
+		name:   "diagnosis_gate",
+		desc:   "validates incident diagnosis evidence before planning",
 		logger: logger,
 	}
 }
 
-func newDiagnosisGateAgent(logger *zap.Logger) adk.Agent {
-	return &incidentContractGateAgent{
-		name:          "diagnosis_gate",
-		desc:          "validates incident diagnosis evidence before planning",
-		diagnosisOnly: true,
-		logger:        logger,
-	}
-}
-
-func (a *incidentContractGateAgent) Name(_ context.Context) string {
+func (a *diagnosisGateAgent) Name(_ context.Context) string {
 	return a.name
 }
 
-func (a *incidentContractGateAgent) Description(_ context.Context) string {
+func (a *diagnosisGateAgent) Description(_ context.Context) string {
 	return a.desc
 }
 
-func (a *incidentContractGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
+func (a *diagnosisGateAgent) Run(ctx context.Context, input *adk.AgentInput, _ ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
 	iterator, generator := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
 	go func() {
 		defer generator.Close()
@@ -55,10 +45,7 @@ func (a *incidentContractGateAgent) Run(ctx context.Context, input *adk.AgentInp
 			messages = input.Messages
 		}
 		state := getIncidentState(ctx)
-		result := validateIncidentContract(messages, state)
-		if a.diagnosisOnly {
-			result = validateIncidentDiagnosis(messages, state)
-		}
+		result := validateIncidentDiagnosis(messages, state)
 		applyIncidentContractValidationForGate(ctx, state, result, a.name)
 
 		if result.Valid {
@@ -321,14 +308,14 @@ func validateIncidentDiagnosis(messages []adk.Message, state *IncidentState) inc
 }
 
 func applyIncidentContractValidation(ctx context.Context, state *IncidentState, result incidentContractValidation) {
-	applyIncidentContractValidationForGate(ctx, state, result, "incident_contract_gate")
+	applyIncidentContractValidationForGate(ctx, state, result, "diagnosis_gate")
 }
 
 func applyIncidentContractValidationForGate(ctx context.Context, state *IncidentState, result incidentContractValidation, gateName string) {
 	if state == nil {
 		state = &IncidentState{}
 	}
-	gateName = strings.TrimSpace(firstNonEmptyText(gateName, "incident_contract_gate"))
+	gateName = strings.TrimSpace(firstNonEmptyText(gateName, "diagnosis_gate"))
 	state.IncidentContractValid = result.Valid
 	state.IncidentContractIssues = append([]string(nil), result.Issues...)
 	state.UpdatedAt = time.Now().Format(time.RFC3339)
@@ -389,7 +376,7 @@ func remediationProposalFromState(state *IncidentState) *RemediationProposal {
 		proposal.Actions = append(proposal.Actions, RemediationAction{
 			Step:            idx + 1,
 			Goal:            summary,
-			SuccessCriteria: "state-captured action should be executable by execution_agent",
+			SuccessCriteria: "state-captured action should be executable by execute_plan",
 		})
 	}
 	return proposal
