@@ -4,24 +4,29 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	aiindexer "go_agent/internal/ai/indexer"
+	"go_agent/internal/rag"
+	"go_agent/utility/common"
 
 	"github.com/cloudwego/eino/components/indexer"
 	"github.com/cloudwego/eino/schema"
+	"go.uber.org/zap"
 )
 
 type IndexerImpl struct {
-	inner indexer.Indexer
+	inner  indexer.Indexer
+	logger *zap.Logger
 }
 
-// newIndexer creates milvus-backed indexer for knowledge documents.
-func newIndexer(ctx context.Context) (idr indexer.Indexer, err error) {
-	milvusIndexer, err := aiindexer.NewMilvusIndexer(ctx)
+// newIndexer creates the Milvus-backed indexer for v2 knowledge chunks.
+func newIndexer(ctx context.Context, logger ...*zap.Logger) (idr indexer.Indexer, err error) {
+	milvusIndexer, err := aiindexer.NewMilvusIndexerWithCollection(ctx, common.LoadMilvusConfig(ctx).KnowledgeV2Collection)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create milvus indexer: %w", err)
 	}
-	idr = &IndexerImpl{inner: milvusIndexer}
+	idr = &IndexerImpl{inner: milvusIndexer, logger: firstKnowledgeLogger(logger...)}
 	return idr, nil
 }
 
@@ -30,21 +35,68 @@ func (impl *IndexerImpl) Store(ctx context.Context, docs []*schema.Document, opt
 		return nil, fmt.Errorf("knowledge indexer unavailable")
 	}
 	assignChunkDocumentIDs(docs)
-	return impl.inner.Store(ctx, docs, opts...)
+	ids, err := impl.inner.Store(ctx, docs, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if bm25Err := upsertKnowledgeBM25(ctx, docs); bm25Err != nil && impl.logger != nil {
+		impl.logger.Warn("knowledge bm25 index upsert failed; milvus write remains authoritative",
+			zap.Int("chunks", len(docs)),
+			zap.Error(bm25Err))
+	}
+	return ids, nil
 }
 
-// assignChunkDocumentIDs 为分片文档生成稳定且唯一的主键 ID。
-// 输入：分片后的文档列表（docs）。
-// 输出：原地更新 docs[i].ID，规则为「分片标题 + 原始ID + 分片序号」。
+func firstKnowledgeLogger(loggers ...*zap.Logger) *zap.Logger {
+	for _, logger := range loggers {
+		if logger != nil {
+			return logger
+		}
+	}
+	return nil
+}
+
+func upsertKnowledgeBM25(ctx context.Context, docs []*schema.Document) error {
+	config := rag.LoadConfig(ctx)
+	if !config.BM25Enabled {
+		return nil
+	}
+	idx, err := rag.NewProfileBM25Index(config.BM25Root, rag.ProfileKnowledge)
+	if err != nil {
+		return err
+	}
+	chunks := make([]rag.DocumentChunk, 0, len(docs))
+	for _, doc := range docs {
+		if doc == nil {
+			continue
+		}
+		chunks = append(chunks, rag.DocumentChunk{
+			ID:          doc.ID,
+			DocID:       strings.TrimSpace(fmt.Sprintf("%v", doc.MetaData["doc_id"])),
+			ChunkID:     strings.TrimSpace(fmt.Sprintf("%v", doc.MetaData["chunk_id"])),
+			SourceType:  strings.TrimSpace(fmt.Sprintf("%v", doc.MetaData["source_type"])),
+			Content:     doc.Content,
+			Metadata:    doc.MetaData,
+			ContentHash: strings.TrimSpace(fmt.Sprintf("%v", doc.MetaData["content_hash"])),
+		})
+	}
+	return idx.Upsert(ctx, chunks)
+}
+
+// assignChunkDocumentIDs generates stable v2 chunk metadata and Milvus primary keys.
 func assignChunkDocumentIDs(docs []*schema.Document) {
 	if len(docs) == 0 {
 		return
 	}
 
 	exists := make(map[string]struct{}, len(docs))
+	now := time.Now().UTC().Format(time.RFC3339)
 	for index, doc := range docs {
 		if doc == nil {
 			continue
+		}
+		if doc.MetaData == nil {
+			doc.MetaData = map[string]any{}
 		}
 
 		chunkTitle := extractChunkTitle(doc)
@@ -52,24 +104,40 @@ func assignChunkDocumentIDs(docs []*schema.Document) {
 		if originID == "" {
 			originID = "doc"
 		}
+		contentHash := rag.ContentHash(doc.Content)
 
-		newID := fmt.Sprintf("%s_%s_%d", chunkTitle, originID, index+1)
-		// 防御式去重（理论上 index 已保证唯一）
+		chunkID := strings.TrimSpace(fmt.Sprintf("%v", doc.MetaData["chunk_id"]))
+		if chunkID == "" || chunkID == "<nil>" {
+			chunkID = fmt.Sprintf("%s_%s_%d", chunkTitle, originID, index+1)
+		}
 		for suffix := 1; ; suffix++ {
-			if _, ok := exists[newID]; !ok {
+			if _, ok := exists[chunkID]; !ok {
 				break
 			}
-			newID = fmt.Sprintf("%s_%d", newID, suffix)
+			chunkID = fmt.Sprintf("%s_%d", chunkID, suffix)
 		}
 
-		doc.ID = newID
-		exists[newID] = struct{}{}
+		docID := strings.TrimSpace(fmt.Sprintf("%v", doc.MetaData["doc_id"]))
+		if docID == "" || docID == "<nil>" {
+			docID = originID
+			if docID == "doc" && len(contentHash) >= 12 {
+				docID = "doc_" + contentHash[:12]
+			}
+		}
+		if _, ok := doc.MetaData["source_type"]; !ok {
+			doc.MetaData["source_type"] = "knowledge"
+		}
+		doc.MetaData["doc_id"] = docID
+		doc.MetaData["chunk_id"] = chunkID
+		doc.MetaData["updated_at"] = now
+		doc.MetaData["content_hash"] = contentHash
+
+		doc.ID = chunkID
+		exists[chunkID] = struct{}{}
 	}
 }
 
-// extractChunkTitle 从文档 metadata 中提取分片标题。
-// 输入：单个文档 doc。
-// 输出：用于 ID 的标题片段，优先 h1/title，兜底 chunk。
+// extractChunkTitle extracts a safe title segment from document metadata.
 func extractChunkTitle(doc *schema.Document) string {
 	if doc == nil || doc.MetaData == nil {
 		return "chunk"
@@ -88,9 +156,7 @@ func extractChunkTitle(doc *schema.Document) string {
 	return "chunk"
 }
 
-// sanitizeIDSegment 清理 ID 片段，仅保留字母数字、下划线和短横线。
-// 输入：任意字符串 raw。
-// 输出：清理后的字符串，若为空则返回空字符串。
+// sanitizeIDSegment keeps only ASCII letters, digits, underscores, and hyphens.
 func sanitizeIDSegment(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {

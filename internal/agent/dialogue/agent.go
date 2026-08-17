@@ -12,6 +12,7 @@ import (
 	"go_agent/internal/compact"
 	"go_agent/internal/permissions"
 	"go_agent/internal/prompt"
+	"go_agent/internal/rag"
 	"go_agent/utility/common"
 
 	"github.com/cloudwego/eino/adk"
@@ -55,22 +56,18 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 		return nil, fmt.Errorf("chat model is required")
 	}
 
-	knowledgeRetriever, err := airetriever.NewMilvusRetriever(ctx)
-	if err != nil {
-		if cfg.Logger != nil {
-			cfg.Logger.Warn("failed to initialize milvus retriever for dialogue agent, fallback to degraded mode",
-				zap.Error(err))
-		}
-		knowledgeRetriever = nil
-	}
-
-	opsCaseRetriever, err := airetriever.NewMilvusRetrieverWithCollection(ctx, common.MilvusOpsCollection)
-	if err != nil {
-		if cfg.Logger != nil {
-			cfg.Logger.Warn("failed to initialize ops case retriever for dialogue agent, fallback to degraded mode",
-				zap.Error(err))
-		}
-		opsCaseRetriever = nil
+	milvusConfig := common.LoadMilvusConfig(ctx)
+	ragConfig := rag.LoadConfig(ctx)
+	knowledgePrimary, knowledgeLegacy, opsPrimary, opsLegacy, useHybrid := dialogueRetrieverCollections(ragConfig, milvusConfig)
+	var knowledgeRetriever einoretriever.Retriever
+	var opsCaseRetriever einoretriever.Retriever
+	if useHybrid {
+		rewriter := newDialogueQueryRewriter(cfg, ragConfig)
+		knowledgeRetriever = newDialogueHybridRetriever(ctx, rag.ProfileKnowledge, knowledgePrimary, knowledgeLegacy, ragConfig, rewriter, cfg.Logger)
+		opsCaseRetriever = newDialogueHybridRetriever(ctx, rag.ProfileOpsCase, opsPrimary, opsLegacy, ragConfig, rewriter, cfg.Logger)
+	} else {
+		knowledgeRetriever = newDialogueMilvusRetriever(ctx, knowledgePrimary, cfg.Logger)
+		opsCaseRetriever = newDialogueMilvusRetriever(ctx, opsPrimary, cfg.Logger)
 	}
 
 	// 创建工具集
@@ -143,4 +140,69 @@ func buildDialogueTools(ctx context.Context, cfg *Config, knowledgeRetriever ein
 
 	checker := permissions.NewChecker(permissions.Options{})
 	return toolkit.BuildAlwaysEinoTools(ctx, checker, deferredTools...)
+}
+
+func newDialogueHybridRetriever(ctx context.Context, profile rag.RetrievalProfile, primaryCollection, legacyCollection string, ragConfig rag.Config, rewriter rag.QueryRewriter, logger *zap.Logger) einoretriever.Retriever {
+	primary := newDialogueMilvusRetriever(ctx, primaryCollection, logger)
+	legacy := newDialogueMilvusRetriever(ctx, legacyCollection, logger)
+
+	var bm25 rag.BM25Index
+	if ragConfig.BM25Enabled {
+		idx, err := rag.NewProfileBM25Index(ragConfig.BM25Root, profile)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("failed to initialize bm25 index for dialogue agent",
+					zap.String("profile", string(profile)),
+					zap.Error(err))
+			}
+		} else {
+			bm25 = idx
+		}
+	}
+
+	var reranker rag.Reranker
+	if ragConfig.RerankerEnabled && strings.TrimSpace(ragConfig.RerankerURL) != "" {
+		reranker = rag.NewHTTPReranker(ragConfig.RerankerURL, ragConfig.RerankerTimeout)
+	}
+
+	return rag.NewHybridRetriever(rag.HybridRetrieverConfig{
+		Profile:         profile,
+		Config:          ragConfig,
+		VectorRetriever: primary,
+		LegacyRetriever: legacy,
+		BM25Index:       bm25,
+		Rewriter:        rewriter,
+		Reranker:        reranker,
+	})
+}
+
+func newDialogueQueryRewriter(cfg *Config, ragConfig rag.Config) rag.QueryRewriter {
+	if ragConfig.RewriteEnabled && cfg != nil && cfg.ChatModel != nil && cfg.ChatModel.Client != nil {
+		return rag.NewChatModelRewriter(cfg.ChatModel.Client)
+	}
+	return rag.NoopRewriter{}
+}
+
+func dialogueRetrieverCollections(ragConfig rag.Config, milvusConfig common.MilvusConfig) (knowledgePrimary, knowledgeLegacy, opsPrimary, opsLegacy string, useHybrid bool) {
+	if !ragConfig.HybridEnabled {
+		return milvusConfig.Collection, "", common.MilvusOpsCollection, "", false
+	}
+	return milvusConfig.KnowledgeV2Collection, milvusConfig.Collection, milvusConfig.OpsV2Collection, common.MilvusOpsCollection, true
+}
+
+func newDialogueMilvusRetriever(ctx context.Context, collection string, logger *zap.Logger) einoretriever.Retriever {
+	collection = strings.TrimSpace(collection)
+	if collection == "" {
+		return nil
+	}
+	rtr, err := airetriever.NewMilvusRetrieverWithCollection(ctx, collection)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("failed to initialize milvus retriever for dialogue agent",
+				zap.String("collection", collection),
+				zap.Error(err))
+		}
+		return nil
+	}
+	return rtr
 }

@@ -10,12 +10,13 @@ import (
 
 	"github.com/cloudwego/eino/components/document"
 	"github.com/cloudwego/eino/compose"
+	"go.uber.org/zap"
 )
 
-func BuildKnowledgeGraph(ctx context.Context) (compose.Runnable[document.Source, []string], error) {
+func BuildKnowledgeGraph(ctx context.Context, logger ...*zap.Logger) (compose.Runnable[document.Source, []string], error) {
 
 	var err error
-	idx, err := newIndexer(ctx)
+	idx, err := newIndexer(ctx, logger...)
 	if err != nil {
 		return nil, err
 	}
@@ -56,8 +57,8 @@ func BuildKnowledgeGraph(ctx context.Context) (compose.Runnable[document.Source,
 	return g.Compile(ctx, compose.WithGraphName("knowledge_indexing"))
 }
 
-func BuildKnowledgeUploadChain(ctx context.Context) (compose.Runnable[*uploadInput, *uploadResult], error) {
-	indexingRunnable, err := BuildKnowledgeGraph(ctx)
+func BuildKnowledgeUploadChain(ctx context.Context, logger ...*zap.Logger) (compose.Runnable[*uploadInput, *uploadResult], error) {
+	indexingRunnable, err := BuildKnowledgeGraph(ctx, logger...)
 	if err != nil {
 		return nil, err
 	}

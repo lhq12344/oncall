@@ -52,3 +52,6 @@ AGENTS.md
 .cursor/
 .opencode/
 .cache/
+.oncall/rag/bm25/
+.oncall/rag/cache/
+.oncall/rag/eval_runs/

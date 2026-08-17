@@ -11,6 +11,7 @@ import (
 	"time"
 
 	aiindexer "go_agent/internal/ai/indexer"
+	"go_agent/internal/rag"
 	"go_agent/utility/common"
 
 	"github.com/cloudwego/eino/adk"
@@ -1702,7 +1703,7 @@ func archiveFinalOpsReport(ctx context.Context, state *IncidentState, report, pa
 		return fmt.Errorf("empty report")
 	}
 
-	indexer, err := aiindexer.NewMilvusIndexerWithCollection(ctx, common.MilvusOpsCollection)
+	indexer, err := aiindexer.NewMilvusIndexerWithCollection(ctx, common.LoadMilvusConfig(ctx).OpsV2Collection)
 	if err != nil {
 		return fmt.Errorf("init ops report indexer failed: %w", err)
 	}
@@ -1716,11 +1717,17 @@ func archiveFinalOpsReport(ctx context.Context, state *IncidentState, report, pa
 
 	reportID := fmt.Sprintf("ops_report_%s_%d", sanitizeReportFileToken(sessionID), time.Now().UnixNano())
 	title := buildFinalReportTitle(state)
+	contentHash := rag.ContentHash(report)
 	doc := &schema.Document{
 		ID:      reportID,
 		Content: report,
 		MetaData: map[string]any{
 			"type":                        "ops_final_report",
+			"source_type":                 "ops_final_report",
+			"doc_id":                      reportID,
+			"chunk_id":                    reportID,
+			"content_hash":                contentHash,
+			"updated_at":                  time.Now().UTC().Format(time.RFC3339),
 			"title":                       title,
 			"session_id":                  sessionID,
 			"final_status":                firstNonEmptyText(stateValue(state, func(s *IncidentState) string { return s.FinalStatus }), "unknown"),
@@ -1738,7 +1745,6 @@ func archiveFinalOpsReport(ctx context.Context, state *IncidentState, report, pa
 			"knowledge_eligible":          true,
 			"evidence_count":              len(stateValueSlice(state, func(s *IncidentState) []string { return s.Evidence })),
 			"confidence":                  stateValueFloat(state, func(s *IncidentState) float64 { return s.Confidence }),
-			"updated_at":                  time.Now().Format(time.RFC3339),
 		},
 	}
 
@@ -1746,12 +1752,38 @@ func archiveFinalOpsReport(ctx context.Context, state *IncidentState, report, pa
 	if err != nil {
 		return fmt.Errorf("store final report failed: %w", err)
 	}
+	if bm25Err := upsertOpsReportBM25(ctx, doc); bm25Err != nil && logger != nil {
+		logger.Warn("store final report bm25 index failed", zap.Error(bm25Err))
+	}
 	if logger != nil {
 		logger.Info("incident final report archived to knowledge store",
 			zap.String("report_id", reportID),
 			zap.String("title", title))
 	}
 	return nil
+}
+
+func upsertOpsReportBM25(ctx context.Context, doc *schema.Document) error {
+	if doc == nil {
+		return nil
+	}
+	config := rag.LoadConfig(ctx)
+	if !config.BM25Enabled {
+		return nil
+	}
+	idx, err := rag.NewProfileBM25Index(config.BM25Root, rag.ProfileOpsCase)
+	if err != nil {
+		return err
+	}
+	return idx.Upsert(ctx, []rag.DocumentChunk{{
+		ID:          doc.ID,
+		DocID:       strings.TrimSpace(fmt.Sprintf("%v", doc.MetaData["doc_id"])),
+		ChunkID:     strings.TrimSpace(fmt.Sprintf("%v", doc.MetaData["chunk_id"])),
+		SourceType:  strings.TrimSpace(fmt.Sprintf("%v", doc.MetaData["source_type"])),
+		Content:     doc.Content,
+		Metadata:    doc.MetaData,
+		ContentHash: strings.TrimSpace(fmt.Sprintf("%v", doc.MetaData["content_hash"])),
+	}})
 }
 
 func finalOpsArchiveEligibility(state *IncidentState, report string) (bool, []string) {

@@ -44,7 +44,7 @@ func NewKnowledgeAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 		return nil, fmt.Errorf("config is required")
 	}
 
-	runnable, err := BuildKnowledgeUploadChain(ctx)
+	runnable, err := BuildKnowledgeUploadChain(ctx, cfg.Logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build knowledge upload chain: %w", err)
 	}
@@ -184,14 +184,18 @@ func toDocuments(in *uploadInput) []*schema.Document {
 	title = sanitizeIDTitle(title)
 	baseID := fmt.Sprintf("%s_%d", title, time.Now().UnixNano())
 
+	now := time.Now().UTC()
 	doc := &schema.Document{
 		ID:      baseID,
 		Content: strings.TrimSpace(in.Content),
 		MetaData: map[string]any{
-			"title":      strings.TrimSpace(in.Title),
-			"tags":       strings.TrimSpace(in.Tags),
-			"upload_at":  time.Now().Format(time.RFC3339),
-			"split_type": "raw",
+			"title":       strings.TrimSpace(in.Title),
+			"tags":        strings.TrimSpace(in.Tags),
+			"doc_id":      baseID,
+			"source_type": "knowledge",
+			"upload_at":   now.Format(time.RFC3339),
+			"updated_at":  now.Format(time.RFC3339),
+			"split_type":  "raw",
 		},
 	}
 

@@ -43,8 +43,14 @@ func NewMilvusRetrieverWithCollection(ctx context.Context, collection string) (r
 	}
 
 	collection = strings.TrimSpace(collection)
+	milvusConfig := common.LoadMilvusConfig(ctx)
 	if collection == "" {
-		collection = common.LoadMilvusConfig(ctx).Collection
+		collection = milvusConfig.Collection
+	}
+	if milvusConfig.AutoCreateCollection {
+		if err := clientutil.EnsureMilvusCollection(ctx, cli, collection); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := cli.LoadCollection(ctx, collection, false); err != nil {

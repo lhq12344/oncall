@@ -93,3 +93,33 @@ func TestResolveMilvusDuration(t *testing.T) {
 		})
 	}
 }
+
+func TestMilvusV2DefaultsAndEmptyOverride(t *testing.T) {
+	if got := resolveMilvusSetting("", "", MilvusKnowledgeV2Collection); got != "biz_v2" {
+		t.Fatalf("knowledge v2 default=%q", got)
+	}
+	if got := resolveMilvusSetting("  ", "  ", MilvusOpsV2Collection); got != "ops_cases_v2" {
+		t.Fatalf("ops v2 default=%q", got)
+	}
+	if got := resolveMilvusSetting("", "custom_v2", MilvusKnowledgeV2Collection); got != "custom_v2" {
+		t.Fatalf("env override=%q", got)
+	}
+	if got := resolveMilvusSetting("cfg_v2", "custom_v2", MilvusKnowledgeV2Collection); got != "cfg_v2" {
+		t.Fatalf("config override=%q", got)
+	}
+}
+
+func TestResolveMilvusBool(t *testing.T) {
+	if !resolveMilvusBool("", "", true) {
+		t.Fatal("default true was not preserved")
+	}
+	if resolveMilvusBool("false", "true", true) {
+		t.Fatal("config false should override env true")
+	}
+	if !resolveMilvusBool("", "on", false) {
+		t.Fatal("env on should resolve true")
+	}
+	if !resolveMilvusBool("maybe", "", true) {
+		t.Fatal("invalid value should preserve default")
+	}
+}

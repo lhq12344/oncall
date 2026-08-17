@@ -1,0 +1,2 @@
+{"id":"seed_knowledge_redis_timeout","profile":"knowledge","query":"redis connection timeout runbook","expected_ids":["seed_doc_redis_timeout"],"notes":"model-generated seed; not a confirmed gold assertion"}
+{"id":"seed_ops_pod_crashloop","profile":"ops_case","query":"pod crashloop root cause remediation","expected_ids":["seed_ops_crashloop_report"],"notes":"model-generated seed; not a confirmed gold assertion"}

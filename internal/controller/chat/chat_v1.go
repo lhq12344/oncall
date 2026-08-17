@@ -17,6 +17,7 @@ import (
 	"go_agent/internal/agent/slash"
 	appcontext "go_agent/internal/context"
 	hookpkg "go_agent/internal/hooks"
+	"go_agent/internal/rag"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/compose"
@@ -202,6 +203,7 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 	if err != nil {
 		return nil, err
 	}
+	ctx = rag.WithRewriteContext(ctx, rag.BuildRewriteInput(question, messages))
 
 	checkpointID := generateCheckpointID(sessionID)
 	if c.logger != nil {
@@ -682,6 +684,7 @@ func (c *ControllerV1) streamSlashDialoguePrompt(ctx context.Context, r *ghttp.R
 		writeSSEJSON(r, map[string]any{"type": "error", "content": err.Error()})
 		return
 	}
+	ctx = rag.WithRewriteContext(ctx, rag.BuildRewriteInput(prompt, messages))
 	checkpointID := generateCheckpointID(sessionID)
 	c.runHookEvent(ctx, hookpkg.EventTurnStart, hookpkg.HookContext{SessionID: sessionID, CheckpointID: checkpointID, Message: displayInput})
 	defer c.runHookEvent(ctx, hookpkg.EventTurnEnd, hookpkg.HookContext{SessionID: sessionID, CheckpointID: checkpointID})

@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
+
+	"go_agent/internal/rag"
 
 	einoretriever "github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/components/tool"
@@ -21,10 +24,12 @@ type OpsCaseRetrieveTool struct {
 }
 
 type resultItem struct {
-	ID      string         `json:"id,omitempty"`
-	Content string         `json:"content"`
-	Score   float64        `json:"score"`
-	Meta    map[string]any `json:"meta,omitempty"`
+	ID            string         `json:"id,omitempty"`
+	Content       string         `json:"content"`
+	Score         float64        `json:"score"`
+	Source        string         `json:"source,omitempty"`
+	RetrievalPath []string       `json:"retrieval_path,omitempty"`
+	Meta          map[string]any `json:"meta,omitempty"`
 }
 
 func NewOpsCaseRetrieveTool(rtr einoretriever.Retriever, logger *zap.Logger) tool.BaseTool {
@@ -37,16 +42,16 @@ func NewOpsCaseRetrieveTool(rtr einoretriever.Retriever, logger *zap.Logger) too
 func (t *OpsCaseRetrieveTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: "ops_case_retrieve",
-		Desc: "从 ops 案例库检索历史故障处理记录（与通用知识库隔离）。",
+		Desc: "Retrieve historical ops incidents and final reports from the hybrid RAG index.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"query": {
 				Type:     schema.String,
-				Desc:     "检索查询文本",
+				Desc:     "retrieval query",
 				Required: true,
 			},
 			"top_k": {
 				Type:     schema.Integer,
-				Desc:     "返回结果数量，默认 3，最大 10",
+				Desc:     "final result count, default 3, max 10",
 				Required: false,
 			},
 		}),
@@ -68,49 +73,35 @@ func (t *OpsCaseRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSON 
 	if in.Query == "" {
 		return "", fmt.Errorf("query is required")
 	}
-	if in.TopK <= 0 {
-		in.TopK = 3
-	}
-	if in.TopK > 10 {
-		in.TopK = 10
-	}
-
-	if t.retriever == nil {
-		items := t.retrieveLocalFinalReports(in.Query, in.TopK)
-		out, err := json.Marshal(map[string]any{
-			"status":  "degraded",
-			"query":   in.Query,
-			"count":   len(items),
-			"results": items,
-			"message": "ops case retriever unavailable, fallback to local final reports",
-		})
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal degraded result: %w", err)
-		}
-		return string(out), nil
-	}
+	in.TopK = rag.DefaultConfig().CapFinalTopK(in.TopK)
 
 	localReports := t.retrieveLocalFinalReports(in.Query, in.TopK)
+	if t.retriever == nil {
+		return marshalOpsContext(in.Query, "degraded", []string{"ops case retriever unavailable, fallback to local final reports"}, localReports)
+	}
+
+	if provider, ok := t.retriever.(retrievedContextProvider); ok {
+		result, err := provider.RetrieveContext(ctx, in.Query, in.TopK)
+		if err != nil {
+			return "", err
+		}
+		items := mergeOpsCaseResults(localReports, opsItemsFromRAG(result.Results), in.TopK)
+		result.Results = ragResultsFromOpsItems(items)
+		result.Count = len(result.Results)
+		truncateOpsNonFinalReports(result.Results, 500)
+		return marshalRetrievedContext(result)
+	}
+
 	docs, err := t.retriever.Retrieve(ctx, in.Query, einoretriever.WithTopK(in.TopK))
 	if err != nil {
 		if strings.Contains(err.Error(), "extra output fields") {
 			if t.logger != nil {
-				t.logger.Warn("ops case retrieve schema mismatch, fallback to empty result",
+				t.logger.Warn("ops case retrieve schema mismatch, fallback to local final reports",
 					zap.String("query", in.Query),
 					zap.Int("top_k", in.TopK),
 					zap.Error(err))
 			}
-			out, marshalErr := json.Marshal(map[string]any{
-				"status":  "degraded",
-				"query":   in.Query,
-				"count":   len(localReports),
-				"results": localReports,
-				"message": "ops case collection schema mismatch, fallback to local final reports",
-			})
-			if marshalErr != nil {
-				return "", fmt.Errorf("failed to marshal degraded result: %w", marshalErr)
-			}
-			return string(out), nil
+			return marshalOpsContext(in.Query, "degraded", []string{"ops case collection schema mismatch, fallback to local final reports"}, localReports)
 		}
 		if t.logger != nil {
 			t.logger.Error("ops case retrieve failed",
@@ -118,17 +109,7 @@ func (t *OpsCaseRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSON 
 				zap.Int("top_k", in.TopK),
 				zap.Error(err))
 		}
-		out, marshalErr := json.Marshal(map[string]any{
-			"status":  "error",
-			"query":   in.Query,
-			"count":   len(localReports),
-			"results": localReports,
-			"message": err.Error(),
-		})
-		if marshalErr != nil {
-			return "", fmt.Errorf("failed to marshal error result: %w", marshalErr)
-		}
-		return string(out), nil
+		return marshalOpsContext(in.Query, "error", []string{err.Error()}, localReports)
 	}
 
 	items := make([]resultItem, 0, len(docs))
@@ -148,30 +129,106 @@ func (t *OpsCaseRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSON 
 			content = string([]rune(content)[:500]) + "..."
 		}
 		items = append(items, resultItem{
-			ID:      doc.ID,
-			Content: content,
-			Score:   doc.Score(),
-			Meta:    meta,
+			ID:            doc.ID,
+			Content:       content,
+			Score:         doc.Score(),
+			Source:        "embedding_legacy",
+			RetrievalPath: []string{"embedding"},
+			Meta:          meta,
 		})
 	}
 
 	items = mergeOpsCaseResults(localReports, items, in.TopK)
-
-	out, err := json.Marshal(map[string]any{
-		"status":  "success",
-		"query":   in.Query,
-		"count":   len(items),
-		"results": items,
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal result: %w", err)
-	}
-	return string(out), nil
+	return marshalOpsContext(in.Query, "success", nil, items)
 }
 
-// retrieveLocalFinalReports 从本地完整技术报告目录中检索与 query 相关的报告。
-// 输入：query、topK。
-// 输出：按相关度排序的完整技术报告结果。
+func marshalOpsContext(query, status string, reasons []string, items []resultItem) (string, error) {
+	result := &rag.RetrievedContext{
+		Status:           status,
+		Profile:          rag.ProfileOpsCase,
+		Query:            query,
+		RewrittenQueries: []string{query},
+		DegradedReasons:  reasons,
+		Results:          ragResultsFromOpsItems(items),
+	}
+	return marshalRetrievedContext(result)
+}
+
+func opsItemsFromRAG(results []rag.RetrievedResult) []resultItem {
+	out := make([]resultItem, 0, len(results))
+	for _, item := range results {
+		out = append(out, resultItem{
+			ID:            item.ID,
+			Content:       item.Content,
+			Score:         item.Score,
+			Source:        item.Source,
+			RetrievalPath: item.RetrievalPath,
+			Meta:          item.Meta,
+		})
+	}
+	return out
+}
+
+func ragResultsFromOpsItems(items []resultItem) []rag.RetrievedResult {
+	out := make([]rag.RetrievedResult, 0, len(items))
+	for _, item := range items {
+		source := strings.TrimSpace(item.Source)
+		if source == "" {
+			source = strings.TrimSpace(fmt.Sprintf("%v", item.Meta["retrieval_source"]))
+		}
+		if source == "" {
+			source = strings.TrimSpace(fmt.Sprintf("%v", item.Meta["source"]))
+		}
+		out = append(out, rag.RetrievedResult{
+			ID:            item.ID,
+			Content:       item.Content,
+			Score:         item.Score,
+			Source:        source,
+			RetrievalPath: resolveOpsRetrievalPath(item, source),
+			Meta:          item.Meta,
+		})
+	}
+	return out
+}
+
+func resolveOpsRetrievalPath(item resultItem, source string) []string {
+	if len(item.RetrievalPath) > 0 {
+		return append([]string(nil), item.RetrievalPath...)
+	}
+	if source != "" {
+		if strings.Contains(source, "local") {
+			return []string{"local"}
+		}
+		if strings.Contains(source, "bm25") {
+			return []string{"bm25"}
+		}
+		if strings.Contains(source, "embedding") {
+			return []string{"embedding"}
+		}
+	}
+	if strings.TrimSpace(fmt.Sprintf("%v", item.Meta["path"])) != "" {
+		return []string{"local"}
+	}
+	return nil
+}
+
+func truncateOpsNonFinalReports(results []rag.RetrievedResult, maxRunes int) {
+	for i := range results {
+		meta := results[i].Meta
+		sourceType := strings.TrimSpace(fmt.Sprintf("%v", meta["source_type"]))
+		if sourceType == "" {
+			sourceType = strings.TrimSpace(fmt.Sprintf("%v", meta["type"]))
+		}
+		if sourceType == "ops_final_report" {
+			continue
+		}
+		if len([]rune(results[i].Content)) > maxRunes {
+			results[i].Content = string([]rune(results[i].Content)[:maxRunes]) + "..."
+		}
+	}
+}
+
+// retrieveLocalFinalReports searches locally archived final reports.
 func (t *OpsCaseRetrieveTool) retrieveLocalFinalReports(query string, topK int) []resultItem {
 	dir := filepath.Join("logs", "ops_reports")
 	entries, err := os.ReadDir(dir)
@@ -204,11 +261,13 @@ func (t *OpsCaseRetrieveTool) retrieveLocalFinalReports(query string, topK int) 
 			ID:      "file:" + entry.Name(),
 			Content: content,
 			Score:   score,
+			Source:  "local_file",
 			Meta: map[string]any{
-				"type":   "ops_final_report",
-				"source": "local_file",
-				"path":   path,
-				"title":  entry.Name(),
+				"type":        "ops_final_report",
+				"source_type": "ops_final_report",
+				"source":      "local_file",
+				"path":        path,
+				"title":       entry.Name(),
 			},
 		})
 	}
@@ -226,9 +285,6 @@ func (t *OpsCaseRetrieveTool) retrieveLocalFinalReports(query string, topK int) 
 	return results
 }
 
-// mergeOpsCaseResults 合并本地完整技术报告与向量检索结果，并优先返回 ops_final_report。
-// 输入：localReports、retrieved、topK。
-// 输出：去重后的结果列表。
 func mergeOpsCaseResults(localReports, retrieved []resultItem, topK int) []resultItem {
 	out := make([]resultItem, 0, len(localReports)+len(retrieved))
 	seen := make(map[string]struct{}, len(localReports)+len(retrieved))
@@ -256,8 +312,8 @@ func mergeOpsCaseResults(localReports, retrieved []resultItem, topK int) []resul
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {
-		leftType := strings.TrimSpace(fmt.Sprintf("%v", out[i].Meta["type"]))
-		rightType := strings.TrimSpace(fmt.Sprintf("%v", out[j].Meta["type"]))
+		leftType := strings.TrimSpace(fmt.Sprintf("%v", firstOpsMeta(out[i].Meta, "source_type", "type")))
+		rightType := strings.TrimSpace(fmt.Sprintf("%v", firstOpsMeta(out[j].Meta, "source_type", "type")))
 		if leftType != rightType {
 			if leftType == "ops_final_report" {
 				return true
@@ -275,17 +331,18 @@ func mergeOpsCaseResults(localReports, retrieved []resultItem, topK int) []resul
 	return out
 }
 
-// splitQueryKeywords 将查询文本拆成关键词。
-// 输入：query。
-// 输出：关键词列表。
+func firstOpsMeta(meta map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if value, ok := meta[key]; ok {
+			return value
+		}
+	}
+	return ""
+}
+
 func splitQueryKeywords(query string) []string {
 	parts := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(query)), func(r rune) bool {
-		switch r {
-		case ' ', '\t', '\n', ',', '，', '。', ':', '：', ';', '；', '/', '\\', '-', '_':
-			return true
-		default:
-			return false
-		}
+		return unicode.IsSpace(r) || strings.ContainsRune(",，。:：;；/\\-_()[]{}<>|", r)
 	})
 	out := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -298,18 +355,16 @@ func splitQueryKeywords(query string) []string {
 	return out
 }
 
-// scoreLocalReport 计算本地技术报告与查询的粗略相关度。
-// 输入：query、keywords、filename、content。
-// 输出：相关度分数。
 func scoreLocalReport(query string, keywords []string, filename, content string) float64 {
 	filenameLower := strings.ToLower(filename)
 	contentLower := strings.ToLower(content)
+	queryLower := strings.ToLower(strings.TrimSpace(query))
 	score := 0.0
 
-	if query != "" && strings.Contains(contentLower, strings.ToLower(query)) {
+	if queryLower != "" && strings.Contains(contentLower, queryLower) {
 		score += 5
 	}
-	if query != "" && strings.Contains(filenameLower, strings.ToLower(query)) {
+	if queryLower != "" && strings.Contains(filenameLower, queryLower) {
 		score += 3
 	}
 	for _, keyword := range keywords {
@@ -320,15 +375,12 @@ func scoreLocalReport(query string, keywords []string, filename, content string)
 			score += 0.5
 		}
 	}
-	if strings.Contains(content, "## 运维技术报告") {
+	if strings.Contains(content, "运维技术报告") || strings.Contains(strings.ToLower(content), "final report") {
 		score += 1
 	}
 	return score
 }
 
-// stripMarkdownFrontMatter 去掉 markdown 文件头部 front matter。
-// 输入：markdown 文本。
-// 输出：去掉 front matter 后的正文。
 func stripMarkdownFrontMatter(content string) string {
 	content = strings.TrimSpace(content)
 	if !strings.HasPrefix(content, "---\n") {
@@ -341,9 +393,6 @@ func stripMarkdownFrontMatter(content string) string {
 	return strings.TrimSpace(parts[1])
 }
 
-// extractOpsCaseContent 提取运维案例文本。
-// 输入：Milvus 检索返回的 Document。
-// 输出：优先 doc.Content，其次从 metadata 的常见文本字段回退提取。
 func extractOpsCaseContent(doc *schema.Document) string {
 	if doc == nil {
 		return ""

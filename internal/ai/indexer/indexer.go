@@ -31,6 +31,9 @@ func NewMilvusIndexerWithCollection(ctx context.Context, collection string) (*mi
 	if collection == "" {
 		collection = common.LoadMilvusConfig(ctx).Collection
 	}
+	if err := client.EnsureMilvusCollection(ctx, cli, collection); err != nil {
+		return nil, err
+	}
 
 	config := &milvus.IndexerConfig{
 		Client:            cli,
