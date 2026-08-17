@@ -292,6 +292,45 @@ func TestContractGuardedExecutionSkipsInvalidContract(t *testing.T) {
 	}
 }
 
+func TestContractGuardedExecutionResumeRechecksPlanGuard(t *testing.T) {
+	t.Parallel()
+
+	resumeRan := false
+	guard := newContractGuardedExecutionAgent(incidentResumableFuncAgent{
+		incidentRunFuncAgent: incidentRunFuncAgent{
+			name: "execution_agent",
+			run: func(context.Context, *adk.AgentInput, ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
+				t.Fatal("run should not be called by resume")
+				return nil
+			},
+		},
+		resume: func(context.Context, *adk.ResumeInfo, ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
+			resumeRan = true
+			iterator, generator := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+			go func() {
+				defer generator.Close()
+				generator.Send(assistantEvent("inner resumed"))
+			}()
+			return iterator
+		},
+	}, nil)
+
+	resumable, ok := guard.(adk.ResumableAgent)
+	if !ok {
+		t.Fatal("expected guarded execution agent to be resumable")
+	}
+	events := collectIncidentContractEvents(resumable.Resume(context.Background(), &adk.ResumeInfo{WasInterrupted: true, IsResumeTarget: true}))
+	if resumeRan {
+		t.Fatal("execution inner agent resumed despite missing canonical plan approval")
+	}
+	if len(events) == 0 {
+		t.Fatal("expected resume guard to emit skip event")
+	}
+	if got := events[0].Output.MessageOutput.Message.Content; !strings.Contains(got, "resume skipped") {
+		t.Fatalf("unexpected guard output: %q", got)
+	}
+}
+
 func TestIncidentContractAllowsExecutionRequiresValidGate(t *testing.T) {
 	t.Parallel()
 
@@ -367,6 +406,15 @@ func (a incidentRunFuncAgent) Description(context.Context) string {
 
 func (a incidentRunFuncAgent) Run(ctx context.Context, input *adk.AgentInput, opts ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
 	return a.run(ctx, input, opts...)
+}
+
+type incidentResumableFuncAgent struct {
+	incidentRunFuncAgent
+	resume func(context.Context, *adk.ResumeInfo, ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent]
+}
+
+func (a incidentResumableFuncAgent) Resume(ctx context.Context, info *adk.ResumeInfo, opts ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
+	return a.resume(ctx, info, opts...)
 }
 
 func collectIncidentContractEvents(iter *adk.AsyncIterator[*adk.AgentEvent]) []*adk.AgentEvent {

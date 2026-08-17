@@ -27,6 +27,7 @@ func init() {
 	gob.Register(&PlanState{})
 	gob.Register(&PlanGateState{})
 	gob.Register(&PlanVerificationState{})
+	gob.Register(&ExecutionStepTrace{})
 	gob.Register(&ReplanState{})
 	gob.Register(&PlanApprovalState{})
 }
@@ -66,6 +67,19 @@ type PlanVerificationState struct {
 	FailedStepID int    `json:"failed_step_id,omitempty"`
 	Reason       string `json:"reason,omitempty"`
 	VerifiedAt   string `json:"verified_at,omitempty"`
+}
+
+type ExecutionStepTrace struct {
+	StepID           int    `json:"step_id,omitempty"`
+	Ordinal          int    `json:"ordinal,omitempty"`
+	Description      string `json:"description,omitempty"`
+	Status           string `json:"status,omitempty"`
+	ValidationStatus string `json:"validation_status,omitempty"`
+	Success          *bool  `json:"success,omitempty"`
+	FailedReason     string `json:"failed_reason,omitempty"`
+	Duration         int    `json:"duration,omitempty"`
+	ExitCode         *int   `json:"exit_code,omitempty"`
+	ExecutedAt       string `json:"executed_at,omitempty"`
 }
 
 type ReplanState struct {
@@ -138,25 +152,26 @@ type IncidentState struct {
 	ValidationBlocked bool   `json:"validation_blocked,omitempty"`
 	ValidationRisk    string `json:"validation_risk,omitempty"`
 
-	ExecutionStatus          string   `json:"execution_status,omitempty"`
-	ExecutionSuccess         bool     `json:"execution_success,omitempty"`
-	ExecutionStepCount       int      `json:"execution_step_count,omitempty"`
-	ExecutionReason          string   `json:"execution_reason,omitempty"`
-	ExecutionFallback        string   `json:"execution_fallback,omitempty"`
-	ExecutionOverallHealth   string   `json:"execution_overall_health,omitempty"`
-	ExecutionFindings        []string `json:"execution_findings,omitempty"`
-	ExecutionIssues          []string `json:"execution_issues,omitempty"`
-	ExecutionRecommendations []string `json:"execution_recommendations,omitempty"`
-	ExecutionPlanID          string   `json:"execution_plan_id,omitempty"`
-	ExecutionPlanDesc        string   `json:"execution_plan_desc,omitempty"`
-	ExecutionPlanRisk        string   `json:"execution_plan_risk,omitempty"`
-	ExecutionPlanSteps       []string `json:"execution_plan_steps,omitempty"`
-	ExecutionLogs            []string `json:"execution_logs,omitempty"`
-	RepeatedIssueKey         string   `json:"repeated_issue_key,omitempty"`
-	RepeatedIssueReason      string   `json:"repeated_issue_reason,omitempty"`
-	RepeatedIssueRetryCount  int      `json:"repeated_issue_retry_count,omitempty"`
-	RepeatedIssueRetryLimit  int      `json:"repeated_issue_retry_limit,omitempty"`
-	RepeatedIssueEscalated   bool     `json:"repeated_issue_escalated,omitempty"`
+	ExecutionStatus          string               `json:"execution_status,omitempty"`
+	ExecutionSuccess         bool                 `json:"execution_success,omitempty"`
+	ExecutionStepCount       int                  `json:"execution_step_count,omitempty"`
+	ExecutionExecutedSteps   []ExecutionStepTrace `json:"execution_executed_steps,omitempty"`
+	ExecutionReason          string               `json:"execution_reason,omitempty"`
+	ExecutionFallback        string               `json:"execution_fallback,omitempty"`
+	ExecutionOverallHealth   string               `json:"execution_overall_health,omitempty"`
+	ExecutionFindings        []string             `json:"execution_findings,omitempty"`
+	ExecutionIssues          []string             `json:"execution_issues,omitempty"`
+	ExecutionRecommendations []string             `json:"execution_recommendations,omitempty"`
+	ExecutionPlanID          string               `json:"execution_plan_id,omitempty"`
+	ExecutionPlanDesc        string               `json:"execution_plan_desc,omitempty"`
+	ExecutionPlanRisk        string               `json:"execution_plan_risk,omitempty"`
+	ExecutionPlanSteps       []string             `json:"execution_plan_steps,omitempty"`
+	ExecutionLogs            []string             `json:"execution_logs,omitempty"`
+	RepeatedIssueKey         string               `json:"repeated_issue_key,omitempty"`
+	RepeatedIssueReason      string               `json:"repeated_issue_reason,omitempty"`
+	RepeatedIssueRetryCount  int                  `json:"repeated_issue_retry_count,omitempty"`
+	RepeatedIssueRetryLimit  int                  `json:"repeated_issue_retry_limit,omitempty"`
+	RepeatedIssueEscalated   bool                 `json:"repeated_issue_escalated,omitempty"`
 
 	FinalStatus string `json:"final_status,omitempty"`
 	FinalReport string `json:"final_report,omitempty"`
@@ -384,7 +399,8 @@ func (a *stateBridgeAgent) updateByStage(state *IncidentState, msg *schema.Messa
 					}
 				}
 			}
-			state.ExecutionStepCount = parseExecutedStepCount(result)
+			state.ExecutionExecutedSteps = parseExecutedStepTraces(result)
+			state.ExecutionStepCount = len(state.ExecutionExecutedSteps)
 			if value, exists := result["failed_reason"]; exists {
 				if reason, ok := value.(string); ok && strings.TrimSpace(reason) != "" {
 					state.ExecutionReason = clipText(reason, 600)
@@ -701,6 +717,7 @@ func applyReplanDecisionState(state *IncidentState, decision, reason, source, ru
 		state.ExecutionStatus = "replan_required"
 		state.ExecutionSuccess = false
 		state.ObservationRefreshNeeded = true
+		invalidateCurrentPlanForObservationRefresh(state)
 		if reason != "" {
 			state.ObservationRefreshReason = reason
 		}
@@ -728,6 +745,28 @@ func applyReplanDecisionState(state *IncidentState, decision, reason, source, ru
 		RuntimeObservationSummary: runtimeSummary,
 		UpdatedAt:                 time.Now().Format(time.RFC3339),
 	}
+}
+
+func invalidateCurrentPlanForObservationRefresh(state *IncidentState) {
+	if state == nil {
+		return
+	}
+	state.PlanState = nil
+	state.PlanGateState = nil
+	state.PlanVerification = nil
+	state.PlanApprovalState = nil
+	state.ValidationBlocked = false
+	state.ValidationRisk = ""
+	state.ExecutionStepCount = 0
+	state.ExecutionExecutedSteps = nil
+	state.ExecutionOverallHealth = ""
+	state.ExecutionFindings = nil
+	state.ExecutionIssues = nil
+	state.ExecutionRecommendations = nil
+	state.ExecutionPlanID = ""
+	state.ExecutionPlanDesc = ""
+	state.ExecutionPlanRisk = ""
+	state.ExecutionPlanSteps = nil
 }
 
 func normalizeReplanDecision(decision string) string {
@@ -794,6 +833,41 @@ func compactPlanVerificationForRender(verification *PlanVerificationState) map[s
 		"reason":         verification.Reason,
 		"verified_at":    verification.VerifiedAt,
 	}
+}
+
+func compactExecutionStepTracesForRender(steps []ExecutionStepTrace) []map[string]any {
+	if len(steps) == 0 {
+		return nil
+	}
+	limit := len(steps)
+	if limit > 8 {
+		limit = 8
+	}
+	out := make([]map[string]any, 0, limit)
+	for idx := 0; idx < limit; idx++ {
+		step := steps[idx]
+		entry := map[string]any{
+			"step_id": step.StepID,
+			"ordinal": step.Ordinal,
+		}
+		if step.Description != "" {
+			entry["description"] = step.Description
+		}
+		if step.Status != "" {
+			entry["status"] = step.Status
+		}
+		if step.ValidationStatus != "" {
+			entry["validation_status"] = step.ValidationStatus
+		}
+		if step.Success != nil {
+			entry["success"] = *step.Success
+		}
+		if step.FailedReason != "" {
+			entry["failed_reason"] = step.FailedReason
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func incidentHistoryRewriter(ctx context.Context, entries []*adk.HistoryEntry) ([]adk.Message, error) {
@@ -876,6 +950,7 @@ func renderIncidentState(state *IncidentState) string {
 		"execution_status":              state.ExecutionStatus,
 		"execution_success":             state.ExecutionSuccess,
 		"execution_step_count":          state.ExecutionStepCount,
+		"execution_executed_steps":      compactExecutionStepTracesForRender(state.ExecutionExecutedSteps),
 		"execution_reason":              state.ExecutionReason,
 		"execution_fallback":            state.ExecutionFallback,
 		"execution_overall_health":      state.ExecutionOverallHealth,

@@ -149,20 +149,110 @@ func parseExecutionResult(messages []adk.Message) (map[string]any, bool) {
 // 输入：execute_plan 输出的结构化结果对象。
 // 输出：执行步骤数；无法识别时返回 0。
 func parseExecutedStepCount(result map[string]any) int {
+	return len(parseExecutedStepTraces(result))
+}
+
+func parseExecutedStepTraces(result map[string]any) []ExecutionStepTrace {
 	if result == nil {
-		return 0
+		return nil
 	}
 	value, exists := result["executed_steps"]
 	if !exists || value == nil {
-		return 0
+		return nil
 	}
+
+	var rawSteps []any
 	switch typed := value.(type) {
 	case []any:
-		return len(typed)
+		rawSteps = typed
 	case []map[string]any:
-		return len(typed)
+		rawSteps = make([]any, 0, len(typed))
+		for _, item := range typed {
+			rawSteps = append(rawSteps, item)
+		}
+	default:
+		return nil
+	}
+
+	traces := make([]ExecutionStepTrace, 0, len(rawSteps))
+	for idx, item := range rawSteps {
+		stepMap := normalizeExecutedStepMap(item)
+		if stepMap == nil {
+			continue
+		}
+		trace := ExecutionStepTrace{
+			Ordinal:          idx + 1,
+			StepID:           firstPositiveInt(stepMap["step_id"], stepMap["id"], stepMap["step"]),
+			Description:      clipText(firstNonEmptyText(stringFromMap(stepMap, "description"), stringFromMap(stepMap, "command")), 240),
+			Status:           strings.ToLower(strings.TrimSpace(firstNonEmptyText(stringFromMap(stepMap, "status"), stringFromMap(stepMap, "execution_status")))),
+			ValidationStatus: strings.ToLower(strings.TrimSpace(firstNonEmptyText(stringFromMap(stepMap, "validation_status"), stringFromMap(stepMap, "validation")))),
+			FailedReason:     clipText(firstNonEmptyText(stringFromMap(stepMap, "failed_reason"), stringFromMap(stepMap, "error"), stringFromMap(stepMap, "reason")), 600),
+			Duration:         intFromAny(stepMap["duration"]),
+			ExecutedAt:       strings.TrimSpace(stringFromMap(stepMap, "executed_at")),
+		}
+		if success, ok := boolFromAny(stepMap["success"]); ok {
+			trace.Success = boolPointer(success)
+		}
+		if executed, ok := boolFromAny(stepMap["executed"]); ok && !executed {
+			trace.Success = boolPointer(false)
+			if trace.FailedReason == "" {
+				trace.FailedReason = "step was not executed"
+			}
+		}
+		if valid, ok := boolFromAny(stepMap["valid"]); ok {
+			if trace.ValidationStatus == "" {
+				if valid {
+					trace.ValidationStatus = "success"
+				} else {
+					trace.ValidationStatus = "failed"
+				}
+			}
+			if !valid && trace.Success == nil {
+				trace.Success = boolPointer(false)
+			}
+		}
+		if _, exists := stepMap["exit_code"]; exists {
+			exitCode := intFromAny(stepMap["exit_code"])
+			trace.ExitCode = intPointer(exitCode)
+			if exitCode != 0 && trace.Success == nil {
+				trace.Success = boolPointer(false)
+			}
+		}
+		traces = append(traces, trace)
+	}
+	return traces
+}
+
+func normalizeExecutedStepMap(value any) map[string]any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return typed
+	case map[string]string:
+		out := make(map[string]any, len(typed))
+		for key, val := range typed {
+			out[key] = val
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func firstPositiveInt(values ...any) int {
+	for _, value := range values {
+		if parsed := intFromAny(value); parsed > 0 {
+			return parsed
+		}
 	}
 	return 0
+}
+
+func boolPointer(value bool) *bool {
+	return &value
+}
+
+func intPointer(value int) *int {
+	return &value
 }
 
 // parseExecutionStatusText 提取 execution_status 字段文本。

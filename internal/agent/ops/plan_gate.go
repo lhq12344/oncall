@@ -190,9 +190,9 @@ func (a *planApprovalAgent) Resume(ctx context.Context, info *adk.ResumeInfo, _ 
 			return
 		}
 
-		approved, resolved, comment := parseResumeDecision(info.ResumeData)
+		approved, comment := parsePlanApprovalDecision(info.ResumeData)
 		state := getIncidentState(ctx)
-		if approved || resolved {
+		if approved {
 			if !pendingPlanApprovalMatchesCurrentPlan(state) {
 				reason := "pending plan approval snapshot does not match current canonical plan"
 				markPlanApprovalPending(state, reason)

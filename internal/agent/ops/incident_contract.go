@@ -3,6 +3,7 @@ package ops
 import (
 	"context"
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -174,6 +175,9 @@ func parseResumeDecision(data any) (approved bool, resolved bool, comment string
 	case string:
 		text := strings.TrimSpace(v)
 		lower := strings.ToLower(text)
+		if resumeTextHasDenyIntent(lower) {
+			return false, false, text
+		}
 		if strings.Contains(lower, "确认") || strings.Contains(lower, "resolved") ||
 			strings.Contains(lower, "fixed") || strings.Contains(lower, "yes") {
 			return true, true, text
@@ -202,4 +206,173 @@ func parseResumeDecision(data any) (approved bool, resolved bool, comment string
 	default:
 		return false, false, fmt.Sprintf("%v", v)
 	}
+}
+
+func parsePlanApprovalDecision(data any) (approved bool, comment string) {
+	switch v := data.(type) {
+	case nil:
+		return false, ""
+	case string:
+		text := strings.TrimSpace(v)
+		if text == "" {
+			return false, ""
+		}
+		var structured map[string]any
+		if err := json.Unmarshal([]byte(text), &structured); err == nil && structured != nil {
+			return parsePlanApprovalDecision(structured)
+		}
+		lower := strings.ToLower(text)
+		if planApprovalTextHasDenyIntent(lower) {
+			return false, text
+		}
+		if planApprovalTextIsExactApproval(lower) {
+			return true, text
+		}
+		return false, text
+	case map[string]any:
+		if msg, ok := v["comment"].(string); ok {
+			comment = strings.TrimSpace(msg)
+		}
+		if msg, ok := v["reason"].(string); ok && comment == "" {
+			comment = strings.TrimSpace(msg)
+		}
+		if planApprovalStructuredDenies(v) {
+			return false, comment
+		}
+		if b, ok := boolFromAny(v["approved"]); ok && b {
+			return true, comment
+		}
+		if b, ok := boolFromAny(v["approval"]); ok && b {
+			return true, comment
+		}
+		for _, key := range []string{"decision", "action", "status"} {
+			if text, ok := v[key].(string); ok {
+				lower := strings.ToLower(strings.TrimSpace(text))
+				if planApprovalTextHasDenyIntent(lower) {
+					return false, comment
+				}
+				if planApprovalTextIsExactApproval(lower) {
+					return true, comment
+				}
+			}
+		}
+		return false, comment
+	case map[string]string:
+		tmp := make(map[string]any, len(v))
+		for k, val := range v {
+			tmp[k] = val
+		}
+		return parsePlanApprovalDecision(tmp)
+	default:
+		return false, fmt.Sprintf("%v", v)
+	}
+}
+
+func planApprovalStructuredDenies(values map[string]any) bool {
+	for _, key := range []string{"approved", "approval"} {
+		if b, ok := boolFromAny(values[key]); ok && !b {
+			return true
+		}
+	}
+	for _, key := range []string{"decision", "action", "status", "comment", "reason"} {
+		if text, ok := values[key].(string); ok && planApprovalTextHasDenyIntent(strings.ToLower(strings.TrimSpace(text))) {
+			return true
+		}
+	}
+	return false
+}
+
+func planApprovalTextHasDenyIntent(lower string) bool {
+	normalized := normalizeDecisionText(lower)
+	for _, phrase := range []string{
+		"不确认",
+		"不要执行",
+		"不执行",
+		"不批准",
+		"不同意",
+		"拒绝",
+		"否",
+		"取消",
+		"停止",
+		"approved:false",
+		"approved=false",
+		`"approved":false`,
+		"approval:false",
+		"approval=false",
+		"notyes",
+		"notapproved",
+		"notapprove",
+		"donotapprove",
+		"do-not-approve",
+		"reject",
+		"rejected",
+		"deny",
+		"denied",
+		"decline",
+		"declined",
+		"disapprove",
+	} {
+		if normalized == phrase || strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	switch normalized {
+	case "false", "0", "no", "n":
+		return true
+	}
+	return false
+}
+
+func planApprovalTextIsExactApproval(lower string) bool {
+	switch normalizeDecisionText(lower) {
+	case "true", "1", "yes", "y", "ok", "approve", "approved", "confirm", "confirmed",
+		"批准", "同意", "确认", "确认执行", "批准执行", "同意执行", "可以执行", "允许执行",
+		"approved:true", "approved=true", `"approved":true`, "approval:true", "approval=true":
+		return true
+	default:
+		return false
+	}
+}
+
+func resumeTextHasDenyIntent(lower string) bool {
+	normalized := normalizeDecisionText(lower)
+	for _, phrase := range []string{
+		"不确认",
+		"未解决",
+		"未修复",
+		"不要执行",
+		"不执行",
+		"拒绝",
+		"否",
+		"notyes",
+		"notresolved",
+		"notfixed",
+		"retry",
+		"replan",
+		"reject",
+		"deny",
+	} {
+		if normalized == phrase || strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	switch normalized {
+	case "false", "0", "no", "n":
+		return true
+	}
+	return false
+}
+
+func normalizeDecisionText(text string) string {
+	replacer := strings.NewReplacer(
+		" ", "",
+		"\t", "",
+		"\r", "",
+		"\n", "",
+		"：", ":",
+		"“", `"`,
+		"”", `"`,
+		"'", `"`,
+	)
+	return replacer.Replace(strings.ToLower(strings.TrimSpace(text)))
 }

@@ -130,6 +130,29 @@ func (a *contractGuardedExecutionAgent) Run(ctx context.Context, input *adk.Agen
 }
 
 func (a *contractGuardedExecutionAgent) Resume(ctx context.Context, info *adk.ResumeInfo, opts ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
+	state := getIncidentState(ctx)
+	if allowed, reason := executionGuardAllowsExecution(state); !allowed {
+		iterator, generator := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+		go func() {
+			defer generator.Close()
+			if a.logger != nil {
+				a.logger.Warn("skip execution resume because incident contract or plan gate is invalid", zap.String("reason", reason))
+			}
+			generator.Send(assistantEvent("execution_agent resume skipped: " + reason))
+		}()
+		return iterator
+	}
+	if err := prepareExecutionToolStateFromApprovedPlan(ctx, state); err != nil {
+		iterator, generator := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+		go func() {
+			defer generator.Close()
+			if a.logger != nil {
+				a.logger.Warn("skip execution resume because approved plan could not seed execution tool state", zap.Error(err))
+			}
+			generator.Send(assistantEvent("execution_agent resume skipped: " + err.Error()))
+		}()
+		return iterator
+	}
 	resumable, ok := a.inner.(adk.ResumableAgent)
 	if !ok {
 		iterator, generator := adk.NewAsyncIteratorPair[*adk.AgentEvent]()

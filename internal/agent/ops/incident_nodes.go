@@ -119,12 +119,12 @@ func buildPlanVerificationPayload(state *IncidentState) planVerificationResultPa
 
 	switch strings.ToLower(strings.TrimSpace(state.ExecutionStatus)) {
 	case "success":
-		if state.ExecutionStepCount <= 0 {
+		if ok, failedStepID, reason := executionTraceCoversPlan(state); !ok {
 			payload.VerificationStatus = "failed"
 			payload.ExecutionStatus = "failed"
 			payload.Success = false
-			payload.FailedStepID = firstPlanStepID(state)
-			payload.FailedReason = "execution reported success without step execution trace"
+			payload.FailedStepID = failedStepID
+			payload.FailedReason = reason
 			return payload
 		}
 		if len(state.ExecutionIssues) > 0 {
@@ -168,22 +168,106 @@ func buildPlanVerificationPayload(state *IncidentState) planVerificationResultPa
 }
 
 func planExecutionTracePayload(state *IncidentState) []map[string]any {
-	if state == nil || state.ExecutionStepCount <= 0 {
+	if state == nil || len(state.ExecutionExecutedSteps) == 0 {
 		return nil
 	}
-	out := make([]map[string]any, 0, state.ExecutionStepCount)
-	for idx := 0; idx < state.ExecutionStepCount; idx++ {
-		entry := map[string]any{"ordinal": idx + 1}
-		if state.PlanState != nil && idx < len(state.PlanState.Steps) {
-			step := state.PlanState.Steps[idx]
-			entry["step_id"] = step.StepID
-			entry["description"] = strings.TrimSpace(step.Description)
-		} else {
-			entry["step_id"] = idx + 1
+	out := make([]map[string]any, 0, len(state.ExecutionExecutedSteps))
+	for idx, trace := range state.ExecutionExecutedSteps {
+		entry := map[string]any{
+			"ordinal": firstPositiveInt(trace.Ordinal, idx+1),
+			"step_id": trace.StepID,
+		}
+		if trace.Description != "" {
+			entry["description"] = strings.TrimSpace(trace.Description)
+		} else if description := planStepDescriptionByID(state, trace.StepID); description != "" {
+			entry["description"] = description
+		}
+		if trace.Status != "" {
+			entry["status"] = trace.Status
+		}
+		if trace.ValidationStatus != "" {
+			entry["validation_status"] = trace.ValidationStatus
+		}
+		if trace.Success != nil {
+			entry["success"] = *trace.Success
+		}
+		if trace.FailedReason != "" {
+			entry["failed_reason"] = trace.FailedReason
 		}
 		out = append(out, entry)
 	}
 	return out
+}
+
+func executionTraceCoversPlan(state *IncidentState) (bool, int, string) {
+	if state == nil || state.PlanState == nil {
+		return false, 0, "missing canonical plan for execution trace verification"
+	}
+	expected := state.PlanState.Steps
+	if len(expected) == 0 {
+		return false, 0, "canonical plan has no steps to verify"
+	}
+	actual := state.ExecutionExecutedSteps
+	if len(actual) == 0 {
+		return false, firstPlanStepID(state), "execution reported success without step execution trace"
+	}
+
+	seen := make(map[int]bool, len(actual))
+	for idx, trace := range actual {
+		if trace.StepID <= 0 {
+			failedStepID := 0
+			if idx < len(expected) {
+				failedStepID = expected[idx].StepID
+			}
+			return false, failedStepID, fmt.Sprintf("executed step at ordinal %d is missing step_id", idx+1)
+		}
+		if seen[trace.StepID] {
+			return false, trace.StepID, fmt.Sprintf("executed step %d appears more than once", trace.StepID)
+		}
+		seen[trace.StepID] = true
+		if idx >= len(expected) {
+			return false, trace.StepID, fmt.Sprintf("execution produced extra step %d beyond canonical plan length %d", trace.StepID, len(expected))
+		}
+		expectedStep := expected[idx]
+		if trace.StepID != expectedStep.StepID {
+			return false, expectedStep.StepID, fmt.Sprintf("executed step order/id mismatch at ordinal %d: got step %d, want step %d", idx+1, trace.StepID, expectedStep.StepID)
+		}
+		if trace.Success != nil && !*trace.Success {
+			return false, trace.StepID, firstNonEmptyText(trace.FailedReason, fmt.Sprintf("executed step %d reported failure", trace.StepID))
+		}
+		if executionTraceStatusIsFailure(trace.Status) || executionTraceStatusIsFailure(trace.ValidationStatus) {
+			return false, trace.StepID, firstNonEmptyText(trace.FailedReason, fmt.Sprintf("executed step %d reported failed status", trace.StepID))
+		}
+		if trace.FailedReason != "" {
+			return false, trace.StepID, trace.FailedReason
+		}
+	}
+	if len(actual) != len(expected) {
+		missingStepID := expected[len(actual)].StepID
+		return false, missingStepID, fmt.Sprintf("execution trace covers %d/%d canonical plan steps", len(actual), len(expected))
+	}
+	return true, 0, ""
+}
+
+func executionTraceStatusIsFailure(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "failure", "error", "invalid", "mismatch", "manual_required", "replan_required", "blocked":
+		return true
+	default:
+		return false
+	}
+}
+
+func planStepDescriptionByID(state *IncidentState, stepID int) string {
+	if state == nil || state.PlanState == nil || stepID <= 0 {
+		return ""
+	}
+	for _, step := range state.PlanState.Steps {
+		if step.StepID == stepID {
+			return strings.TrimSpace(step.Description)
+		}
+	}
+	return ""
 }
 
 func firstPlanStepID(state *IncidentState) int {

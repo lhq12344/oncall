@@ -305,12 +305,82 @@ func TestVerifyPlanPayloadRequiresExecutionTrace(t *testing.T) {
 	}
 
 	state.ExecutionStepCount = 1
+	state.ExecutionExecutedSteps = []ExecutionStepTrace{{StepID: 7, Ordinal: 1, Description: "check pod status"}}
 	payload = buildPlanVerificationPayload(state)
 	if !payload.Success || payload.VerificationStatus != "success" || payload.ExecutionStatus != "success" {
 		t.Fatalf("expected traced success to pass verification, got %#v", payload)
 	}
 	if len(payload.ExecutedSteps) != 1 || payload.ExecutedSteps[0]["step_id"] != 7 {
 		t.Fatalf("executed step trace not emitted: %#v", payload.ExecutedSteps)
+	}
+}
+
+func TestVerifyPlanPayloadRejectsPartialOrWrongExecutionTrace(t *testing.T) {
+	t.Parallel()
+
+	state := &IncidentState{ExecutionStatus: "success", ExecutionSuccess: true}
+	applyExecutionPlanState(state, &GeneratedExecutionPlan{
+		PlanID:      "plan_002",
+		Description: "inspect pod health",
+		RiskLevel:   "low",
+		Steps: []GeneratedExecutionStep{
+			{StepID: 1, Description: "check pod status", Command: "kubectl", Args: []string{"get", "pod"}, ExpectedResult: "Running"},
+			{StepID: 2, Description: "check pod logs", Command: "kubectl", Args: []string{"logs", "pod"}, ExpectedResult: "no errors"},
+		},
+	})
+	state.ExecutionExecutedSteps = []ExecutionStepTrace{{StepID: 1, Ordinal: 1}}
+	state.ExecutionStepCount = len(state.ExecutionExecutedSteps)
+
+	payload := buildPlanVerificationPayload(state)
+	if payload.Success || payload.FailedStepID != 2 || !strings.Contains(payload.FailedReason, "1/2") {
+		t.Fatalf("expected partial trace to fail on missing step 2, got %#v", payload)
+	}
+
+	state.ExecutionExecutedSteps = []ExecutionStepTrace{{StepID: 1, Ordinal: 1}, {StepID: 99, Ordinal: 2}}
+	state.ExecutionStepCount = len(state.ExecutionExecutedSteps)
+	payload = buildPlanVerificationPayload(state)
+	if payload.Success || payload.FailedStepID != 2 || !strings.Contains(payload.FailedReason, "mismatch") {
+		t.Fatalf("expected wrong step id to fail on step 2, got %#v", payload)
+	}
+
+	ok := true
+	state.ExecutionExecutedSteps = []ExecutionStepTrace{{StepID: 1, Ordinal: 1, Success: &ok}, {StepID: 2, Ordinal: 2, ValidationStatus: "success"}}
+	state.ExecutionStepCount = len(state.ExecutionExecutedSteps)
+	payload = buildPlanVerificationPayload(state)
+	if !payload.Success || payload.VerificationStatus != "success" {
+		t.Fatalf("expected complete trace to pass, got %#v", payload)
+	}
+}
+
+func TestStateBridgePersistsExecutedStepTrace(t *testing.T) {
+	t.Parallel()
+
+	state := &IncidentState{}
+	applyExecutionPlanState(state, &GeneratedExecutionPlan{
+		PlanID:      "plan_003",
+		Description: "inspect pod health",
+		RiskLevel:   "low",
+		Steps: []GeneratedExecutionStep{{
+			StepID:         7,
+			Description:    "check pod status",
+			Command:        "kubectl",
+			Args:           []string{"get", "pod", "api-0", "-n", "infra"},
+			ExpectedResult: "pod Running",
+		}},
+	})
+	bridge := &stateBridgeAgent{stage: "execute_plan"}
+	msg := &schema.Message{Content: "{\"execution_status\":\"success\",\"success\":true,\"executed_steps\":[{\"step_id\":7,\"success\":true,\"validation_status\":\"success\",\"description\":\"check pod status\"}]}"}
+	bridge.updateByStage(state, msg)
+
+	if state.ExecutionStepCount != 1 || len(state.ExecutionExecutedSteps) != 1 {
+		t.Fatalf("expected one persisted executed step trace, count=%d trace=%#v", state.ExecutionStepCount, state.ExecutionExecutedSteps)
+	}
+	if state.ExecutionExecutedSteps[0].StepID != 7 || state.ExecutionExecutedSteps[0].Success == nil || !*state.ExecutionExecutedSteps[0].Success {
+		t.Fatalf("unexpected executed step trace: %#v", state.ExecutionExecutedSteps[0])
+	}
+	payload := buildPlanVerificationPayload(state)
+	if !payload.Success {
+		t.Fatalf("expected persisted trace to verify successfully, got %#v", payload)
 	}
 }
 
