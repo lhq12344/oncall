@@ -113,7 +113,7 @@ func NewIncidentWorkflowAgent(ctx context.Context, cfg *IncidentWorkflowConfig) 
 		planApproval:  planApproval,
 		executePlan:   executionAgent,
 		verifyPlan:    verifyPlan,
-		gate:          replanDecider,
+		replanDecider: replanDecider,
 		reporter:      reporter,
 	})
 	if err != nil {
@@ -148,7 +148,7 @@ type incidentWorkflowMembers struct {
 	planApproval  adk.Agent
 	executePlan   adk.Agent
 	verifyPlan    adk.Agent
-	gate          adk.Agent
+	replanDecider adk.Agent
 	reporter      adk.Agent
 }
 
@@ -174,7 +174,7 @@ func newIncidentWorkflowTeam(maxLoops int, members incidentWorkflowMembers) (*ag
 		{name: "plan_approval", description: "Bind approval to the full canonical plan snapshot", agent: members.planApproval},
 		{name: "execute_plan", description: "Execute only the approved canonical plan", agent: members.executePlan},
 		{name: "verify_plan", description: "Verify complete plan execution results against canonical success criteria", agent: members.verifyPlan},
-		{name: "replan_decider", description: "Normalize execution and verification facts into a ReplanDecision", agent: members.gate},
+		{name: "replan_decider", description: "Normalize execution and verification facts into a ReplanDecision", agent: members.replanDecider},
 		{name: "final_report", description: "Generate final technical incident report", agent: members.reporter},
 	}
 	for _, registration := range registrations {

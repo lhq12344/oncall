@@ -1,5 +1,7 @@
 # Agent 与工作流层核对报告（任务 ta575a1f9）
 
+> 历史报告：本文记录的是 Plan/Execute/Replan 重构前的阶段性审计快照，保留旧 stage 名称用于追溯。当前源码真实链路以 `docs/PROJECT_STRUCTURE.md` 和 `internal/agent/ops/incident_workflow.go` 为准。
+
 > 基于 D:/Code/project/oncall 当前代码（module `go_agent`，HEAD=8e7e922），代码实测，与原文档 docs/项目介绍.md 逐条对照。生成时间：见 git log HEAD。
 
 ## 1. Agent 目录结构（internal/agent/，9 个子目录）

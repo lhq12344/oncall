@@ -42,15 +42,17 @@ Controller(chat_v1) + ADK Runner
 
 ```text
 Sequential(
-  observation_collector,
-  rca_agent,
   Loop(
-    ops_agent,
-    execution_agent,
-    execution_gate
+    incident_analysis,
+    diagnosis_gate,
+    plan,
+    plan_gate,
+    plan_approval,
+    execute_plan,
+    verify_plan,
+    replan_decider
   ),
-  strategy_agent,
-  final_reporter
+  final_report
 )
 ```
 
@@ -96,13 +98,15 @@ Sequential(
 |---|---|---|
 | `dialogue_agent` | 对话入口、工具编排 | `intent_analysis`、`request_detail_selection`、`knowledge_retrieve`、`ops_case_retrieve`、`k8s_monitor`、`metrics_collector`、`web_search`、`bash_execute_with_approval` |
 | `knowledge_agent` | 文本知识上传、分片索引 | 上传链路 `BuildKnowledgeUploadChain` |
-| `observation_collector` | RCA 前观测快照采集 | `IntegratedOpsExecutor.QueryAllSources` |
-| `rca_agent` | 根因分析 | `k8s_monitor`、`metrics_collector`、`time_query`、`build_dependency_graph`、`correlate_signals`、`infer_root_cause`、`analyze_impact` |
-| `ops_agent` | 修复策略提案 | 输出 `RemediationProposal`（不是最终命令计划） |
-| `execution_agent` | 命令计划生成、校验、执行、回滚 | `normalize_plan -> generate_plan -> validate_plan -> execute_step -> validate_result -> rollback` |
-| `execution_gate` | 执行门控、循环收敛 | 决策：继续/重规划/中断人工/结束循环 |
-| `strategy_agent` | 复盘与知识沉淀 | `evaluate_strategy`、`optimize_strategy`、`update_knowledge`、`prune_knowledge` |
-| `final_reporter` | 最终总结输出与报告落盘 | 汇总 `IncidentState` 生成最终报告 |
+| `incident_analysis` | 观测、RCA 与修复意图分析 | 输出 Diagnosis / RemediationProposal，写入 `IncidentState` |
+| `diagnosis_gate` | 诊断证据与修复意图门控 | 校验证据、根因、影响面、fallback 等进入计划前条件 |
+| `plan` | 生成 canonical ExecutionPlan | `normalize_plan -> generate_plan`，写入 `PlanState` |
+| `plan_gate` | 校验 canonical ExecutionPlan | `validate_plan`，检查风险、回滚、成功标准与审批边界 |
+| `plan_approval` | 整体计划审批绑定 | 绑定 `plan_id + plan_revision + approval_snapshot_hash` |
+| `execute_plan` | 仅执行已批准计划 | `execute_step -> validate_result -> rollback`；不生成或改写计划 |
+| `verify_plan` | 全计划执行结果验证 | 校验 executed_steps 覆盖率和 canonical success criteria |
+| `replan_decider` | 重规划决策与循环收敛 | 输出 complete / refresh_observation / manual_required / abort |
+| `final_report` | 最终总结输出与报告落盘 | 汇总 `IncidentState`、PlanState、ReplanState 生成最终报告 |
 
 ## 6. 状态模型与恢复机制
 
@@ -159,7 +163,7 @@ Sequential(
 
 ### 7.3 循环收敛与熔断
 
-- 外层：`execution_gate` 按执行结果决定继续/中断/重规划/转人工
+- 外层：`verify_plan` 与 `replan_decider` 按执行/验证事实决定完成、重新观测、转人工或终止
 - 重复问题上限：默认 `3` 次同类失败后停止自动重试并转人工
 - 内层：execution tool state 对同一步骤重复失败有额外阈值保护
 
@@ -198,12 +202,12 @@ Sequential(
 
 ### 11.1 30 秒版
 
-OnCall 是一个多 Agent 运维系统，后端用 GoFrame + Eino ADK。它把故障处理拆成观测、RCA、修复提案、命令执行、复盘五段，并用 SSE 实时输出。高风险命令在 `execute_step` 会中断等人工审批，审批后用 `checkpoint_id + interrupt_ids` 从断点恢复。状态上把会话记忆、Graph State、Checkpoint 分层，既能控 token，也能保证长流程可恢复。
+OnCall 是一个多 Agent 运维系统，后端用 GoFrame + Eino ADK。它把故障处理拆成诊断、计划、审批、执行、验证、重规划和最终报告，并用 SSE 实时输出。高风险计划先经过 `plan_gate` / `plan_approval`，命令级变更在 `execute_step` 继续中断等人工审批，审批后用 `checkpoint_id + interrupt_ids` 从断点恢复。状态上把会话记忆、Graph State、Checkpoint 分层，既能控 token，也能保证长流程可恢复。
 
 ### 11.2 2 分钟版
 
-项目有两条主链路：一条是 `chat_stream` 的对话链，做意图识别、知识检索和轻量运维工具调用；另一条是 `ai_ops_stream` 的故障处置链。故障链是 `Sequential + Loop`：先 `observation_collector` 收集 K8s/Prometheus/ES 证据，再 `rca_agent` 产出结构化根因，`ops_agent` 给修复提案，`execution_agent` 做命令级执行，`execution_gate` 判断是否继续重规划或转人工，最后 `strategy_agent` 复盘并写知识。
-安全上是双层：`validate_plan` 做静态风险筛查，`execute_step` 对变更命令逐步审批并可恢复执行。状态层分三块：SessionMemory 管 token、IncidentState 管流程语义、Checkpoint 管可恢复执行。这样既保证可操作性，也保证生产安全边界。
+项目有两条主链路：一条是 `chat_stream` 的对话链，做意图识别、知识检索和轻量运维工具调用；另一条是 `ai_ops_stream` 的故障处置链。故障链是 `Sequential + Loop`：`incident_analysis` 统一完成观测/RCA/修复意图，`diagnosis_gate` 决定是否能进入计划，`plan` 产出 canonical ExecutionPlan，`plan_gate` 与 `plan_approval` 绑定整份计划，`execute_plan` 只消费已批准计划，`verify_plan` 做全计划验收，`replan_decider` 决定完成、重新观测、转人工或终止，最后 `final_report` 汇总落盘。
+安全上是两层加一条回路：`plan_gate` 做计划级完整性/风险/回滚筛查，`execute_step` 对变更命令逐步审批并可恢复执行，`replan_decider` 把失败统一收敛成结构化 ReplanDecision。状态层分三块：SessionMemory 管 token、IncidentState/PlanState/ReplanState 管流程语义、Checkpoint 管可恢复执行。这样既保证可操作性，也保证生产安全边界。
 
 ## 12. 关键代码索引
 

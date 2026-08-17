@@ -130,7 +130,7 @@ func completeIncidentWorkflowTestMembers() incidentWorkflowMembers {
 		planApproval:  incidentTeamTestAgent{name: "plan_approval"},
 		executePlan:   incidentTeamTestAgent{name: "execution_agent"},
 		verifyPlan:    incidentTeamTestAgent{name: "verify_plan"},
-		gate:          incidentTeamTestAgent{name: "replan_decider"},
+		replanDecider: incidentTeamTestAgent{name: "replan_decider"},
 		reporter:      incidentTeamTestAgent{name: "final_report"},
 	}
 }
