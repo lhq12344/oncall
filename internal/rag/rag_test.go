@@ -243,6 +243,14 @@ func TestHybridRetrieverFallsBackToLegacyAndBM25(t *testing.T) {
 	if len(got.Results) == 0 {
 		t.Fatalf("expected fused fallback results")
 	}
+	if got.LatencyMS < 0 {
+		t.Fatalf("latency should be populated: %#v", got)
+	}
+	if got.CandidateCounts[CandidateCountSourceLegacyEmbeddingDocs] == 0 ||
+		got.CandidateCounts[CandidateCountSourceBM25Docs] == 0 ||
+		got.CandidateCounts[CandidateCountStageFinalDocs] == 0 {
+		t.Fatalf("candidate counts not populated: %#v", got.CandidateCounts)
+	}
 }
 
 func TestDocumentsToResultsUsesMetadataContentFallback(t *testing.T) {

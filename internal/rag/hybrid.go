@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	einoretriever "github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/schema"
@@ -87,12 +88,14 @@ func (h *HybridRetriever) RetrieveContext(ctx context.Context, query string, top
 	if h == nil {
 		return nil, fmt.Errorf("hybrid retriever is nil")
 	}
+	start := time.Now()
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, fmt.Errorf("query is required")
 	}
 	finalTopK := h.config.CapFinalTopK(topK)
 	degraded := make([]string, 0, 4)
+	candidateCounts := map[string]int{}
 
 	rewrite, err := h.rewriter.Rewrite(ctx, RewriteInputFromContext(ctx, query))
 	if err != nil {
@@ -101,6 +104,7 @@ func (h *HybridRetriever) RetrieveContext(ctx context.Context, query string, top
 	}
 	variants := NormalizeQueryVariants(query, rewrite.RewrittenQueries, 3)
 	rewrite.RewrittenQueries = variants
+	candidateCounts[CandidateCountStageQueryVariants] = len(variants)
 
 	rankedLists := make([][]RetrievedResult, 0, len(variants)*2)
 	for _, variant := range variants {
@@ -110,20 +114,26 @@ func (h *HybridRetriever) RetrieveContext(ctx context.Context, query string, top
 				degraded = append(degraded, "embedding_retrieval_failed: "+err.Error())
 				if h.legacyRetriever != nil {
 					if legacyDocs, legacyErr := h.legacyRetriever.Retrieve(ctx, variant, einoretriever.WithTopK(h.config.EmbeddingTopK)); legacyErr == nil {
-						rankedLists = append(rankedLists, documentsToResults(legacyDocs, "embedding_legacy"))
+						legacyResults := documentsToResults(legacyDocs, "embedding_legacy")
+						candidateCounts[CandidateCountSourceLegacyEmbeddingDocs] += len(legacyResults)
+						rankedLists = append(rankedLists, legacyResults)
 					} else {
 						degraded = append(degraded, "legacy_embedding_retrieval_failed: "+legacyErr.Error())
 					}
 				}
 			} else {
-				rankedLists = append(rankedLists, documentsToResults(docs, "embedding"))
+				vectorResults := documentsToResults(docs, "embedding")
+				candidateCounts[CandidateCountSourceEmbeddingDocs] += len(vectorResults)
+				rankedLists = append(rankedLists, vectorResults)
 			}
 		} else if h.legacyRetriever != nil {
 			docs, err := h.legacyRetriever.Retrieve(ctx, variant, einoretriever.WithTopK(h.config.EmbeddingTopK))
 			if err != nil {
 				degraded = append(degraded, "legacy_embedding_retrieval_failed: "+err.Error())
 			} else {
-				rankedLists = append(rankedLists, documentsToResults(docs, "embedding_legacy"))
+				legacyResults := documentsToResults(docs, "embedding_legacy")
+				candidateCounts[CandidateCountSourceLegacyEmbeddingDocs] += len(legacyResults)
+				rankedLists = append(rankedLists, legacyResults)
 			}
 		} else {
 			degraded = append(degraded, "embedding_retriever_unavailable")
@@ -134,14 +144,17 @@ func (h *HybridRetriever) RetrieveContext(ctx context.Context, query string, top
 			if err != nil {
 				degraded = append(degraded, "bm25_retrieval_failed: "+err.Error())
 			} else {
+				candidateCounts[CandidateCountSourceBM25Docs] += len(results)
 				rankedLists = append(rankedLists, results)
 			}
 		} else if h.config.BM25Enabled {
 			degraded = append(degraded, "bm25_index_unavailable")
 		}
 	}
+	candidateCounts[CandidateCountStageRankedLists] = len(rankedLists)
 
 	fused := FuseRankedLists(rankedLists, h.config.FusionTopK, h.config.RRFK)
+	candidateCounts[CandidateCountStageFusedDocs] = len(fused)
 	if h.profile == ProfileOpsCase {
 		fused = BoostOpsCaseResults(fused)
 	}
@@ -156,11 +169,13 @@ func (h *HybridRetriever) RetrieveContext(ctx context.Context, query string, top
 				fused = limitResults(fused, finalTopK)
 			} else {
 				fused = reranked
+				candidateCounts[CandidateCountStageRerankedDocs] = len(reranked)
 			}
 		}
 	} else {
 		fused = limitResults(fused, finalTopK)
 	}
+	candidateCounts[CandidateCountStageFinalDocs] = len(fused)
 
 	status := "success"
 	if len(degraded) > 0 {
@@ -178,6 +193,8 @@ func (h *HybridRetriever) RetrieveContext(ctx context.Context, query string, top
 		NeedsClarification:    rewrite.NeedsClarification,
 		ClarificationQuestion: rewrite.ClarificationQuestion,
 		DegradedReasons:       compactReasons(degraded),
+		LatencyMS:             float64(time.Since(start).Microseconds()) / 1000,
+		CandidateCounts:       compactCandidateCounts(candidateCounts),
 		Count:                 len(fused),
 		Results:               fused,
 	}, nil
@@ -251,6 +268,24 @@ func compactReasons(reasons []string) []string {
 		}
 		seen[reason] = struct{}{}
 		out = append(out, reason)
+	}
+	return out
+}
+
+func compactCandidateCounts(counts map[string]int) map[string]int {
+	if len(counts) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(counts))
+	for key, value := range counts {
+		key = strings.TrimSpace(key)
+		if key == "" || value < 0 {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

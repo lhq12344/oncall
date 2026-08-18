@@ -68,7 +68,7 @@ func (t *KnowledgeRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSO
 	in.TopK = rag.DefaultConfig().CapFinalTopK(in.TopK)
 
 	if t.retriever == nil {
-		return marshalRetrievedContext(&rag.RetrievedContext{
+		return marshalAndLogRetrievedContext(t.logger, "knowledge_retrieve", &rag.RetrievedContext{
 			Status:           "degraded",
 			Profile:          rag.ProfileKnowledge,
 			Query:            in.Query,
@@ -84,7 +84,7 @@ func (t *KnowledgeRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSO
 			return "", err
 		}
 		truncateRetrievedContent(result.Results, 500)
-		return marshalRetrievedContext(result)
+		return marshalAndLogRetrievedContext(t.logger, "knowledge_retrieve", result)
 	}
 
 	docs, err := t.retriever.Retrieve(ctx, in.Query, einoretriever.WithTopK(in.TopK))
@@ -96,7 +96,7 @@ func (t *KnowledgeRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSO
 					zap.Int("top_k", in.TopK),
 					zap.Error(err))
 			}
-			return marshalRetrievedContext(&rag.RetrievedContext{
+			return marshalAndLogRetrievedContext(t.logger, "knowledge_retrieve", &rag.RetrievedContext{
 				Status:           "degraded",
 				Profile:          rag.ProfileKnowledge,
 				Query:            in.Query,
@@ -111,7 +111,7 @@ func (t *KnowledgeRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSO
 				zap.Int("top_k", in.TopK),
 				zap.Error(err))
 		}
-		return marshalRetrievedContext(&rag.RetrievedContext{
+		return marshalAndLogRetrievedContext(t.logger, "knowledge_retrieve", &rag.RetrievedContext{
 			Status:           "error",
 			Profile:          rag.ProfileKnowledge,
 			Query:            in.Query,
@@ -151,7 +151,7 @@ func (t *KnowledgeRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSO
 		Count:            len(results),
 		Results:          results,
 	}
-	return marshalRetrievedContext(result)
+	return marshalAndLogRetrievedContext(t.logger, "knowledge_retrieve", result)
 }
 
 func marshalRetrievedContext(result *rag.RetrievedContext) (string, error) {
@@ -167,6 +167,28 @@ func marshalRetrievedContext(result *rag.RetrievedContext) (string, error) {
 		return "", fmt.Errorf("failed to marshal result: %w", err)
 	}
 	return string(output), nil
+}
+
+func marshalAndLogRetrievedContext(logger *zap.Logger, toolName string, result *rag.RetrievedContext) (string, error) {
+	if result != nil && result.CandidateCounts == nil {
+		result.CandidateCounts = map[string]int{rag.CandidateCountStageFinalDocs: len(result.Results)}
+	}
+	logRetrievedContext(logger, toolName, result)
+	return marshalRetrievedContext(result)
+}
+
+func logRetrievedContext(logger *zap.Logger, toolName string, result *rag.RetrievedContext) {
+	if logger == nil || result == nil {
+		return
+	}
+	logger.Info("rag retrieve completed",
+		zap.String("tool", toolName),
+		zap.String("profile", string(result.Profile)),
+		zap.String("status", result.Status),
+		zap.Int("final_count", len(result.Results)),
+		zap.Float64("latency_ms", result.LatencyMS),
+		zap.Any("candidate_counts", result.CandidateCounts),
+		zap.Int("degraded_count", len(result.DegradedReasons)))
 }
 
 func truncateRetrievedContent(results []rag.RetrievedResult, maxRunes int) {

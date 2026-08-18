@@ -41,6 +41,21 @@ type RetrievedContext struct {
 	NeedsClarification    bool              `json:"needs_clarification"`
 	ClarificationQuestion string            `json:"clarification_question,omitempty"`
 	DegradedReasons       []string          `json:"degraded_reasons,omitempty"`
+	LatencyMS             float64           `json:"latency_ms,omitempty"`
+	CandidateCounts       map[string]int    `json:"candidate_counts,omitempty"`
 	Count                 int               `json:"count"`
 	Results               []RetrievedResult `json:"results"`
 }
+
+const (
+	CandidateCountStageQueryVariants = "stage.query_variants"
+	CandidateCountStageRankedLists   = "stage.ranked_lists"
+	CandidateCountStageFusedDocs     = "stage.fused_docs"
+	CandidateCountStageRerankedDocs  = "stage.reranked_docs"
+	CandidateCountStageFinalDocs     = "stage.final_docs"
+
+	CandidateCountSourceEmbeddingDocs        = "source.embedding_docs"
+	CandidateCountSourceLegacyEmbeddingDocs  = "source.embedding_legacy_docs"
+	CandidateCountSourceBM25Docs             = "source.bm25_docs"
+	CandidateCountSourceLocalFinalReportDocs = "source.local_final_report_docs"
+)

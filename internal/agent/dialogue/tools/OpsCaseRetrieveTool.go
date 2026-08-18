@@ -77,7 +77,7 @@ func (t *OpsCaseRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSON 
 
 	localReports := t.retrieveLocalFinalReports(in.Query, in.TopK)
 	if t.retriever == nil {
-		return marshalOpsContext(in.Query, "degraded", []string{"ops case retriever unavailable, fallback to local final reports"}, localReports)
+		return marshalOpsContext(t.logger, in.Query, "degraded", []string{"ops case retriever unavailable, fallback to local final reports"}, localReports)
 	}
 
 	if provider, ok := t.retriever.(retrievedContextProvider); ok {
@@ -88,8 +88,13 @@ func (t *OpsCaseRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSON 
 		items := mergeOpsCaseResults(localReports, opsItemsFromRAG(result.Results), in.TopK)
 		result.Results = ragResultsFromOpsItems(items)
 		result.Count = len(result.Results)
+		if result.CandidateCounts == nil {
+			result.CandidateCounts = map[string]int{}
+		}
+		result.CandidateCounts[rag.CandidateCountSourceLocalFinalReportDocs] = len(localReports)
+		result.CandidateCounts[rag.CandidateCountStageFinalDocs] = len(result.Results)
 		truncateOpsNonFinalReports(result.Results, 500)
-		return marshalRetrievedContext(result)
+		return marshalAndLogRetrievedContext(t.logger, "ops_case_retrieve", result)
 	}
 
 	docs, err := t.retriever.Retrieve(ctx, in.Query, einoretriever.WithTopK(in.TopK))
@@ -101,7 +106,7 @@ func (t *OpsCaseRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSON 
 					zap.Int("top_k", in.TopK),
 					zap.Error(err))
 			}
-			return marshalOpsContext(in.Query, "degraded", []string{"ops case collection schema mismatch, fallback to local final reports"}, localReports)
+			return marshalOpsContext(t.logger, in.Query, "degraded", []string{"ops case collection schema mismatch, fallback to local final reports"}, localReports)
 		}
 		if t.logger != nil {
 			t.logger.Error("ops case retrieve failed",
@@ -109,7 +114,7 @@ func (t *OpsCaseRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSON 
 				zap.Int("top_k", in.TopK),
 				zap.Error(err))
 		}
-		return marshalOpsContext(in.Query, "error", []string{err.Error()}, localReports)
+		return marshalOpsContext(t.logger, in.Query, "error", []string{err.Error()}, localReports)
 	}
 
 	items := make([]resultItem, 0, len(docs))
@@ -139,19 +144,20 @@ func (t *OpsCaseRetrieveTool) InvokableRun(ctx context.Context, argumentsInJSON 
 	}
 
 	items = mergeOpsCaseResults(localReports, items, in.TopK)
-	return marshalOpsContext(in.Query, "success", nil, items)
+	return marshalOpsContext(t.logger, in.Query, "success", nil, items)
 }
 
-func marshalOpsContext(query, status string, reasons []string, items []resultItem) (string, error) {
+func marshalOpsContext(logger *zap.Logger, query, status string, reasons []string, items []resultItem) (string, error) {
 	result := &rag.RetrievedContext{
 		Status:           status,
 		Profile:          rag.ProfileOpsCase,
 		Query:            query,
 		RewrittenQueries: []string{query},
 		DegradedReasons:  reasons,
+		CandidateCounts:  map[string]int{rag.CandidateCountStageFinalDocs: len(items)},
 		Results:          ragResultsFromOpsItems(items),
 	}
-	return marshalRetrievedContext(result)
+	return marshalAndLogRetrievedContext(logger, "ops_case_retrieve", result)
 }
 
 func opsItemsFromRAG(results []rag.RetrievedResult) []resultItem {
