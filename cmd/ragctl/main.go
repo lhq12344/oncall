@@ -46,9 +46,9 @@ func run(ctx context.Context, args []string) error {
 
 func printUsage() {
 	fmt.Println("usage: ragctl <inspect|rebuild-bm25|eval|backfill-v2> [flags]")
-	fmt.Println("  inspect      --profile knowledge|ops_case [--query Q] [--top-k 20] [--final-top-k 3]")
-	fmt.Println("  rebuild-bm25 --profile knowledge|ops_case|all --input chunks.jsonl")
-	fmt.Println("  eval         --dataset testdata/rag_eval_gold.jsonl --profile knowledge|ops_case|all")
+	fmt.Println("  inspect      --profile knowledge|ops_case [--query Q] [--top-k 20] [--final-top-k 3]  # offline BM25 only, not live hybrid trace")
+	fmt.Println("  rebuild-bm25 --profile knowledge|ops_case|all --input chunks.jsonl                    # normalized JSONL input, no implicit live Milvus scan")
+	fmt.Println("  eval         --dataset testdata/rag_eval_gold.jsonl --profile knowledge|ops_case|all [--corpus chunks.jsonl] # offline BM25 eval; confirmed expected_ids required for quality gates")
 	fmt.Println("  backfill-v2  --profile knowledge|ops_case|all [--input legacy.jsonl --output v2.jsonl --dry-run=false]")
 }
 
@@ -68,7 +68,13 @@ func inspect(ctx context.Context, args []string) error {
 	milvusConfig := common.LoadMilvusConfig(ctx)
 	indexPath := filepath.Join(ragConfig.BM25Root, *profile+".jsonl")
 	out := map[string]any{
-		"status": "ok",
+		"status":            "ok",
+		"inspection_mode":   "offline_bm25_only",
+		"live_hybrid_trace": false,
+		"retrieval_mode":    "bm25_offline",
+		"rewriter":          "not invoked by offline CLI",
+		"scope":             "Inspect reads the local file-backed BM25 index only; it does not invoke query rewrite, embedding retrieval, RRF fusion, reranker, Milvus, or a running chat service.",
+		"follow_up":         "Use live integration smoke checks for end-to-end hybrid retrieval evidence.",
 		"rag": map[string]any{
 			"hybrid_enabled":   ragConfig.HybridEnabled,
 			"rewrite_enabled":  ragConfig.RewriteEnabled,
@@ -83,6 +89,7 @@ func inspect(ctx context.Context, args []string) error {
 			"rrf_k":            ragConfig.RRFK,
 		},
 		"milvus": map[string]any{
+			"scope":                   "config_only; inspect does not connect to Milvus",
 			"database":                milvusConfig.Database,
 			"auto_create_collection":  milvusConfig.AutoCreateCollection,
 			"legacy_knowledge":        milvusConfig.Collection,
@@ -112,8 +119,6 @@ func inspect(ctx context.Context, args []string) error {
 				finalCount := ragConfig.CapFinalTopK(*finalTopK)
 				finalResults := limitRetrievedResults(results, finalCount)
 				out["query"] = *query
-				out["retrieval_mode"] = "bm25_offline"
-				out["rewriter"] = "not invoked by offline CLI"
 				out["candidate_counts"] = map[string]int{
 					rag.CandidateCountSourceBM25Docs: len(results),
 					rag.CandidateCountStageFinalDocs: len(finalResults),
@@ -348,12 +353,19 @@ type evalCaseTelemetry struct {
 	DegradedReasons []string             `json:"degraded_reasons,omitempty"`
 }
 
+type missingExpectedID struct {
+	CaseID     string               `json:"case_id"`
+	Profile    rag.RetrievalProfile `json:"profile"`
+	ExpectedID string               `json:"expected_id"`
+}
+
 func evalCases(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
 	gold := fs.String("gold", "", "jsonl file containing rag.EvalCase records")
 	dataset := fs.String("dataset", "", "alias for -gold; preferred by the implementation plan")
 	profile := fs.String("profile", "all", "knowledge, ops_case, or all")
 	topK := fs.Int("top-k", 20, "candidate count used for Recall@20")
+	corpus := fs.String("corpus", "", "optional normalized rag.DocumentChunk JSONL corpus used to rebuild temporary BM25 indexes before eval")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -368,6 +380,36 @@ func evalCases(ctx context.Context, args []string) error {
 		return err
 	}
 	ragConfig := rag.LoadConfig(ctx)
+	corpusPath := strings.TrimSpace(*corpus)
+	corpusCounts := map[string]int{}
+	var corpusAmbiguous []ambiguousProfileChunk
+	corpusIDsByProfile := map[rag.RetrievalProfile]map[string]struct{}{}
+	if corpusPath != "" {
+		chunks, err := readChunks(corpusPath)
+		if err != nil {
+			return err
+		}
+		tempRoot, err := os.MkdirTemp("", "ragctl-eval-bm25-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(tempRoot)
+		partitioned := partitionChunksByProfile(normalizeChunks(chunks, "all"))
+		corpusAmbiguous = partitioned.Ambiguous
+		for _, profile := range []rag.RetrievalProfile{rag.ProfileKnowledge, rag.ProfileOpsCase} {
+			idx, err := rag.NewProfileBM25Index(tempRoot, profile)
+			if err != nil {
+				return err
+			}
+			profileChunks := partitioned.Chunks[profile]
+			corpusIDsByProfile[profile] = corpusIDSet(profileChunks)
+			if err := idx.Rebuild(ctx, profileChunks); err != nil {
+				return err
+			}
+			corpusCounts[string(profile)] = len(profileChunks)
+		}
+		ragConfig.BM25Root = tempRoot
+	}
 	contexts := make(map[string]*rag.RetrievedContext, len(cases))
 	caseTelemetry := make(map[string]evalCaseTelemetry, len(cases))
 	indexes := make(map[rag.RetrievalProfile]*rag.FileBM25Index)
@@ -438,24 +480,115 @@ func evalCases(ctx context.Context, args []string) error {
 		cases = filteredCases
 	}
 	summary := rag.EvaluateRetrievedContexts(cases, contexts)
+	missingExpectedIDs := findMissingExpectedIDs(cases, corpusIDsByProfile)
+	if corpusPath != "" && missingExpectedIDs == nil {
+		missingExpectedIDs = []missingExpectedID{}
+	}
 	status := "success"
 	if len(degraded) > 0 {
 		status = "degraded"
+	}
+	expectedIDsComplete := summary.Scored > 0 && summary.Unscored == 0 && len(missingExpectedIDs) == 0
+	qualityGateShapeReady := expectedIDsComplete
+	if !qualityGateShapeReady {
+		status = "degraded"
+		switch {
+		case summary.Total == 0:
+			degraded = append(degraded, "dataset has no cases for selected profile")
+		case summary.Scored == 0:
+			degraded = append(degraded, "dataset has no scored cases; fill expected_ids from manually confirmed corpus identifiers before using it as a quality gate")
+		case len(missingExpectedIDs) > 0:
+			degraded = append(degraded, fmt.Sprintf("dataset has %d expected_ids missing from the supplied corpus; expected_ids must match corpus id or chunk_id values", len(missingExpectedIDs)))
+		default:
+			degraded = append(degraded, fmt.Sprintf("dataset has %d unscored cases; every quality-gate case needs non-empty expected_ids", summary.Unscored))
+		}
+	}
+	retrievalMetricGatePass := retrievalMetricGatePass(summary)
+	if corpusPath != "" && qualityGateShapeReady && !retrievalMetricGatePass {
+		status = "degraded"
+		degraded = append(degraded, "offline corpus retrieval metrics did not pass: require Recall@20=1, MRR@3=1, and Top3HitRate=1 for the selected scored cases")
 	}
 	var averageLatency float64
 	if ran > 0 {
 		averageLatency = float64(latencyTotal.Microseconds()) / 1000 / float64(ran)
 	}
-	return writeJSON(map[string]any{
-		"status":             status,
-		"dataset":            datasetPath,
-		"retrieval_mode":     "bm25_offline",
-		"average_latency_ms": averageLatency,
-		"degraded_count":     len(degraded),
-		"degraded_reasons":   degraded,
-		"case_telemetry":     caseTelemetry,
-		"summary":            summary,
-	})
+	out := map[string]any{
+		"status":                     status,
+		"dataset":                    datasetPath,
+		"retrieval_mode":             "bm25_offline",
+		"dataset_boundary":           "Seed or unscored datasets prove CLI coverage only. expected_ids completeness is only a shape check; retrieval-quality gates still require manually confirmed corpus evidence for every gold case.",
+		"quality_gate_shape_ready":   qualityGateShapeReady,
+		"expected_ids_complete":      expectedIDsComplete,
+		"quality_gate_ready_note":    "ragctl eval cannot prove manual corpus confirmation; use runbook evidence before treating results as a quality gate.",
+		"retrieval_metric_gate_pass": retrievalMetricGatePass,
+		"retrieval_metric_gate_note": "For --corpus eval, this requires Recall@20=1, MRR@3=1, and Top3HitRate=1 in the offline BM25 run; it is not live hybrid proof.",
+		"scored_count":               summary.Scored,
+		"unscored_count":             summary.Unscored,
+		"average_latency_ms":         averageLatency,
+		"degraded_count":             len(degraded),
+		"degraded_reasons":           degraded,
+		"case_telemetry":             caseTelemetry,
+		"summary":                    summary,
+	}
+	if corpusPath != "" {
+		out["corpus"] = corpusPath
+		out["corpus_mode"] = "temporary_bm25_rebuild"
+		out["corpus_counts"] = corpusCounts
+		out["corpus_ambiguous_count"] = len(corpusAmbiguous)
+		out["missing_expected_ids"] = missingExpectedIDs
+		if len(corpusAmbiguous) > 0 {
+			out["corpus_ambiguous_chunks"] = corpusAmbiguous
+		}
+	}
+	return writeJSON(out)
+}
+
+func retrievalMetricGatePass(summary rag.EvalSummary) bool {
+	return summary.Scored > 0 &&
+		summary.Hits == summary.Scored &&
+		summary.RecallAtK >= 1 &&
+		summary.MRRAt3 >= 1 &&
+		summary.Top3HitRate >= 1
+}
+
+func corpusIDSet(chunks []rag.DocumentChunk) map[string]struct{} {
+	ids := make(map[string]struct{}, len(chunks)*2)
+	for _, chunk := range chunks {
+		for _, value := range []string{chunk.ID, chunk.ChunkID} {
+			if value = strings.TrimSpace(value); value != "" {
+				ids[value] = struct{}{}
+			}
+		}
+	}
+	return ids
+}
+
+func findMissingExpectedIDs(cases []rag.EvalCase, corpusIDsByProfile map[rag.RetrievalProfile]map[string]struct{}) []missingExpectedID {
+	if len(corpusIDsByProfile) == 0 {
+		return nil
+	}
+	missing := make([]missingExpectedID, 0)
+	for _, item := range cases {
+		corpusIDs, ok := corpusIDsByProfile[item.Profile]
+		if !ok {
+			continue
+		}
+		for _, expectedID := range item.ExpectedIDs {
+			expectedID = strings.TrimSpace(expectedID)
+			if expectedID == "" {
+				continue
+			}
+			if _, ok := corpusIDs[expectedID]; ok {
+				continue
+			}
+			missing = append(missing, missingExpectedID{
+				CaseID:     item.ID,
+				Profile:    item.Profile,
+				ExpectedID: expectedID,
+			})
+		}
+	}
+	return missing
 }
 
 func telemetryFromRetrievedContext(context *rag.RetrievedContext) evalCaseTelemetry {
