@@ -1,4 +1,4 @@
-# OnCall AgentTeams
+﻿# OnCall AgentTeams
 
 OnCall uses AgentTeams to describe the AIOps incident workflow as a named team of specialist agents instead of wiring the full workflow directly at the ops entry point.
 
@@ -16,7 +16,7 @@ This keeps current runtime behavior while giving future work a clearer place to 
 
 ## Current Incident Team
 
-The incident workflow is declared in `internal/agent/ops/incident_workflow.go` and compiled through `internal/agent/agentteams`.
+The incident workflow is declared in `internal/workflow/ops/incident_workflow.go` and compiled through `internal/workflow/agentteams`.
 
 Current stage order:
 
@@ -44,7 +44,9 @@ The first migration does not port mewcode terminal teammates, file mailbox, tmux
 
 Use these checks when changing the team declaration:
 
-- `go test ./internal/agent/agentteams`
-- `go test ./internal/agent/ops`
+- `go test ./internal/workflow/agentteams`
+- `go test ./internal/workflow/ops`
 - `go test ./internal/controller/chat`
-- `go test ./...`
+- `cd backend && go test ./...`
+
+

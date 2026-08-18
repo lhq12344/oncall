@@ -1,91 +1,72 @@
-# SSE (Server-Sent Events) 技术详解
-
-> 本文档详细解析 SSE 在 OnCall 项目中的作用、原理、适用性及具体实现。
-
+﻿# SSE (Server-Sent Events) 鎶€鏈瑙?
+> 鏈枃妗ｈ缁嗚В鏋?SSE 鍦?OnCall 椤圭洰涓殑浣滅敤銆佸師鐞嗐€侀€傜敤鎬у強鍏蜂綋瀹炵幇銆?
 ---
 
-## 一、SSE 是什么？
+## 涓€銆丼SE 鏄粈涔堬紵
 
-### 1.1 定义
+### 1.1 瀹氫箟
 
-**SSE (Server-Sent Events)** 是 HTML5 规范中的一种浏览器标准技术，允许服务器向客户端单向推送实时数据。
-
-- **协议**：基于 HTTP 的长连接
-- **格式**：文本格式，每条消息以 `data: ` 开头，以 `\n\n` 结束
-- **特点**：单向通信（服务器 → 客户端），自动重连，简单易用
-
-### 1.2 与 WebSocket 的区别
-
-| 特性       | SSE                           | WebSocket                |
+**SSE (Server-Sent Events)** 鏄?HTML5 瑙勮寖涓殑涓€绉嶆祻瑙堝櫒鏍囧噯鎶€鏈紝鍏佽鏈嶅姟鍣ㄥ悜瀹㈡埛绔崟鍚戞帹閫佸疄鏃舵暟鎹€?
+- **鍗忚**锛氬熀浜?HTTP 鐨勯暱杩炴帴
+- **鏍煎紡**锛氭枃鏈牸寮忥紝姣忔潯娑堟伅浠?`data: ` 寮€澶达紝浠?`\n\n` 缁撴潫
+- **鐗圭偣**锛氬崟鍚戦€氫俊锛堟湇鍔″櫒 鈫?瀹㈡埛绔級锛岃嚜鍔ㄩ噸杩烇紝绠€鍗曟槗鐢?
+### 1.2 涓?WebSocket 鐨勫尯鍒?
+| 鐗规€?      | SSE                           | WebSocket                |
 | ---------- | ----------------------------- | ------------------------ |
-| 通信方向   | 单向（服务器 → 客户端）       | 双向                     |
-| 协议       | HTTP/1.1+                     | 独立协议                 |
-| 连接数     | 浏览器限制 6 个同域连接       | 无限制                   |
-| 实现复杂度 | 简单（文本格式）              | 较复杂（二进制/帧）      |
-| 适用场景   | 实时通知、日志流、AI 流式输出 | 即时通讯、游戏、协同编辑 |
+| 閫氫俊鏂瑰悜   | 鍗曞悜锛堟湇鍔″櫒 鈫?瀹㈡埛绔級       | 鍙屽悜                     |
+| 鍗忚       | HTTP/1.1+                     | 鐙珛鍗忚                 |
+| 杩炴帴鏁?    | 娴忚鍣ㄩ檺鍒?6 涓悓鍩熻繛鎺?      | 鏃犻檺鍒?                  |
+| 瀹炵幇澶嶆潅搴?| 绠€鍗曪紙鏂囨湰鏍煎紡锛?             | 杈冨鏉傦紙浜岃繘鍒?甯э級      |
+| 閫傜敤鍦烘櫙   | 瀹炴椂閫氱煡銆佹棩蹇楁祦銆丄I 娴佸紡杈撳嚭 | 鍗虫椂閫氳銆佹父鎴忋€佸崗鍚岀紪杈?|
 
-**OnCall 项目选择 SSE 的原因**：
-
-- 只需服务器向客户端推送流式数据（AI 生成内容、工具调用步骤、中断事件）
-- 无需客户端向服务器发送大量数据
-- 实现简单，浏览器原生支持
-
+**OnCall 椤圭洰閫夋嫨 SSE 鐨勫師鍥?*锛?
+- 鍙渶鏈嶅姟鍣ㄥ悜瀹㈡埛绔帹閫佹祦寮忔暟鎹紙AI 鐢熸垚鍐呭銆佸伐鍏疯皟鐢ㄦ楠ゃ€佷腑鏂簨浠讹級
+- 鏃犻渶瀹㈡埛绔悜鏈嶅姟鍣ㄥ彂閫佸ぇ閲忔暟鎹?- 瀹炵幇绠€鍗曪紝娴忚鍣ㄥ師鐢熸敮鎸?
 ---
 
-## 二、SSE 在 OnCall 项目中的作用
+## 浜屻€丼SE 鍦?OnCall 椤圭洰涓殑浣滅敤
 
-### 2.1 核心作用
+### 2.1 鏍稿績浣滅敤
 
-SSE 在 OnCall 项目中承担 **流式通信管道** 的角色，实现以下功能：
+SSE 鍦?OnCall 椤圭洰涓壙鎷?**娴佸紡閫氫俊绠￠亾** 鐨勮鑹诧紝瀹炵幇浠ヤ笅鍔熻兘锛?
+1. **瀹炴椂娴佸紡杈撳嚭**锛欰I 鐢熸垚鍐呭閫愬瓧鎺ㄩ€侊紝閬垮厤鐢ㄦ埛闀挎椂闂寸瓑寰?2. **宸ュ叿璋冪敤杩涘害灞曠ず**锛氬睍绀?RCA銆丒xecution 绛?Agent 鐨勫伐鍏疯皟鐢ㄦ楠?3. **涓柇浜嬩欢閫氱煡**锛氶珮椋庨櫓鍛戒护瑙﹀彂浜哄伐瀹℃壒鏃讹紝瀹炴椂鎺ㄩ€佷腑鏂簨浠?4. **閿欒瀹炴椂鍙嶉**锛氭墽琛岃繃绋嬩腑鐨勯敊璇疄鏃舵帹閫佸埌鍓嶇
+5. **浼氳瘽缁撴潫閫氱煡**锛氭祦寮忎紶杈撶粨鏉熸椂鐨勫畬鎴愪俊鍙?
+### 2.2 椤圭洰涓殑 SSE 绔偣
 
-1. **实时流式输出**：AI 生成内容逐字推送，避免用户长时间等待
-2. **工具调用进度展示**：展示 RCA、Execution 等 Agent 的工具调用步骤
-3. **中断事件通知**：高风险命令触发人工审批时，实时推送中断事件
-4. **错误实时反馈**：执行过程中的错误实时推送到前端
-5. **会话结束通知**：流式传输结束时的完成信号
-
-### 2.2 项目中的 SSE 端点
-
-OnCall 项目提供 4 个 SSE 端点：
-
-| 端点                           | 作用               | 参数                                                                |
+OnCall 椤圭洰鎻愪緵 4 涓?SSE 绔偣锛?
+| 绔偣                           | 浣滅敤               | 鍙傛暟                                                                |
 | ------------------------------ | ------------------ | ------------------------------------------------------------------- |
-| `/api/v1/chat_stream`          | 对话流式输出       | `id` (sessionID), `question`                                        |
-| `/api/v1/chat_resume_stream`   | 对话中断恢复       | `checkpoint_id`, `interrupt_ids`, `approved`, `resolved`, `comment` |
-| `/api/v1/ai_ops_stream`        | 运维工作流流式输出 | 无参数（固定诊断）                                                  |
-| `/api/v1/ai_ops_resume_stream` | 运维工作流中断恢复 | `checkpoint_id`, `interrupt_ids`, `approved`, `resolved`, `comment` |
+| `/api/v1/chat_stream`          | 瀵硅瘽娴佸紡杈撳嚭       | `id` (sessionID), `question`                                        |
+| `/api/v1/chat_resume_stream`   | 瀵硅瘽涓柇鎭㈠       | `checkpoint_id`, `interrupt_ids`, `approved`, `resolved`, `comment` |
+| `/api/v1/ai_ops_stream`        | 杩愮淮宸ヤ綔娴佹祦寮忚緭鍑?| 鏃犲弬鏁帮紙鍥哄畾璇婃柇锛?                                                 |
+| `/api/v1/ai_ops_resume_stream` | 杩愮淮宸ヤ綔娴佷腑鏂仮澶?| `checkpoint_id`, `interrupt_ids`, `approved`, `resolved`, `comment` |
 
 ---
 
-## 三、SSE 为什么适用于当前项目？
+## 涓夈€丼SE 涓轰粈涔堥€傜敤浜庡綋鍓嶉」鐩紵
 
-### 3.1 技术匹配性
-
-| 项目需求                                    | SSE 优势                                  |
+### 3.1 鎶€鏈尮閰嶆€?
+| 椤圭洰闇€姹?                                   | SSE 浼樺娍                                  |
 | ------------------------------------------- | ----------------------------------------- |
-| AI 生成内容需要实时展示                     | 流式推送，逐字显示，提升用户体验          |
-| 工具调用过程需要透明化                      | 可推送 `step` 事件，展示执行进度          |
-| 高风险操作需要人工审批                      | 可推送 `interrupt` 事件，触发前端审批卡片 |
-| 长时间运行的工作流                          | 长连接保持，避免轮询开销                  |
-| 多种事件类型（content/step/interrupt/done） | 文本格式灵活，可自定义事件类型            |
+| AI 鐢熸垚鍐呭闇€瑕佸疄鏃跺睍绀?                    | 娴佸紡鎺ㄩ€侊紝閫愬瓧鏄剧ず锛屾彁鍗囩敤鎴蜂綋楠?         |
+| 宸ュ叿璋冪敤杩囩▼闇€瑕侀€忔槑鍖?                     | 鍙帹閫?`step` 浜嬩欢锛屽睍绀烘墽琛岃繘搴?         |
+| 楂橀闄╂搷浣滈渶瑕佷汉宸ュ鎵?                     | 鍙帹閫?`interrupt` 浜嬩欢锛岃Е鍙戝墠绔鎵瑰崱鐗?|
+| 闀挎椂闂磋繍琛岀殑宸ヤ綔娴?                         | 闀胯繛鎺ヤ繚鎸侊紝閬垮厤杞寮€閿€                  |
+| 澶氱浜嬩欢绫诲瀷锛坈ontent/step/interrupt/done锛?| 鏂囨湰鏍煎紡鐏垫椿锛屽彲鑷畾涔変簨浠剁被鍨?           |
 
-### 3.2 与其他方案对比
-
-| 方案                | 优点                       | 缺点                   | 适用性      |
+### 3.2 涓庡叾浠栨柟妗堝姣?
+| 鏂规                | 浼樼偣                       | 缂虹偣                   | 閫傜敤鎬?     |
 | ------------------- | -------------------------- | ---------------------- | ----------- |
-| **SSE（当前选择）** | 简单、浏览器原生、自动重连 | 单向通信               | ✅ 完美匹配 |
-| **WebSocket**       | 双向通信、低延迟           | 实现复杂、需要额外协议 | ❌ 过度设计 |
-| **HTTP 轮询**       | 简单                       | 高延迟、高开销         | ❌ 体验差   |
-| **Long Polling**    | 比轮询高效                 | 服务器资源占用高       | ❌ 不如 SSE |
+| **SSE锛堝綋鍓嶉€夋嫨锛?* | 绠€鍗曘€佹祻瑙堝櫒鍘熺敓銆佽嚜鍔ㄩ噸杩?| 鍗曞悜閫氫俊               | 鉁?瀹岀編鍖归厤 |
+| **WebSocket**       | 鍙屽悜閫氫俊銆佷綆寤惰繜           | 瀹炵幇澶嶆潅銆侀渶瑕侀澶栧崗璁?| 鉂?杩囧害璁捐 |
+| **HTTP 杞**       | 绠€鍗?                      | 楂樺欢杩熴€侀珮寮€閿€         | 鉂?浣撻獙宸?  |
+| **Long Polling**    | 姣旇疆璇㈤珮鏁?                | 鏈嶅姟鍣ㄨ祫婧愬崰鐢ㄩ珮       | 鉂?涓嶅 SSE |
 
 ---
 
-## 四、SSE 在项目中的具体实现
-
-### 4.1 后端实现（Go + GoFrame）
-
-#### 4.1.1 SSE 初始化
-
+## 鍥涖€丼SE 鍦ㄩ」鐩腑鐨勫叿浣撳疄鐜?
+### 4.1 鍚庣瀹炵幇锛圙o + GoFrame锛?
+#### 4.1.1 SSE 鍒濆鍖?
 ```go
 // internal/controller/chat/chat_v1.go
 
@@ -94,18 +75,17 @@ func setupSSE(ctx context.Context) (*ghttp.Request, error) {
     if r == nil {
         return nil, fmt.Errorf("failed to get request from context")
     }
-    // 设置响应头
-    r.Response.Header().Set("Content-Type", "text/event-stream")  // 关键：MIME 类型
-    r.Response.Header().Set("Cache-Control", "no-cache")           // 禁止缓存
-    r.Response.Header().Set("Connection", "keep-alive")            // 保持连接
-    r.Response.Header().Set("X-Accel-Buffering", "no")             // 禁用 Nginx 缓冲
+    // 璁剧疆鍝嶅簲澶?    r.Response.Header().Set("Content-Type", "text/event-stream")  // 鍏抽敭锛歁IME 绫诲瀷
+    r.Response.Header().Set("Cache-Control", "no-cache")           // 绂佹缂撳瓨
+    r.Response.Header().Set("Connection", "keep-alive")            // 淇濇寔杩炴帴
+    r.Response.Header().Set("X-Accel-Buffering", "no")             // 绂佺敤 Nginx 缂撳啿
     r.Response.WriteHeader(200)
     r.Response.Flush()
     return r, nil
 }
 ```
 
-#### 4.1.2 数据写入
+#### 4.1.2 鏁版嵁鍐欏叆
 
 ```go
 // internal/controller/chat/chat_v1.go
@@ -114,75 +94,69 @@ func writeSSEData(r *ghttp.Request, data string) {
     if r == nil {
         return
     }
-    // 规范化换行符
+    // 瑙勮寖鍖栨崲琛岀
     data = strings.ReplaceAll(data, "\r\n", "\n")
     data = strings.ReplaceAll(data, "\r", "\n")
 
-    // 按行写入（SSE 规范）
-    lines := strings.Split(data, "\n")
+    // 鎸夎鍐欏叆锛圫SE 瑙勮寖锛?    lines := strings.Split(data, "\n")
     for _, line := range lines {
         r.Response.Write(fmt.Sprintf("data: %s\n", line))
     }
 
-    // 事件结束符
-    r.Response.Write("\n")
+    // 浜嬩欢缁撴潫绗?    r.Response.Write("\n")
 
-    // 立即刷新到客户端
+    // 绔嬪嵆鍒锋柊鍒板鎴风
     r.Response.Flush()
 }
 ```
 
-#### 4.1.3 事件类型定义
+#### 4.1.3 浜嬩欢绫诲瀷瀹氫箟
 
-OnCall 项目定义了 5 种 SSE 事件类型：
-
-| 事件类型      | 格式                                                         | 用途              |
+OnCall 椤圭洰瀹氫箟浜?5 绉?SSE 浜嬩欢绫诲瀷锛?
+| 浜嬩欢绫诲瀷      | 鏍煎紡                                                         | 鐢ㄩ€?             |
 | ------------- | ------------------------------------------------------------ | ----------------- |
-| **content**   | `{"type":"content","content":"..."}`                         | AI 生成的文本内容 |
-| **step**      | `{"type":"step","step":N,"content":"..."}`                   | 工具调用步骤进度  |
-| **interrupt** | `{"type":"interrupt","checkpoint_id":"...","message":"..."}` | 中断等待人工审批  |
-| **error**     | `{"type":"error","content":"..."}`                           | 错误信息          |
-| **done**      | `{"type":"done"}` 或 `[DONE]`                                | 流结束信号        |
+| **content**   | `{"type":"content","content":"..."}`                         | AI 鐢熸垚鐨勬枃鏈唴瀹?|
+| **step**      | `{"type":"step","step":N,"content":"..."}`                   | 宸ュ叿璋冪敤姝ラ杩涘害  |
+| **interrupt** | `{"type":"interrupt","checkpoint_id":"...","message":"..."}` | 涓柇绛夊緟浜哄伐瀹℃壒  |
+| **error**     | `{"type":"error","content":"..."}`                           | 閿欒淇℃伅          |
+| **done**      | `{"type":"done"}` 鎴?`[DONE]`                                | 娴佺粨鏉熶俊鍙?       |
 
-#### 4.1.4 完整流式输出示例
+#### 4.1.4 瀹屾暣娴佸紡杈撳嚭绀轰緥
 
 ```go
-// AIOpsStream 方法（简化版）
-
+// AIOpsStream 鏂规硶锛堢畝鍖栫増锛?
 func (c *ControllerV1) AIOpsStream(ctx context.Context, req *v1.AIOpsStreamReq) (*v1.AIOpsStreamRes, error) {
-    // 1. 初始化 SSE
+    // 1. 鍒濆鍖?SSE
     r, err := setupSSE(ctx)
     if err != nil {
         return nil, err
     }
 
-    // 2. 运行 Runner
+    // 2. 杩愯 Runner
     iter := c.opsStreamRunner.Run(ctx, messages, adk.WithCheckPointID(checkpointID))
 
-    // 3. 遍历事件并推送
-    for {
+    // 3. 閬嶅巻浜嬩欢骞舵帹閫?    for {
         event, ok := iter.Next()
         if !ok {
             break
         }
 
         if event.Err != nil {
-            // 推送错误事件
-            writeSSEData(r, fmt.Sprintf("{\"type\":\"error\",\"content\":%q}", event.Err.Error()))
+            // 鎺ㄩ€侀敊璇簨浠?            writeSSEData(r, fmt.Sprintf("{\"type\":\"error\",\"content\":%q}", event.Err.Error()))
             return nil, nil
         }
 
-        // 推送 content 事件
+        // 鎺ㄩ€?content 浜嬩欢
         if content != "" {
             writeSSEData(r, fmt.Sprintf("{\"type\":\"content\",\"content\":%q}", content))
         }
 
-        // 推送 step 事件（工具调用）
+        // 鎺ㄩ€?step 浜嬩欢锛堝伐鍏疯皟鐢級
         if toolCall != nil {
-            writeSSEData(r, fmt.Sprintf("{\"type\":\"step\",\"step\":%d,\"content\":%q}", stepNum, "调用工具: "+call.Function.Name))
+            writeSSEData(r, fmt.Sprintf("{\"type\":\"step\",\"step\":%d,\"content\":%q}", stepNum, "璋冪敤宸ュ叿: "+call.Function.Name))
         }
 
-        // 推送 interrupt 事件（人工审批）
+        // 鎺ㄩ€?interrupt 浜嬩欢锛堜汉宸ュ鎵癸級
         if interruptInfo != nil {
             payload := buildInterruptPayload(checkpointID, interruptInfo)
             payloadBytes, _ := json.Marshal(payload)
@@ -190,19 +164,17 @@ func (c *ControllerV1) AIOpsStream(ctx context.Context, req *v1.AIOpsStreamReq) 
         }
     }
 
-    // 4. 推送结束事件
-    writeSSEData(r, "{\"type\":\"done\"}")
+    // 4. 鎺ㄩ€佺粨鏉熶簨浠?    writeSSEData(r, "{\"type\":\"done\"}")
 
     return &v1.AIOpsStreamRes{}, nil
 }
 ```
 
-### 4.2 前端实现（React + TypeScript）
-
-#### 4.2.1 SSE 消费逻辑
+### 4.2 鍓嶇瀹炵幇锛圧eact + TypeScript锛?
+#### 4.2.1 SSE 娑堣垂閫昏緫
 
 ```typescript
-// Front_page/src/services/api.ts
+// frontend/src/services/api.ts
 
 async function streamRequest(url: string, body: any, options: StreamOptions) {
   const { onContent, onStep, onInterrupt, onError, onDone } = options;
@@ -222,11 +194,10 @@ async function streamRequest(url: string, body: any, options: StreamOptions) {
     if (done) break;
 
     buffer += decoder.decode(value, { stream: true });
-    const parts = buffer.split("\n\n"); // SSE 事件分隔符
-    buffer = parts.pop() || "";
+    const parts = buffer.split("\n\n"); // SSE 浜嬩欢鍒嗛殧绗?    buffer = parts.pop() || "";
 
     for (const part of parts) {
-      // 提取 data 内容
+      // 鎻愬彇 data 鍐呭
       const dataContent = part
         .split("\n")
         .filter((l) => l.startsWith("data: "))
@@ -234,13 +205,13 @@ async function streamRequest(url: string, body: any, options: StreamOptions) {
         .join("\n")
         .trim();
 
-      // 处理 [DONE] 文本回退
+      // 澶勭悊 [DONE] 鏂囨湰鍥為€€
       if (dataContent === "[DONE]") {
         onDone?.();
         return;
       }
 
-      // 解析 JSON 事件
+      // 瑙ｆ瀽 JSON 浜嬩欢
       try {
         const json = JSON.parse(dataContent);
         switch (json.type) {
@@ -261,21 +232,19 @@ async function streamRequest(url: string, body: any, options: StreamOptions) {
             return;
         }
       } catch (e) {
-        // 非 JSON，作为普通文本处理
-        onContent(dataContent);
+        // 闈?JSON锛屼綔涓烘櫘閫氭枃鏈鐞?        onContent(dataContent);
       }
     }
   }
 }
 ```
 
-#### 4.2.2 中断审批卡片
+#### 4.2.2 涓柇瀹℃壒鍗＄墖
 
 ```typescript
-// Front_page/src/components/InterruptCard.tsx
+// frontend/src/components/InterruptCard.tsx
 
-// 用户点击审批按钮后，恢复 SSE 流
-const handleAction = async (
+// 鐢ㄦ埛鐐瑰嚮瀹℃壒鎸夐挳鍚庯紝鎭㈠ SSE 娴?const handleAction = async (
   actionName: string,
   approved: boolean,
   resolved: boolean,
@@ -286,7 +255,7 @@ const handleAction = async (
     interrupt_ids: interruptIDs,
   };
 
-  // 调用恢复接口，建立新的 SSE 连接
+  // 璋冪敤鎭㈠鎺ュ彛锛屽缓绔嬫柊鐨?SSE 杩炴帴
   if (isOps) {
     await resumeOps(checkpointId, payload, options);
   } else {
@@ -297,100 +266,70 @@ const handleAction = async (
 
 ---
 
-## 五、面试回答话术
+## 浜斻€侀潰璇曞洖绛旇瘽鏈?
+### 闂 1锛歋SE 鏄粈涔堬紵涓轰粈涔堥€夋嫨 SSE 鑰屼笉鏄?WebSocket锛?
+**鍥炵瓟锛?*
 
-### 问题 1：SSE 是什么？为什么选择 SSE 而不是 WebSocket？
+> **SSE (Server-Sent Events)** 鏄?HTML5 鏍囧噯涓殑鍗曞悜閫氫俊鎶€鏈紝鍏佽鏈嶅姟鍣ㄥ悜瀹㈡埛绔疄鏃舵帹閫佹暟鎹€傚畠鍩轰簬 HTTP 闀胯繛鎺ワ紝浣跨敤鏂囨湰鏍煎紡锛坄data: \n\n`锛変紶杈撴暟鎹€?>
+> **涓轰粈涔堥€夋嫨 SSE 鑰屼笉鏄?WebSocket锛?*
+>
+> 1. **鍗曞悜閫氫俊瓒冲**锛氭垜浠殑椤圭洰鍙渶鏈嶅姟鍣ㄥ悜瀹㈡埛绔帹閫?AI 鐢熸垚鍐呭銆佸伐鍏疯皟鐢ㄦ楠ゃ€佷腑鏂簨浠讹紝鏃犻渶瀹㈡埛绔悜鏈嶅姟鍣ㄥ彂閫佸ぇ閲忔暟鎹€?> 2. **瀹炵幇绠€鍗?*锛歋SE 鏄祻瑙堝櫒鍘熺敓鏀寔鐨勬爣鍑嗭紝鍓嶇鍙渶 `EventSource` API锛屽悗绔彧闇€璁剧疆鍝嶅簲澶村苟鎸夋牸寮忓啓鍏ユ暟鎹€?> 3. **鑷姩閲嶈繛**锛歋SE 鍐呯疆鑷姩閲嶈繛鏈哄埗锛岀綉缁滀腑鏂悗浼氳嚜鍔ㄦ仮澶嶈繛鎺ャ€?> 4. **娴忚鍣ㄨ繛鎺ラ檺鍒?*锛氭祻瑙堝櫒瀵瑰悓鍩?WebSocket 杩炴帴鏁版棤闄愬埗锛屼絾瀵?SSE 鏈?6 涓繛鎺ラ檺鍒躲€傛垜浠殑椤圭洰姣忎釜浼氳瘽鍙渶 1 涓?SSE 杩炴帴锛屽畬鍏ㄥ鐢ㄣ€?
+### 闂 2锛歋SE 鍦?OnCall 椤圭洰涓槸濡備綍浣跨敤鐨勶紵
 
-**回答：**
+**鍥炵瓟锛?*
 
-> **SSE (Server-Sent Events)** 是 HTML5 标准中的单向通信技术，允许服务器向客户端实时推送数据。它基于 HTTP 长连接，使用文本格式（`data: \n\n`）传输数据。
+> OnCall 椤圭洰浣跨敤 SSE 瀹炵幇娴佸紡閫氫俊锛屼富瑕佸満鏅寘鎷細
 >
-> **为什么选择 SSE 而不是 WebSocket？**
+> 1. **瀵硅瘽娴佸紡杈撳嚭**锛坄/api/v1/chat_stream`锛夛細
+>    - 鎺ㄩ€?AI 鐢熸垚鐨勬枃鏈唴瀹癸紙`content` 浜嬩欢锛?>    - 鎺ㄩ€佸伐鍏疯皟鐢ㄦ楠わ紙`step` 浜嬩欢锛?>    - 鎺ㄩ€佷腑鏂簨浠讹紙`interrupt` 浜嬩欢锛岃Е鍙戜汉宸ュ鎵癸級
+> 2. **杩愮淮宸ヤ綔娴佹祦寮忚緭鍑?*锛坄/api/v1/ai_ops_stream`锛夛細
+>    - 鎺ㄩ€?RCA Agent 鐨勫垎鏋愯繘搴?>    - 鎺ㄩ€?Execution Agent 鐨勫懡浠ゆ墽琛屾楠?>    - 鎺ㄩ€佹渶缁堟妧鏈姤鍛?> 3. **涓柇鎭㈠**锛坄/api/v1/chat_resume_stream` 鍜?`/api/v1/ai_ops_resume_stream`锛夛細
+>    - 鐢ㄦ埛鍦ㄥ墠绔鎵瑰悗锛岄€氳繃 SSE 鎭㈠娴佸紡鎵ц
+>    - 缁х画鎺ㄩ€佸悗缁唴瀹?>
+> **鍚庣瀹炵幇**锛?>
+> - 浣跨敤 GoFrame 鐨?`ghttp.Request` 璁剧疆 SSE 鍝嶅簲澶?> - 浣跨敤 `writeSSEData` 鍑芥暟鎸夋牸寮忓啓鍏ユ暟鎹?> - 浣跨敤 `Flush()` 绔嬪嵆鍒锋柊鍒板鎴风
 >
-> 1. **单向通信足够**：我们的项目只需服务器向客户端推送 AI 生成内容、工具调用步骤、中断事件，无需客户端向服务器发送大量数据。
-> 2. **实现简单**：SSE 是浏览器原生支持的标准，前端只需 `EventSource` API，后端只需设置响应头并按格式写入数据。
-> 3. **自动重连**：SSE 内置自动重连机制，网络中断后会自动恢复连接。
-> 4. **浏览器连接限制**：浏览器对同域 WebSocket 连接数无限制，但对 SSE 有 6 个连接限制。我们的项目每个会话只需 1 个 SSE 连接，完全够用。
+> **鍓嶇瀹炵幇**锛?>
+> - 浣跨敤 `fetch` API 鑾峰彇鍝嶅簲娴?> - 浣跨敤 `TextDecoder` 瑙ｇ爜鏁版嵁
+> - 鎸?`\n\n` 鍒嗛殧浜嬩欢锛岃В鏋?JSON 鎴栨枃鏈唴瀹?
+### 闂 3锛歋SE 濡備綍澶勭悊涓柇鍜屾仮澶嶏紵
 
-### 问题 2：SSE 在 OnCall 项目中是如何使用的？
+**鍥炵瓟锛?*
 
-**回答：**
+> **涓柇娴佺▼**锛?>
+> 1. 褰?`ExecuteStepTool` 妫€娴嬪埌楂橀闄╁懡浠ゆ椂锛岃皟鐢?`tool.Interrupt()` 鎸傝捣宸ヤ綔娴?> 2. 鍚庣閫氳繃 SSE 鎺ㄩ€?`interrupt` 浜嬩欢锛屽寘鍚?`checkpoint_id` 鍜屼腑鏂俊鎭?> 3. 鍓嶇 `InterruptCard` 缁勪欢娓叉煋瀹℃壒鍗＄墖锛屽睍绀哄緟鎵ц鍛戒护
+>
+> **鎭㈠娴佺▼**锛?>
+> 1. 鐢ㄦ埛鍦ㄥ墠绔偣鍑诲鎵规寜閽紙鍑嗚鎵ц/鎷掔粷/鏍囪宸茶В鍐筹級
+> 2. 鍓嶇 POST 鍒版仮澶嶆帴鍙ｏ紙`/chat_resume_stream` 鎴?`/ai_ops_resume_stream`锛?> 3. 鍚庣 `runner.ResumeWithParams()` 鎭㈠鎵ц锛屽伐鍏峰唴 `tool.GetResumeContext()` 鍙栧洖鐢ㄦ埛鍐崇瓥
+> 4. 寤虹珛鏂扮殑 SSE 杩炴帴锛岀户缁帹閫佸悗缁唴瀹?>
+> **鍏抽敭鐐?*锛?>
+> - `checkpoint_id` 鐢ㄤ簬鏍囪瘑涓柇鐐癸紝鏀寔浠绘剰浣嶇疆鎭㈠
+> - `interrupt_ids` 鐢ㄤ簬鏍囪瘑鍏蜂綋鐨勪腑鏂笂涓嬫枃
+> - 鎭㈠鍚庯紝SSE 缁х画鎺ㄩ€?`content`銆乣step`銆乣interrupt` 绛変簨浠?
+### 闂 4锛歋SE 鐨勬€ц兘浼樺寲鏈夊摢浜涳紵
 
-> OnCall 项目使用 SSE 实现流式通信，主要场景包括：
->
-> 1. **对话流式输出**（`/api/v1/chat_stream`）：
->    - 推送 AI 生成的文本内容（`content` 事件）
->    - 推送工具调用步骤（`step` 事件）
->    - 推送中断事件（`interrupt` 事件，触发人工审批）
-> 2. **运维工作流流式输出**（`/api/v1/ai_ops_stream`）：
->    - 推送 RCA Agent 的分析进度
->    - 推送 Execution Agent 的命令执行步骤
->    - 推送最终技术报告
-> 3. **中断恢复**（`/api/v1/chat_resume_stream` 和 `/api/v1/ai_ops_resume_stream`）：
->    - 用户在前端审批后，通过 SSE 恢复流式执行
->    - 继续推送后续内容
->
-> **后端实现**：
->
-> - 使用 GoFrame 的 `ghttp.Request` 设置 SSE 响应头
-> - 使用 `writeSSEData` 函数按格式写入数据
-> - 使用 `Flush()` 立即刷新到客户端
->
-> **前端实现**：
->
-> - 使用 `fetch` API 获取响应流
-> - 使用 `TextDecoder` 解码数据
-> - 按 `\n\n` 分隔事件，解析 JSON 或文本内容
+**鍥炵瓟锛?*
 
-### 问题 3：SSE 如何处理中断和恢复？
-
-**回答：**
-
-> **中断流程**：
->
-> 1. 当 `ExecuteStepTool` 检测到高风险命令时，调用 `tool.Interrupt()` 挂起工作流
-> 2. 后端通过 SSE 推送 `interrupt` 事件，包含 `checkpoint_id` 和中断信息
-> 3. 前端 `InterruptCard` 组件渲染审批卡片，展示待执行命令
->
-> **恢复流程**：
->
-> 1. 用户在前端点击审批按钮（准许执行/拒绝/标记已解决）
-> 2. 前端 POST 到恢复接口（`/chat_resume_stream` 或 `/ai_ops_resume_stream`）
-> 3. 后端 `runner.ResumeWithParams()` 恢复执行，工具内 `tool.GetResumeContext()` 取回用户决策
-> 4. 建立新的 SSE 连接，继续推送后续内容
->
-> **关键点**：
->
-> - `checkpoint_id` 用于标识中断点，支持任意位置恢复
-> - `interrupt_ids` 用于标识具体的中断上下文
-> - 恢复后，SSE 继续推送 `content`、`step`、`interrupt` 等事件
-
-### 问题 4：SSE 的性能优化有哪些？
-
-**回答：**
-
-> 1. **禁用缓冲**：设置 `X-Accel-Buffering: no`，禁用 Nginx 缓冲，确保数据实时推送
-> 2. **立即刷新**：每次写入数据后调用 `Flush()`，避免数据积压
-> 3. **文本格式**：SSE 使用文本格式，比二进制协议更轻量
-> 4. **自动重连**：SSE 内置重连机制，无需额外实现
-> 5. **连接复用**：每个会话只需 1 个 SSE 连接，避免过多连接开销
+> 1. **绂佺敤缂撳啿**锛氳缃?`X-Accel-Buffering: no`锛岀鐢?Nginx 缂撳啿锛岀‘淇濇暟鎹疄鏃舵帹閫?> 2. **绔嬪嵆鍒锋柊**锛氭瘡娆″啓鍏ユ暟鎹悗璋冪敤 `Flush()`锛岄伩鍏嶆暟鎹Н鍘?> 3. **鏂囨湰鏍煎紡**锛歋SE 浣跨敤鏂囨湰鏍煎紡锛屾瘮浜岃繘鍒跺崗璁洿杞婚噺
+> 4. **鑷姩閲嶈繛**锛歋SE 鍐呯疆閲嶈繛鏈哄埗锛屾棤闇€棰濆瀹炵幇
+> 5. **杩炴帴澶嶇敤**锛氭瘡涓細璇濆彧闇€ 1 涓?SSE 杩炴帴锛岄伩鍏嶈繃澶氳繛鎺ュ紑閿€
 
 ---
 
-## 六、代码落点
-
-| 功能               | 文件路径                                      | 核心函数                                    |
+## 鍏€佷唬鐮佽惤鐐?
+| 鍔熻兘               | 鏂囦欢璺緞                                      | 鏍稿績鍑芥暟                                    |
 | ------------------ | --------------------------------------------- | ------------------------------------------- |
-| SSE 初始化         | `internal/controller/chat/chat_v1.go`         | `setupSSE()`                                |
-| 数据写入           | `internal/controller/chat/chat_v1.go`         | `writeSSEData()`                            |
-| 对话流式输出       | `internal/controller/chat/chat_v1.go`         | `ChatStream()`                              |
-| 运维工作流流式输出 | `internal/controller/chat/chat_v1.go`         | `AIOpsStream()`                             |
-| 中断恢复           | `internal/controller/chat/chat_v1.go`         | `ChatResumeStream()`, `AIOpsResumeStream()` |
-| 前端 SSE 消费      | `Front_page/src/services/api.ts`              | `streamRequest()`                           |
-| 中断审批卡片       | `Front_page/src/components/InterruptCard.tsx` | `InterruptCard` 组件                        |
+| SSE 鍒濆鍖?        | `internal/controller/chat/chat_v1.go`         | `setupSSE()`                                |
+| 鏁版嵁鍐欏叆           | `internal/controller/chat/chat_v1.go`         | `writeSSEData()`                            |
+| 瀵硅瘽娴佸紡杈撳嚭       | `internal/controller/chat/chat_v1.go`         | `ChatStream()`                              |
+| 杩愮淮宸ヤ綔娴佹祦寮忚緭鍑?| `internal/controller/chat/chat_v1.go`         | `AIOpsStream()`                             |
+| 涓柇鎭㈠           | `internal/controller/chat/chat_v1.go`         | `ChatResumeStream()`, `AIOpsResumeStream()` |
+| 鍓嶇 SSE 娑堣垂      | `frontend/src/services/api.ts`              | `streamRequest()`                           |
+| 涓柇瀹℃壒鍗＄墖       | `frontend/src/components/InterruptCard.tsx` | `InterruptCard` 缁勪欢                        |
 
 ---
 
-## 七、总结
+## 涓冦€佹€荤粨
 
-SSE 在 OnCall 项目中扮演着 **流式通信管道** 的关键角色，实现了 AI 生成内容的实时展示、工具调用进度的透明化、高风险操作的人工审批等功能。相比 WebSocket，SSE 更简单、更适合单向通信场景，是流式 AI 应用的理想选择。
+SSE 鍦?OnCall 椤圭洰涓壆婕旂潃 **娴佸紡閫氫俊绠￠亾** 鐨勫叧閿鑹诧紝瀹炵幇浜?AI 鐢熸垚鍐呭鐨勫疄鏃跺睍绀恒€佸伐鍏疯皟鐢ㄨ繘搴︾殑閫忔槑鍖栥€侀珮椋庨櫓鎿嶄綔鐨勪汉宸ュ鎵圭瓑鍔熻兘銆傜浉姣?WebSocket锛孲SE 鏇寸畝鍗曘€佹洿閫傚悎鍗曞悜閫氫俊鍦烘櫙锛屾槸娴佸紡 AI 搴旂敤鐨勭悊鎯抽€夋嫨銆?

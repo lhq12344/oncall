@@ -1,4 +1,4 @@
-# CLAUDE.md
+﻿# CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -10,7 +10,7 @@ Go-based AI agent system ("go_agent") for on-call alert handling. Provides intel
 
 ```bash
 # Run the server (port 6872)
-go run main.go
+cd backend && go run main.go
 
 # Build binary (requires GoFrame CLI `gf`)
 make build
@@ -24,7 +24,7 @@ make service   # Generate service layer interfaces
 cd manifest/docker && docker-compose up -d
 
 # Frontend
-cd Front_page && ./start.sh
+cd frontend && ./start.sh
 ```
 
 No test suite exists yet. No linter is configured.
@@ -32,33 +32,33 @@ No test suite exists yet. No linter is configured.
 ## Architecture
 
 ```
-main.go → GoFrame HTTP server (port 6872)
-  └─ /api/v1/chat         POST  single-turn chat
-  └─ /api/v1/chat_stream  POST  streaming chat (SSE)
-  └─ /api/v1/upload       POST  file upload to knowledge base
-  └─ /api/v1/ai_ops       POST  AI operations
+main.go 鈫?GoFrame HTTP server (port 6872)
+  鈹斺攢 /api/v1/chat         POST  single-turn chat
+  鈹斺攢 /api/v1/chat_stream  POST  streaming chat (SSE)
+  鈹斺攢 /api/v1/upload       POST  file upload to knowledge base
+  鈹斺攢 /api/v1/ai_ops       POST  AI operations
 ```
 
 ### Layer structure
 
-- `api/chat/v1/` — API request/response struct definitions (GoFrame convention)
-- `internal/controller/chat/` — HTTP handlers, auto-generated from api/ via `make ctrl`
-- `internal/logic/` — Business logic (SSE streaming, chat orchestration)
-- `internal/ai/agent/` — AI pipelines built with Eino graph orchestration:
-  - `chat_pipeline/` — RAG chat: InputToRag → MilvusRetriever → MergeInputs → ChatTemplate → ReactAgent
-  - `knowledge_index_pipeline/` — Document ingestion: FileLoader → MarkdownSplitter → MilvusIndexer
-  - `plan_execute_replan/` — Plan-execute-replan agent pattern
-- `internal/ai/tools/` — Agent tools (log queries via MCP, Prometheus alerts, MySQL CRUD, knowledge base search)
-- `internal/ai/models/` — LLM client initialization (DeepSeek V3 via Volcengine Ark API, Doubao embedding)
-- `utility/` — Shared infra: Redis-backed conversation memory (`mem/`), MySQL (`mysql/`), CORS/response middleware, logging (zap)
+- `api/chat/v1/` 鈥?API request/response struct definitions (GoFrame convention)
+- `internal/controller/chat/` 鈥?HTTP handlers, auto-generated from api/ via `make ctrl`
+- `internal/logic/` 鈥?Business logic (SSE streaming, chat orchestration)
+- `internal/ai/agent/` 鈥?AI pipelines built with Eino graph orchestration:
+  - `chat_pipeline/` 鈥?RAG chat: InputToRag 鈫?MilvusRetriever 鈫?MergeInputs 鈫?ChatTemplate 鈫?ReactAgent
+  - `knowledge_index_pipeline/` 鈥?Document ingestion: FileLoader 鈫?MarkdownSplitter 鈫?MilvusIndexer
+  - `plan_execute_replan/` 鈥?Plan-execute-replan agent pattern
+- `internal/ai/tools/` 鈥?Agent tools (log queries via MCP, Prometheus alerts, MySQL CRUD, knowledge base search)
+- `internal/ai/models/` 鈥?LLM client initialization (DeepSeek V3 via Volcengine Ark API, Doubao embedding)
+- `utility/` 鈥?Shared infra: Redis-backed conversation memory (`mem/`), MySQL (`mysql/`), CORS/response middleware, logging (zap)
 
 ### Key external services
 
-- **Milvus** (vector DB) — stores document embeddings for RAG retrieval
-- **Redis** — conversation history with token budget management (96k input / 8k output)
-- **MySQL** — structured data via GORM
-- **Volcengine Ark API** — LLM inference (DeepSeek V3) and embeddings (Doubao)
-- **Tencent Cloud CLS** — log queries via MCP protocol
+- **Milvus** (vector DB) 鈥?stores document embeddings for RAG retrieval
+- **Redis** 鈥?conversation history with token budget management (96k input / 8k output)
+- **MySQL** 鈥?structured data via GORM
+- **Volcengine Ark API** 鈥?LLM inference (DeepSeek V3) and embeddings (Doubao)
+- **Tencent Cloud CLS** 鈥?log queries via MCP protocol
 
 ### Configuration
 
@@ -69,4 +69,5 @@ Runtime config lives in `manifest/config/config.yaml`. Contains LLM endpoints/ke
 - Go module name: `go_agent`
 - Comments and commit messages are in Chinese
 - GoFrame code generation patterns: define API structs in `api/`, run `make ctrl` to scaffold controllers
-- Eino pipelines use a graph-based DAG pattern — nodes are composed via `compose.NewGraph` with explicit edges
+- Eino pipelines use a graph-based DAG pattern 鈥?nodes are composed via `compose.NewGraph` with explicit edges
+

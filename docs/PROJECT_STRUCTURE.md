@@ -1,44 +1,44 @@
-# OnCall 主文档（当前实现一致版）
+﻿# OnCall 涓绘枃妗ｏ紙褰撳墠瀹炵幇涓€鑷寸増锛?
 
-> 更新时间：2026-03-22
-> 校准范围：`main.go`、`api/chat/v1/chat.go`、`internal/controller/chat/chat_v1.go`、`internal/agent/*`、`internal/context/*`、`utility/mem/*`
+> 鏇存柊鏃堕棿锛?026-03-22
+> 鏍″噯鑼冨洿锛歚main.go`銆乣api/chat/v1/chat.go`銆乣internal/controller/chat/chat_v1.go`銆乣internal/agent/*`銆乣internal/context/*`銆乣utility/mem/*`
 
-## 1. 文档定位
+## 1. 鏂囨。瀹氫綅
 
-- 这是 `oncall/docs` 下的主文档（source of truth）。
-- `面试亮点.md`、`面试应答指南.md`、`项目介绍.md`、`interview-analysis.md` 作为补充材料保留。
-- 如补充文档与实现冲突，以本文为准。
+- 杩欐槸 `oncall/docs` 涓嬬殑涓绘枃妗ｏ紙source of truth锛夈€?
+- `闈㈣瘯浜偣.md`銆乣闈㈣瘯搴旂瓟鎸囧崡.md`銆乣椤圭洰浠嬬粛.md`銆乣interview-analysis.md` 浣滀负琛ュ厖鏉愭枡淇濈暀銆?
+- 濡傝ˉ鍏呮枃妗ｄ笌瀹炵幇鍐茬獊锛屼互鏈枃涓哄噯銆?
 
-## 2. 一句话介绍
+## 2. 涓€鍙ヨ瘽浠嬬粛
 
-OnCall 是一个基于 GoFrame + Eino ADK 的多 Agent 运维系统：用自然语言发起故障处理，完成观测、RCA、修复执行（含审批中断/恢复）、报告产出和知识沉淀。
+OnCall 鏄竴涓熀浜?GoFrame + Eino ADK 鐨勫 Agent 杩愮淮绯荤粺锛氱敤鑷劧璇█鍙戣捣鏁呴殰澶勭悊锛屽畬鎴愯娴嬨€丷CA銆佷慨澶嶆墽琛岋紙鍚鎵逛腑鏂?鎭㈠锛夈€佹姤鍛婁骇鍑哄拰鐭ヨ瘑娌夋穩銆?
 
-## 3. 当前架构（双轨）
+## 3. 褰撳墠鏋舵瀯锛堝弻杞級
 
 ```text
 Frontend (React + Vite + TypeScript + Zustand)
-        │
-        ▼
+        鈹?
+        鈻?
 HTTP/SSE API (/api/v1/*, port 6872)
-        │
-        ▼
+        鈹?
+        鈻?
 Controller(chat_v1) + ADK Runner
-   ├─ 轨道 A: dialogue_agent（聊天/工具编排）
-   └─ 轨道 B: incident_workflow_agent（故障处置工作流）
+   鈹溾攢 杞ㄩ亾 A: dialogue_agent锛堣亰澶?宸ュ叿缂栨帓锛?
+   鈹斺攢 杞ㄩ亾 B: incident_workflow_agent锛堟晠闅滃缃伐浣滄祦锛?
 ```
 
-### 3.1 轨道 A：对话轨
+### 3.1 杞ㄩ亾 A锛氬璇濊建
 
-- 入口：`POST /api/v1/chat_stream`
-- Runner：`chatStreamRunner`
-- 主要能力：意图识别、知识检索、K8s/指标查询、受控 Bash 执行、外部检索
-- 中断恢复：`POST /api/v1/chat_resume_stream`
+- 鍏ュ彛锛歚POST /api/v1/chat_stream`
+- Runner锛歚chatStreamRunner`
+- 涓昏鑳藉姏锛氭剰鍥捐瘑鍒€佺煡璇嗘绱€並8s/鎸囨爣鏌ヨ銆佸彈鎺?Bash 鎵ц銆佸閮ㄦ绱?
+- 涓柇鎭㈠锛歚POST /api/v1/chat_resume_stream`
 
-### 3.2 轨道 B：运维工作流轨
+### 3.2 杞ㄩ亾 B锛氳繍缁村伐浣滄祦杞?
 
-- 入口：`POST /api/v1/ai_ops_stream`
-- Runner：`opsStreamRunner`
-- 工作流结构（源码真实）：
+- 鍏ュ彛锛歚POST /api/v1/ai_ops_stream`
+- Runner锛歚opsStreamRunner`
+- 宸ヤ綔娴佺粨鏋勶紙婧愮爜鐪熷疄锛夛細
 
 ```text
 Sequential(
@@ -56,174 +56,172 @@ Sequential(
 )
 ```
 
-- Loop 最大轮次：`MaxExecutionLoops`，默认 `3`
-- 恢复接口：`POST /api/v1/ai_ops_resume_stream`
+- Loop 鏈€澶ц疆娆★細`MaxExecutionLoops`锛岄粯璁?`3`
+- 鎭㈠鎺ュ彛锛歚POST /api/v1/ai_ops_resume_stream`
 
-## 4. 对外接口与流式协议
+## 4. 瀵瑰鎺ュ彛涓庢祦寮忓崗璁?
 
-### 4.1 HTTP 接口（当前实现）
+### 4.1 HTTP 鎺ュ彛锛堝綋鍓嶅疄鐜帮級
 
-| 方法 | 路径 | 说明 |
+| 鏂规硶 | 璺緞 | 璇存槑 |
 |---|---|---|
-| POST | `/api/v1/chat_stream` | 普通对话流式输出 |
-| POST | `/api/v1/chat_resume_stream` | 对话中断恢复 |
-| POST | `/api/v1/ai_ops_stream` | 运维工作流流式输出 |
-| POST | `/api/v1/ai_ops_resume_stream` | 运维中断恢复 |
-| POST | `/api/v1/upload` | 知识文件上传（`multipart/form-data`） |
-| GET | `/api/v1/monitoring` | 监控占位接口（当前返回默认值） |
+| POST | `/api/v1/chat_stream` | 鏅€氬璇濇祦寮忚緭鍑?|
+| POST | `/api/v1/chat_resume_stream` | 瀵硅瘽涓柇鎭㈠ |
+| POST | `/api/v1/ai_ops_stream` | 杩愮淮宸ヤ綔娴佹祦寮忚緭鍑?|
+| POST | `/api/v1/ai_ops_resume_stream` | 杩愮淮涓柇鎭㈠ |
+| POST | `/api/v1/upload` | 鐭ヨ瘑鏂囦欢涓婁紶锛坄multipart/form-data`锛?|
+| GET | `/api/v1/monitoring` | 鐩戞帶鍗犱綅鎺ュ彛锛堝綋鍓嶈繑鍥為粯璁ゅ€硷級 |
 
-### 4.2 SSE 事件语义
+### 4.2 SSE 浜嬩欢璇箟
 
-- `chat_stream`：
-  - 普通内容：直接文本 chunk（`data: <text>`）
-  - 中断：JSON（`type=interrupt`）
-  - 结束：`[DONE]`
-  - 错误：`[ERROR] ...`
-- `ai_ops_stream` / `ai_ops_resume_stream`：
-  - 步骤：`{"type":"step","step":n,"content":"..."}`
-  - 内容：`{"type":"content","content":"..."}`
-  - 中断：`{"type":"interrupt", ...}`
-  - 结束：`{"type":"done"}`
-  - 错误：`{"type":"error","content":"..."}`
+- `chat_stream`锛?
+  - 鏅€氬唴瀹癸細鐩存帴鏂囨湰 chunk锛坄data: <text>`锛?
+  - 涓柇锛欽SON锛坄type=interrupt`锛?
+  - 缁撴潫锛歚[DONE]`
+  - 閿欒锛歚[ERROR] ...`
+- `ai_ops_stream` / `ai_ops_resume_stream`锛?
+  - 姝ラ锛歚{"type":"step","step":n,"content":"..."}`
+  - 鍐呭锛歚{"type":"content","content":"..."}`
+  - 涓柇锛歚{"type":"interrupt", ...}`
+  - 缁撴潫锛歚{"type":"done"}`
+  - 閿欒锛歚{"type":"error","content":"..."}`
 
-### 4.3 中断恢复请求关键字段
+### 4.3 涓柇鎭㈠璇锋眰鍏抽敭瀛楁
 
-- `checkpoint_id`：定位一次可恢复执行实例
-- `interrupt_ids[]`：定位具体待恢复中断点（可空，空则 checkpoint 级恢复）
-- `approved/resolved/comment/selection_value`：恢复决策载荷
+- `checkpoint_id`锛氬畾浣嶄竴娆″彲鎭㈠鎵ц瀹炰緥
+- `interrupt_ids[]`锛氬畾浣嶅叿浣撳緟鎭㈠涓柇鐐癸紙鍙┖锛岀┖鍒?checkpoint 绾ф仮澶嶏級
+- `approved/resolved/comment/selection_value`锛氭仮澶嶅喅绛栬浇鑽?
 
-## 5. Agent 分层职责
+## 5. Agent 鍒嗗眰鑱岃矗
 
-| Agent | 职责 | 核心工具/输出 |
+| Agent | 鑱岃矗 | 鏍稿績宸ュ叿/杈撳嚭 |
 |---|---|---|
-| `dialogue_agent` | 对话入口、工具编排 | `intent_analysis`、`request_detail_selection`、`knowledge_retrieve`、`ops_case_retrieve`、`k8s_monitor`、`metrics_collector`、`web_search`、`bash_execute_with_approval` |
-| `knowledge_agent` | 文本知识上传、分片索引 | 上传链路 `BuildKnowledgeUploadChain` |
-| `incident_analysis` | 观测、RCA 与修复意图分析 | 输出 Diagnosis / RemediationProposal，写入 `IncidentState` |
-| `diagnosis_gate` | 诊断证据与修复意图门控 | 校验证据、根因、影响面、fallback 等进入计划前条件 |
-| `plan` | 生成 canonical ExecutionPlan | `normalize_plan -> generate_plan`，写入 `PlanState` |
-| `plan_gate` | 校验 canonical ExecutionPlan | `validate_plan`，检查风险、回滚、成功标准与审批边界 |
-| `plan_approval` | 整体计划审批绑定 | 绑定 `plan_id + plan_revision + approval_snapshot_hash` |
-| `execute_plan` | 仅执行已批准计划 | `execute_step -> validate_result -> rollback`；不生成或改写计划 |
-| `verify_plan` | 全计划执行结果验证 | 校验 executed_steps 覆盖率和 canonical success criteria |
-| `replan_decider` | 重规划决策与循环收敛 | 输出 complete / refresh_observation / manual_required / abort |
-| `final_report` | 最终总结输出与报告落盘 | 汇总 `IncidentState`、PlanState、ReplanState 生成最终报告 |
+| `dialogue_agent` | 瀵硅瘽鍏ュ彛銆佸伐鍏风紪鎺?| `intent_analysis`銆乣request_detail_selection`銆乣knowledge_retrieve`銆乣ops_case_retrieve`銆乣k8s_monitor`銆乣metrics_collector`銆乣web_search`銆乣bash_execute_with_approval` |
+| `knowledge_agent` | 鏂囨湰鐭ヨ瘑涓婁紶銆佸垎鐗囩储寮?| 涓婁紶閾捐矾 `BuildKnowledgeUploadChain` |
+| `incident_analysis` | 瑙傛祴銆丷CA 涓庝慨澶嶆剰鍥惧垎鏋?| 杈撳嚭 Diagnosis / RemediationProposal锛屽啓鍏?`IncidentState` |
+| `diagnosis_gate` | 璇婃柇璇佹嵁涓庝慨澶嶆剰鍥鹃棬鎺?| 鏍￠獙璇佹嵁銆佹牴鍥犮€佸奖鍝嶉潰銆乫allback 绛夎繘鍏ヨ鍒掑墠鏉′欢 |
+| `plan` | 鐢熸垚 canonical ExecutionPlan | `normalize_plan -> generate_plan`锛屽啓鍏?`PlanState` |
+| `plan_gate` | 鏍￠獙 canonical ExecutionPlan | `validate_plan`锛屾鏌ラ闄┿€佸洖婊氥€佹垚鍔熸爣鍑嗕笌瀹℃壒杈圭晫 |
+| `plan_approval` | 鏁翠綋璁″垝瀹℃壒缁戝畾 | 缁戝畾 `plan_id + plan_revision + approval_snapshot_hash` |
+| `execute_plan` | 浠呮墽琛屽凡鎵瑰噯璁″垝 | `execute_step -> validate_result -> rollback`锛涗笉鐢熸垚鎴栨敼鍐欒鍒?|
+| `verify_plan` | 鍏ㄨ鍒掓墽琛岀粨鏋滈獙璇?| 鏍￠獙 executed_steps 瑕嗙洊鐜囧拰 canonical success criteria |
+| `replan_decider` | 閲嶈鍒掑喅绛栦笌寰幆鏀舵暃 | 杈撳嚭 complete / refresh_observation / manual_required / abort |
+| `final_report` | 鏈€缁堟€荤粨杈撳嚭涓庢姤鍛婅惤鐩?| 姹囨€?`IncidentState`銆丳lanState銆丷eplanState 鐢熸垚鏈€缁堟姤鍛?|
 
-## 6. 状态模型与恢复机制
+## 6. 鐘舵€佹ā鍨嬩笌鎭㈠鏈哄埗
 
-### 6.1 Session Memory（对话记忆）
+### 6.1 Session Memory锛堝璇濊蹇嗭級
 
-- 实现：
-  - 上层：`internal/context/session_memory.go`
-  - 底层：`utility/mem/mem.go`
-- 存储：Redis（turns + summary + meta + sys）
-- 目标：控制上下文 token，避免长日志污染输入
-- 压缩策略（当前实现）：
-  - 触发阈值：历史轮次 > 40
-  - 每次压缩：最旧 20 轮
-  - 摘要方式：规则拼接（`- 用户: ... / - 助手: ...`），不是 LLM 摘要
-  - 摘要长度：默认 1200 runes
-- 补充说明：`dialogue_agent` 还挂了 Eino summarization middleware，但故障工作流主链的上下文控制核心仍然是 `Graph State + HistoryRewriter`
+- 瀹炵幇锛?
+  - 涓婂眰锛歚internal/context/session_memory.go`
+  - 搴曞眰锛歚utility/mem/mem.go`
+- 瀛樺偍锛歊edis锛坱urns + summary + meta + sys锛?
+- 鐩爣锛氭帶鍒朵笂涓嬫枃 token锛岄伩鍏嶉暱鏃ュ織姹℃煋杈撳叆
+- 鍘嬬缉绛栫暐锛堝綋鍓嶅疄鐜帮級锛?
+  - 瑙﹀彂闃堝€硷細鍘嗗彶杞 > 40
+  - 姣忔鍘嬬缉锛氭渶鏃?20 杞?
+  - 鎽樿鏂瑰紡锛氳鍒欐嫾鎺ワ紙`- 鐢ㄦ埛: ... / - 鍔╂墜: ...`锛夛紝涓嶆槸 LLM 鎽樿
+  - 鎽樿闀垮害锛氶粯璁?1200 runes
+- 琛ュ厖璇存槑锛歚dialogue_agent` 杩樻寕浜?Eino summarization middleware锛屼絾鏁呴殰宸ヤ綔娴佷富閾剧殑涓婁笅鏂囨帶鍒舵牳蹇冧粛鐒舵槸 `Graph State + HistoryRewriter`
 
-### 6.2 Checkpoint Store（执行检查点）
+### 6.2 Checkpoint Store锛堟墽琛屾鏌ョ偣锛?
 
-- 实现：`internal/context/checkpoint_store.go`
-- Redis Key：`oncall:checkpoint:<checkpoint_id>`
-- Value：ADK checkpoint bytes
-- TTL：默认 24h
-- 用途：`Runner.Resume/ResumeWithParams` 恢复执行图
+- 瀹炵幇锛歚internal/context/checkpoint_store.go`
+- Redis Key锛歚oncall:checkpoint:<checkpoint_id>`
+- Value锛欰DK checkpoint bytes
+- TTL锛氶粯璁?24h
+- 鐢ㄩ€旓細`Runner.Resume/ResumeWithParams` 鎭㈠鎵ц鍥?
 
-### 6.3 Graph State（工作流状态）
+### 6.3 Graph State锛堝伐浣滄祦鐘舵€侊級
 
-- 类型：`IncidentState`（`internal/agent/ops/state_bridge.go`）
-- 通过 session values 维护，字段覆盖 observation/rca/proposal/execution/final status
-- `incidentHistoryRewriter` 在每轮模型输入前只注入：
-  - 最新用户输入
-  - 裁剪后的 Graph State（JSON）
+- 绫诲瀷锛歚IncidentState`锛坄internal/workflow/ops/state_bridge.go`锛?
+- 閫氳繃 session values 缁存姢锛屽瓧娈佃鐩?observation/rca/proposal/execution/final status
+- `incidentHistoryRewriter` 鍦ㄦ瘡杞ā鍨嬭緭鍏ュ墠鍙敞鍏ワ細
+  - 鏈€鏂扮敤鎴疯緭鍏?
+  - 瑁佸壀鍚庣殑 Graph State锛圝SON锛?
 
-### 6.4 Execution Tool State（执行内状态）
+### 6.4 Execution Tool State锛堟墽琛屽唴鐘舵€侊級
 
-- Key：`_execution_tool_state_v1`
-- 结构：`executionToolState`（gob 编解码）
-- 作用：记录计划准备、步骤执行、验证状态、重复失败计数，保证 checkpoint 恢复后执行状态连续
+- Key锛歚_execution_tool_state_v1`
+- 缁撴瀯锛歚executionToolState`锛坓ob 缂栬В鐮侊級
+- 浣滅敤锛氳褰曡鍒掑噯澶囥€佹楠ゆ墽琛屻€侀獙璇佺姸鎬併€侀噸澶嶅け璐ヨ鏁帮紝淇濊瘉 checkpoint 鎭㈠鍚庢墽琛岀姸鎬佽繛缁?
 
-## 7. 执行安全机制
+## 7. 鎵ц瀹夊叏鏈哄埗
 
-### 7.1 静态计划风险校验（`validate_plan`）
+### 7.1 闈欐€佽鍒掗闄╂牎楠岋紙`validate_plan`锛?
 
-- 绝对禁止（blocked）：`rm -rf /`、`mkfs`、`dd if=`、`shutdown/reboot`、fork bomb
-- 高风险（审阅/确认）：`kubectl delete/drain/scale/patch/...`、`docker stop/restart/rm`、`systemctl stop/restart/disable`、`helm upgrade/rollback/uninstall`
-- 只读命令识别：`kubectl get/describe/logs/top`、`cat/ls/ps/...`
+- 缁濆绂佹锛坆locked锛夛細`rm -rf /`銆乣mkfs`銆乣dd if=`銆乣shutdown/reboot`銆乫ork bomb
+- 楂橀闄╋紙瀹￠槄/纭锛夛細`kubectl delete/drain/scale/patch/...`銆乣docker stop/restart/rm`銆乣systemctl stop/restart/disable`銆乣helm upgrade/rollback/uninstall`
+- 鍙鍛戒护璇嗗埆锛歚kubectl get/describe/logs/top`銆乣cat/ls/ps/...`
 
-### 7.2 运行时审批与执行（`execute_step`）
+### 7.2 杩愯鏃跺鎵逛笌鎵ц锛坄execute_step`锛?
 
-- 白名单命令集（bash/kubectl/docker/systemctl/curl 等）
-- 变更类步骤执行前触发 `tool.Interrupt(...)`
-- 恢复时通过 `tool.GetResumeContext(...)` 读取 `approved/resolved/comment` 决策
-- 命令执行有 timeout，输出有裁剪，防止长日志失控
+- 鐧藉悕鍗曞懡浠ら泦锛坆ash/kubectl/docker/systemctl/curl 绛夛級
+- 鍙樻洿绫绘楠ゆ墽琛屽墠瑙﹀彂 `tool.Interrupt(...)`
+- 鎭㈠鏃堕€氳繃 `tool.GetResumeContext(...)` 璇诲彇 `approved/resolved/comment` 鍐崇瓥
+- 鍛戒护鎵ц鏈?timeout锛岃緭鍑烘湁瑁佸壀锛岄槻姝㈤暱鏃ュ織澶辨帶
 
-### 7.3 循环收敛与熔断
+### 7.3 寰幆鏀舵暃涓庣啍鏂?
 
-- 外层：`verify_plan` 与 `replan_decider` 按执行/验证事实决定完成、重新观测、转人工或终止
-- 重复问题上限：默认 `3` 次同类失败后停止自动重试并转人工
-- 内层：execution tool state 对同一步骤重复失败有额外阈值保护
+- 澶栧眰锛歚verify_plan` 涓?`replan_decider` 鎸夋墽琛?楠岃瘉浜嬪疄鍐冲畾瀹屾垚銆侀噸鏂拌娴嬨€佽浆浜哄伐鎴栫粓姝?- 閲嶅闂涓婇檺锛氶粯璁?`3` 娆″悓绫诲け璐ュ悗鍋滄鑷姩閲嶈瘯骞惰浆浜哄伐
+- 鍐呭眰锛歟xecution tool state 瀵瑰悓涓€姝ラ閲嶅澶辫触鏈夐澶栭槇鍊间繚鎶?
 
-## 8. 前端实现口径（当前）
+## 8. 鍓嶇瀹炵幇鍙ｅ緞锛堝綋鍓嶏級
 
-- 技术栈：React 19 + TypeScript + Vite 6 + Zustand
-- 关键文件：
-  - `Front_page/src/services/api.ts`（SSE 客户端与事件解析）
-  - `Front_page/src/store/useStore.ts`（全局状态与持久化）
-  - `Front_page/src/components/InterruptCard.tsx`（中断审批 UI）
-- 前端对 SSE 采用“JSON 优先 + 文本回退”解析策略
+- 鎶€鏈爤锛歊eact 19 + TypeScript + Vite 6 + Zustand
+- 鍏抽敭鏂囦欢锛?
+  - `frontend/src/services/api.ts`锛圫SE 瀹㈡埛绔笌浜嬩欢瑙ｆ瀽锛?
+  - `frontend/src/store/useStore.ts`锛堝叏灞€鐘舵€佷笌鎸佷箙鍖栵級
+  - `frontend/src/components/InterruptCard.tsx`锛堜腑鏂鎵?UI锛?
+- 鍓嶇瀵?SSE 閲囩敤鈥淛SON 浼樺厛 + 鏂囨湰鍥為€€鈥濊В鏋愮瓥鐣?
 
-## 9. 运行与依赖
+## 9. 杩愯涓庝緷璧?
 
-- 进程入口：`main.go`
-- 监听端口：`6872`（`main.go` 显式 `SetPort(6872)`）
-- 关键依赖：
-  - Redis：会话记忆 + checkpoint
-  - MySQL：业务持久化初始化
-  - Elasticsearch：可选，失败时降级
-  - Prometheus/K8s：运维工具查询
-  - Milvus：知识检索/案例检索
-- K8s 清单说明：本仓库 `manifest/k8s/README.md` 已声明统一清单位于 `/home/lihaoqian/project/k8s`
+- 杩涚▼鍏ュ彛锛歚main.go`
+- 鐩戝惉绔彛锛歚6872`锛坄main.go` 鏄惧紡 `SetPort(6872)`锛?
+- 鍏抽敭渚濊禆锛?
+  - Redis锛氫細璇濊蹇?+ checkpoint
+  - MySQL锛氫笟鍔℃寔涔呭寲鍒濆鍖?
+  - Elasticsearch锛氬彲閫夛紝澶辫触鏃堕檷绾?
+  - Prometheus/K8s锛氳繍缁村伐鍏锋煡璇?
+  - Milvus锛氱煡璇嗘绱?妗堜緥妫€绱?
+- K8s 娓呭崟璇存槑锛氭湰浠撳簱 `manifest/k8s/README.md` 宸插０鏄庣粺涓€娓呭崟浣嶄簬 `/home/lihaoqian/project/k8s`
 
-## 10. 已校准口径（避免旧文档冲突）
+## 10. 宸叉牎鍑嗗彛寰勶紙閬垮厤鏃ф枃妗ｅ啿绐侊級
 
-1. 前端不是“Vanilla JS 页面”，是 React + TS + Zustand。
-2. 当前 API 不是 `/api/v1/chat` / `/api/v1/chat_resume`，而是 `*_stream` 路径。
-3. 会话压缩摘要是规则拼接，不是 LLM 摘要生成。
-4. Incident Loop 不是无限循环，默认最多 3 轮。
-5. Checkpoint 是 Redis bytes 存储实现，恢复由 ADK Runner 驱动。
-6. SSE 协议是“文本+JSON 混合”，不是单一 JSON 流。
-7. `/api/v1/upload` 是知识上传链路，不是对象存储文件服务。
+1. 鍓嶇涓嶆槸鈥淰anilla JS 椤甸潰鈥濓紝鏄?React + TS + Zustand銆?
+2. 褰撳墠 API 涓嶆槸 `/api/v1/chat` / `/api/v1/chat_resume`锛岃€屾槸 `*_stream` 璺緞銆?
+3. 浼氳瘽鍘嬬缉鎽樿鏄鍒欐嫾鎺ワ紝涓嶆槸 LLM 鎽樿鐢熸垚銆?
+4. Incident Loop 涓嶆槸鏃犻檺寰幆锛岄粯璁ゆ渶澶?3 杞€?
+5. Checkpoint 鏄?Redis bytes 瀛樺偍瀹炵幇锛屾仮澶嶇敱 ADK Runner 椹卞姩銆?
+6. SSE 鍗忚鏄€滄枃鏈?JSON 娣峰悎鈥濓紝涓嶆槸鍗曚竴 JSON 娴併€?
+7. `/api/v1/upload` 鏄煡璇嗕笂浼犻摼璺紝涓嶆槸瀵硅薄瀛樺偍鏂囦欢鏈嶅姟銆?
 
-## 11. 面试速讲模板
+## 11. 闈㈣瘯閫熻妯℃澘
 
-### 11.1 30 秒版
+### 11.1 30 绉掔増
 
-OnCall 是一个多 Agent 运维系统，后端用 GoFrame + Eino ADK。它把故障处理拆成诊断、计划、审批、执行、验证、重规划和最终报告，并用 SSE 实时输出。高风险计划先经过 `plan_gate` / `plan_approval`，命令级变更在 `execute_step` 继续中断等人工审批，审批后用 `checkpoint_id + interrupt_ids` 从断点恢复。状态上把会话记忆、Graph State、Checkpoint 分层，既能控 token，也能保证长流程可恢复。
+OnCall 鏄竴涓 Agent 杩愮淮绯荤粺锛屽悗绔敤 GoFrame + Eino ADK銆傚畠鎶婃晠闅滃鐞嗘媶鎴愯瘖鏂€佽鍒掋€佸鎵广€佹墽琛屻€侀獙璇併€侀噸瑙勫垝鍜屾渶缁堟姤鍛婏紝骞剁敤 SSE 瀹炴椂杈撳嚭銆傞珮椋庨櫓璁″垝鍏堢粡杩?`plan_gate` / `plan_approval`锛屽懡浠ょ骇鍙樻洿鍦?`execute_step` 缁х画涓柇绛変汉宸ュ鎵癸紝瀹℃壒鍚庣敤 `checkpoint_id + interrupt_ids` 浠庢柇鐐规仮澶嶃€傜姸鎬佷笂鎶婁細璇濊蹇嗐€丟raph State銆丆heckpoint 鍒嗗眰锛屾棦鑳芥帶 token锛屼篃鑳戒繚璇侀暱娴佺▼鍙仮澶嶃€?
+### 11.2 2 鍒嗛挓鐗?
 
-### 11.2 2 分钟版
+椤圭洰鏈変袱鏉′富閾捐矾锛氫竴鏉℃槸 `chat_stream` 鐨勫璇濋摼锛屽仛鎰忓浘璇嗗埆銆佺煡璇嗘绱㈠拰杞婚噺杩愮淮宸ュ叿璋冪敤锛涘彟涓€鏉℃槸 `ai_ops_stream` 鐨勬晠闅滃缃摼銆傛晠闅滈摼鏄?`Sequential + Loop`锛歚incident_analysis` 缁熶竴瀹屾垚瑙傛祴/RCA/淇鎰忓浘锛宍diagnosis_gate` 鍐冲畾鏄惁鑳借繘鍏ヨ鍒掞紝`plan` 浜у嚭 canonical ExecutionPlan锛宍plan_gate` 涓?`plan_approval` 缁戝畾鏁翠唤璁″垝锛宍execute_plan` 鍙秷璐瑰凡鎵瑰噯璁″垝锛宍verify_plan` 鍋氬叏璁″垝楠屾敹锛宍replan_decider` 鍐冲畾瀹屾垚銆侀噸鏂拌娴嬨€佽浆浜哄伐鎴栫粓姝紝鏈€鍚?`final_report` 姹囨€昏惤鐩樸€?瀹夊叏涓婃槸涓ゅ眰鍔犱竴鏉″洖璺細`plan_gate` 鍋氳鍒掔骇瀹屾暣鎬?椋庨櫓/鍥炴粴绛涙煡锛宍execute_step` 瀵瑰彉鏇村懡浠ら€愭瀹℃壒骞跺彲鎭㈠鎵ц锛宍replan_decider` 鎶婂け璐ョ粺涓€鏀舵暃鎴愮粨鏋勫寲 ReplanDecision銆傜姸鎬佸眰鍒嗕笁鍧楋細SessionMemory 绠?token銆両ncidentState/PlanState/ReplanState 绠℃祦绋嬭涔夈€丆heckpoint 绠″彲鎭㈠鎵ц銆傝繖鏍锋棦淇濊瘉鍙搷浣滄€э紝涔熶繚璇佺敓浜у畨鍏ㄨ竟鐣屻€?
+## 12. 鍏抽敭浠ｇ爜绱㈠紩
 
-项目有两条主链路：一条是 `chat_stream` 的对话链，做意图识别、知识检索和轻量运维工具调用；另一条是 `ai_ops_stream` 的故障处置链。故障链是 `Sequential + Loop`：`incident_analysis` 统一完成观测/RCA/修复意图，`diagnosis_gate` 决定是否能进入计划，`plan` 产出 canonical ExecutionPlan，`plan_gate` 与 `plan_approval` 绑定整份计划，`execute_plan` 只消费已批准计划，`verify_plan` 做全计划验收，`replan_decider` 决定完成、重新观测、转人工或终止，最后 `final_report` 汇总落盘。
-安全上是两层加一条回路：`plan_gate` 做计划级完整性/风险/回滚筛查，`execute_step` 对变更命令逐步审批并可恢复执行，`replan_decider` 把失败统一收敛成结构化 ReplanDecision。状态层分三块：SessionMemory 管 token、IncidentState/PlanState/ReplanState 管流程语义、Checkpoint 管可恢复执行。这样既保证可操作性，也保证生产安全边界。
+- 鏈嶅姟鍏ュ彛锛歚main.go`
+- 璺敱濂戠害锛歚api/chat/v1/chat.go`
+- 鎺у埗鍣ㄤ笌 SSE锛歚internal/controller/chat/chat_v1.go`
+- 搴旂敤瑁呴厤锛歚internal/bootstrap/app.go`
+- 宸ヤ綔娴佺紪鎺掞細`internal/workflow/ops/incident_workflow.go`
+- Gate 涓庢渶缁堟姤鍛婏細`internal/workflow/ops/incident_nodes.go`
+- Graph State 涓庡巻鍙查噸鍐欙細`internal/workflow/ops/state_bridge.go`
+- Execution Agent锛歚internal/execution/agent.go`
+- 璁″垝鏍￠獙锛歚internal/execution/tools/validate_plan.go`
+- 姝ラ鎵ц涓庡鎵癸細`internal/execution/tools/execute_step.go`
+- 鎵ц鍐呯姸鎬侊細`internal/execution/tools/tool_call_state.go`
+- Session Memory锛歚internal/context/session_memory.go`
+- Redis Checkpoint锛歚internal/context/checkpoint_store.go`
+- 璁板繂鍘嬬缉瀹炵幇锛歚utility/mem/mem.go`
+- 鍓嶇 API锛歚frontend/src/services/api.ts`
+- 鍓嶇鐘舵€侊細`frontend/src/store/useStore.ts`
 
-## 12. 关键代码索引
 
-- 服务入口：`main.go`
-- 路由契约：`api/chat/v1/chat.go`
-- 控制器与 SSE：`internal/controller/chat/chat_v1.go`
-- 应用装配：`internal/bootstrap/app.go`
-- 工作流编排：`internal/agent/ops/incident_workflow.go`
-- Gate 与最终报告：`internal/agent/ops/incident_nodes.go`
-- Graph State 与历史重写：`internal/agent/ops/state_bridge.go`
-- Execution Agent：`internal/agent/execution/agent.go`
-- 计划校验：`internal/agent/execution/tools/validate_plan.go`
-- 步骤执行与审批：`internal/agent/execution/tools/execute_step.go`
-- 执行内状态：`internal/agent/execution/tools/tool_call_state.go`
-- Session Memory：`internal/context/session_memory.go`
-- Redis Checkpoint：`internal/context/checkpoint_store.go`
-- 记忆压缩实现：`utility/mem/mem.go`
-- 前端 API：`Front_page/src/services/api.ts`
-- 前端状态：`Front_page/src/store/useStore.ts`

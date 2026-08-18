@@ -7,7 +7,7 @@ OnCall hooks are an observation, notification, audit, and conservative blocking 
 Hooks are disabled by default. Set ONCALL_HOOKS_CONFIG to a local YAML file before starting OnCall.
 
     $env:ONCALL_HOOKS_CONFIG="D:\Code\project\oncall\.oncall\hooks.local.yaml"
-    go run main.go
+    cd backend && go run main.go
 
 Do not commit local hook files that contain URLs, tokens, headers, or incident-specific payloads.
 
@@ -101,3 +101,4 @@ Webhook hosts must be allowlisted, payloads are capped, and sensitive fields suc
 ## Runtime Visibility
 
 Use /hooks status or /status in the chat UI to view whether the hook engine is enabled, how many rules are loaded, and how many notifications are pending. These commands report counts and safety posture only; they do not dump complete tool arguments or secrets.
+

@@ -1,4 +1,4 @@
-# Build output
+﻿# Build output
 build/
 *.exe
 *.exe~
@@ -17,7 +17,6 @@ config.yaml
 vendor/
 
 # Go workspace file
-go.work
 
 # IDE files
 .vscode/
@@ -55,3 +54,8 @@ AGENTS.md
 .oncall/rag/bm25/
 .oncall/rag/cache/
 .oncall/rag/eval_runs/
+# Monorepo local dependencies and outputs
+frontend/node_modules/
+frontend/dist/
+backend/bin/
+backend/go_agent
