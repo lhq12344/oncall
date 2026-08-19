@@ -1,0 +1,40 @@
+﻿flowchart TD
+  Main[main.go] --> Bootstrap[bootstrap.NewApplication]
+  Bootstrap --> Redis[(Redis client)]
+  Bootstrap --> MemInit[mem.InitRedis\nfor SessionMemory]
+  Bootstrap --> ContextMgr[ContextManager\nRedisStorage oncall]
+  Main --> Controller[chat.NewV1WithHooks]
+  Redis --> Controller
+
+  Controller --> StoreChoice{redisClient nil?}
+  StoreChoice -->|no| RedisCkpt[RedisCheckPointStore\nprefix oncall ttl 24h]
+  StoreChoice -->|yes| MemCkpt[inMemoryCheckPointStore\nprocess local map]
+  RedisCkpt --> Runner[adk.NewRunner\nchat + ops]
+  MemCkpt --> Runner
+
+  Runner --> AIOps[AIOpsStream]
+  AIOps --> CkptID[generateCheckpointID aiops]
+  CkptID --> RunOpts[agentRunOptions\nWithCheckPointID + session_id]
+  RunOpts --> Run[opsStreamRunner.Run]
+  Run --> Interrupt[Action.Interrupted]
+  Interrupt --> SSE[SSE payload\ncheckpoint_id + interrupt_contexts]
+  SSE --> Frontend[frontend resumeOps]
+  Frontend --> ResumeAPI[AIOpsResumeStream]
+  ResumeAPI --> ResumeAgent[resumeAgent]
+  ResumeAgent --> ResumeOpts[resumeRunOptions\nsession values + callbacks]
+  ResumeAgent --> Targets{interrupt_ids present?}
+  Targets -->|no| Resume[runner.Resume checkpoint_id]
+  Targets -->|yes| ResumeWithParams[runner.ResumeWithParams\nResumeParams.Targets]
+  Resume --> StoreGet[CheckPointStore.Get]
+  ResumeWithParams --> StoreGet
+  StoreGet --> Continue[ADK continues from interrupt]
+
+  Controller --> SessionMemory[SessionMemory]
+  Chat[Chat / Slash dialogue] --> BuildMessages[BuildMessages]
+  BuildMessages --> MemGet[mem.GetMessagesForRequest]
+  MemGet --> MemKeys[(aiagent:ctx:session:sys\nsummary / turns / meta)]
+  Chat --> SaveTurn[SaveTurn after non-interrupted answer]
+  SaveTurn --> SetMessages[mem.SetMessages]
+  SaveTurn --> Compact[mem.CompactHistory]
+  SetMessages --> MemKeys
+  Compact --> MemKeys

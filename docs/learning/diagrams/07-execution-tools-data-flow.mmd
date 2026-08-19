@@ -1,0 +1,25 @@
+flowchart TD
+  A[RemediationProposal / command_hint / user intent] --> B{plan_agent}
+  B -->|command_hint complete| C[normalize_plan\nproposal actions -> ExecutionPlan]
+  B -->|command_hint missing / weak| D[generate_plan\nLLM or template -> ExecutionPlan]
+  C --> E[validate_plan\nrisk precheck]
+  D --> E
+  E --> F[Graph State PlanState\nrevision + snapshot_hash]
+  F --> G{plan_gate + plan_approval\ncurrent full snapshot accepted?}
+  G -->|no| H[refresh_observation / manual_required]
+  G -->|yes| I[prepareExecutionToolStateFromApprovedPlan]
+  I --> J[executionToolState\npreparedPlanJSON + planValidated]
+  J --> K[execute_step]
+  K --> L{permission decision}
+  L -->|Ask| M[tool interrupt\nExecutionApprovalInterruptInfo]
+  M -->|resume approved| N[execute command]
+  M -->|resolved / rejected| O[ExecutionResult\nnot executed or rejected]
+  L -->|Allow / dry-run| N
+  N --> P[ExecutionResult\nrememberExecutionResult]
+  O --> P
+  P --> Q[validate_result\nexpected vs actual]
+  Q -->|valid| R[next step]
+  Q -->|2 plan mismatches| S[stopAction = replan]
+  Q -->|2 hard invalids / repeated failures| T[stopAction = manual_required]
+  K --> U[rollback\nreverse rollback_steps]
+

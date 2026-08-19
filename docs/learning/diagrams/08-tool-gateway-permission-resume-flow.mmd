@@ -1,0 +1,21 @@
+flowchart TD
+  A[Agent visible tools] --> B[ToolSearch\nquery or select:ToolName]
+  B --> C[Registry.FindDeferredByNames / SearchDeferred]
+  C --> D[Registry.MarkDiscovered\nsession-scoped discovery]
+  D --> E[InvokeDeferredTool\ntool_name + arguments]
+  E --> F{Registry checks}
+  F -->|not deferred / not discovered| G[ToolResult error\nuse ToolSearch first]
+  F -->|ok| H[PreTool hooks]
+  H -->|reject| I[blocked by hook\ntarget not executed]
+  H -->|ok| J[permissions.Checker.Check\nallow / ask / deny]
+  J -->|deny| K[permission denied result]
+  J -->|ask first time| L[tool.Interrupt\nToolApprovalInterruptInfo]
+  L --> M[SSE interrupt payload\ncheckpoint_id + interrupt_contexts + data]
+  M --> N[Frontend InterruptCard\napprove / reject / resolved / select]
+  N --> O[resumeOps / resumeChat\ncheckpoint_id + interrupt_ids + decision]
+  O --> P[resumeAgent\nResumeWithParams targets]
+  P --> Q[GetResumeContext\napproved? allowAlways?]
+  Q -->|approved| R[target.Execute]
+  Q -->|rejected| K
+  R --> S[PostTool hooks + ToolResult]
+

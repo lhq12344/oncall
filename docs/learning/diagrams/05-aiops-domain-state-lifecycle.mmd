@@ -1,0 +1,19 @@
+﻿stateDiagram-v2
+  [*] --> Observing: AIOpsStream starts / opsDiagnosticPrompt
+  Observing --> Diagnosed: incident_analysis / RCA + remediation proposal
+  Diagnosed --> ContractChecked: diagnosis_gate / evidence contract
+  ContractChecked --> Planned: plan / GeneratedExecutionPlan -> PlanState
+  Planned --> GateValidated: plan_gate / PlanGateState
+  GateValidated --> ApprovalPending: requires approval / PlanApprovalState pending
+  GateValidated --> Approved: low risk / auto approve
+  ApprovalPending --> Approved: resume approved / snapshot matches
+  ApprovalPending --> ManualRequired: resume rejected or stale snapshot
+  Approved --> Executing: seed ExecutionPlan from PlanState
+  Executing --> Verified: verify_plan / PlanVerificationState
+  Verified --> Complete: replan_decider complete
+  Verified --> Observing: replan_decider refresh_observation
+  Verified --> ManualRequired: replan_decider manual_required
+  ManualRequired --> FinalReport: break loop
+  Complete --> FinalReport: break loop
+  FinalReport --> [*]
+

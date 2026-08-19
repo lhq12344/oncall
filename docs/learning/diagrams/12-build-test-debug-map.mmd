@@ -1,0 +1,21 @@
+﻿flowchart TD
+  Dev[Developer] --> BackendRun[backend go run main.go]
+  BackendRun --> Env[load .env or ../.env]
+  Env --> Config[GoFrame config]
+  Config --> Redis[Redis memory + checkpoint]
+  Config --> MySQL[MySQL]
+  Config --> Optional[ES Prometheus Kube Milvus]
+  BackendRun --> API[HTTP SSE API port 6872]
+
+  Dev --> FrontendRun[frontend npm run dev]
+  FrontendRun --> Vite[Vite port 3000]
+  Vite --> APIBase[BASE_URL 127.0.0.1:6872/api/v1]
+  APIBase --> API
+
+  Dev --> BackendTests[go test ./...]
+  BackendTests --> GoPackages[controller workflow rag toolkit permissions hooks slash]
+  Dev --> FrontendChecks[npm run lint + npm run build]
+  FrontendChecks --> TypeBuild[TypeScript + Vite build]
+  Dev --> RAGCtl[go run ./cmd/ragctl inspect/eval]
+  RAGCtl --> BM25Only[offline BM25 evidence]
+  BM25Only -. does not prove .-> LiveHybrid[live rewrite embedding Milvus fusion]

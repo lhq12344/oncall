@@ -1,0 +1,38 @@
+﻿flowchart LR
+  User[User / Browser] --> FE[frontend React + Vite]
+
+  subgraph Frontend[frontend/]
+    FE --> Store[Zustand Store\nfrontend/src/store/useStore.ts]
+    Store --> APIClient[SSE API Client\nfrontend/src/services/api.ts]
+  end
+
+  APIClient -->|HTTP/SSE :6872 /api/v1| API[GoFrame API Definitions\nbackend/api/chat/v1]
+  API --> Controller[Chat Controller\nbackend/internal/controller/chat]
+
+  subgraph Backend[backend/]
+    Controller --> Bootstrap[Application Container\nbackend/internal/bootstrap]
+    Bootstrap --> Dialogue[Dialogue Workflow\ninternal/workflow/dialogue]
+    Bootstrap --> Ops[AIOps Workflow\ninternal/workflow/ops]
+    Bootstrap --> Knowledge[Knowledge Agent\ninternal/knowledge]
+
+    Ops --> Execution[Execution Agent + Tools\ninternal/execution]
+    Ops --> Toolkit[Tool Registry / Calls\ninternal/toolkit]
+    Knowledge --> RAG[RAG / AI Retriever\ninternal/rag + internal/ai]
+
+    Controller --> Checkpoint[Checkpoint / Context\ninternal/context]
+    Bootstrap --> Hooks[Hook Engine\ninternal/hooks]
+  end
+
+  subgraph Infra[Infrastructure]
+    Redis[(Redis)]
+    MySQL[(MySQL)]
+    ES[(Elasticsearch)]
+    K8s[(Kubernetes / Prometheus)]
+  end
+
+  Checkpoint --> Redis
+  Bootstrap --> MySQL
+  Bootstrap --> ES
+  Execution --> K8s
+  RAG --> ES
+

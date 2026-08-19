@@ -1,0 +1,32 @@
+﻿sequenceDiagram
+  autonumber
+  participant UI as Frontend UI
+  participant Store as useStore.runOps
+  participant API as services.streamOps
+  participant Ctrl as ControllerV1.AIOpsStream
+  participant SSE as setupSSE / writeSSEData
+  participant Runner as opsStreamRunner
+  participant WF as incident_workflow_agent
+  participant FEParser as streamRequest parser
+
+  UI->>Store: trigger runOps(taskName)
+  Store->>Store: clearOps + open OpsPanel + mark running
+  Store->>API: streamOps(callbacks)
+  API->>Ctrl: POST /api/v1/ai_ops_stream {}
+  Ctrl->>SSE: setup text/event-stream headers
+  Ctrl->>Ctrl: checkpointID = generateCheckpointID("aiops")
+  Ctrl->>Runner: Run(UserMessage(opsDiagnosticPrompt), agentRunOptions)
+  Runner->>WF: execute incident workflow
+  WF-->>Ctrl: AgentEvent stream
+  alt interrupted
+    Ctrl->>SSE: type=interrupt + checkpoint_id + workflow=ops + resume_endpoint
+  else tool call
+    Ctrl->>SSE: type=step
+  else content
+    Ctrl->>SSE: type=content
+  end
+  Ctrl->>SSE: type=done
+  SSE-->>FEParser: data: JSON chunks
+  FEParser-->>Store: onStep / onContent / onInterrupt / onDone
+  Store-->>UI: render steps and interrupt cards
+

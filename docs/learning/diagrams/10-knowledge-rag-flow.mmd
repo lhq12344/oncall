@@ -1,0 +1,46 @@
+﻿flowchart TD
+  UploadAPI[/POST upload/] --> FileUpload[Controller FileUpload]
+  FileUpload --> Payload[upload payload\ntitle content meta]
+  Payload --> KnowledgeAgent[knowledge_agent.Run]
+  KnowledgeAgent --> Parse[parseUploadInput]
+  Parse --> Chain[BuildKnowledgeUploadChain]
+  Chain --> TempFile[temp markdown source]
+  TempFile --> Loader[file_loader]
+  Loader --> Splitter[markdown_splitter h1]
+  Splitter --> Indexer[milvus_indexer]
+  Indexer --> Assign[assign doc_id chunk_id\nsource_type content_hash]
+  Assign --> MilvusK[(Milvus knowledge_v2)]
+  Assign --> BM25K[(BM25 profile knowledge)]
+
+  Chat[ChatStream or slash dialogue] --> Memory[SessionMemory.BuildMessages]
+  Memory --> RewriteCtx[BuildRewriteInput\nWithRewriteContext]
+  RewriteCtx --> Dialogue[dialogue_agent]
+  Dialogue --> KTool[knowledge_retrieve]
+  Dialogue --> OTool[ops_case_retrieve]
+  KTool --> HRK[HybridRetriever profile knowledge]
+  OTool --> HRO[HybridRetriever profile ops_case]
+  OTool --> LocalReports[logs ops_reports local fallback]
+
+  HRK --> Rewrite[query rewrite variants]
+  HRO --> Rewrite
+  Rewrite --> Vector[Milvus vector retriever]
+  Rewrite --> Legacy[legacy retriever fallback]
+  Rewrite --> BM25[BM25 search]
+  Vector --> Fusion[RRF fusion]
+  Legacy --> Fusion
+  BM25 --> Fusion
+  Fusion --> Boost{ops_case?}
+  Boost -->|yes| OpsBoost[boost final reports and ops metadata]
+  Boost -->|no| MaybeRerank[optional reranker]
+  OpsBoost --> MaybeRerank
+  MaybeRerank --> Result[RetrievedContext JSON]
+  LocalReports --> Merge[merge local and RAG ops results]
+  Result --> Merge
+  Merge --> AgentUse[Agent uses retrieved context]
+
+  FinalReport[finalReportAgent] --> Persist[logs ops_reports markdown]
+  FinalReport --> Eligibility[archive eligibility]
+  Eligibility -->|pass| OpsArchive[archiveFinalOpsReport]
+  OpsArchive --> MilvusO[(Milvus ops_v2)]
+  OpsArchive --> BM25O[(BM25 profile ops_case)]
+  Persist --> LocalReports

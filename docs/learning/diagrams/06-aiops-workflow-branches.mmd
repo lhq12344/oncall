@@ -1,0 +1,20 @@
+﻿flowchart TD
+  A([AIOpsStream starts]) --> B[incident_analysis\ncollect observation + RCA + remediation proposal]
+  B --> C{diagnosis_gate\nevidence enough?}
+  C -- no --> R1[ReplanState: refresh_observation\nreturn to incident_analysis]
+  C -- yes --> D[plan\nGeneratedExecutionPlan -> PlanState]
+  D --> E{plan_gate\nvalid current snapshot?}
+  E -- blocked/invalid --> R2[ReplanState: refresh_observation\ninvalidate reusable plan]
+  E -- valid low risk --> F[plan_approval\nauto approve current snapshot]
+  E -- valid needs approval --> G[plan_approval\ninterrupt: full plan approval required]
+  G -- user approves & snapshot matches --> F
+  G -- user rejects/stale snapshot --> M[manual_required]
+  F --> H[execute_plan\nseed ExecutionPlan from PlanState]
+  H --> I[verify_plan\nPlanVerificationState]
+  I --> J{replan_decider}
+  J -- complete --> K[final_report]
+  J -- refresh_observation --> R1
+  J -- manual_required --> M
+  M --> K
+  K --> Z([done])
+

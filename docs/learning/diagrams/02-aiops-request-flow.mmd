@@ -1,0 +1,26 @@
+﻿sequenceDiagram
+  autonumber
+  participant U as User
+  participant FE as Frontend UI
+  participant Store as Zustand useStore
+  participant API as services/api.ts
+  participant Ctrl as ControllerV1
+  participant Runner as opsStreamRunner
+  participant WF as incident_workflow_agent
+  participant Tools as execution/knowledge/toolkit
+  participant SSE as SSE Response
+
+  U->>FE: 点击/触发 AIOps
+  FE->>Store: runOps(taskName)
+  Store->>API: streamOps(options)
+  API->>Ctrl: POST /api/v1/ai_ops_stream
+  Ctrl->>Runner: Run(messages, agentRunOptions("aiops", checkpointID))
+  Runner->>WF: incident_response_loop
+  WF->>WF: incident_analysis -> diagnosis_gate -> plan -> plan_gate -> plan_approval
+  WF->>Tools: execute_plan / verify_plan / replan_decider
+  WF-->>Ctrl: events / interrupt / final_report
+  Ctrl-->>API: SSE chunks
+  API-->>Store: onContent / onStep / onInterrupt / onDone
+  Store-->>FE: 更新消息、步骤、审批卡片
+  FE-->>U: 展示流式结果
+

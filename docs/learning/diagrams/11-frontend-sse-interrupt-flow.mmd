@@ -1,0 +1,38 @@
+﻿flowchart TD
+  UserChat[User sends chat] --> SendMessage[useStore.sendMessage]
+  SendMessage --> AddUser[add user message]
+  SendMessage --> AddAssistant[add empty assistant message]
+  SendMessage --> StreamChat[api.streamChat]
+
+  UserOps[User starts AIOps] --> RunOps[useStore.runOps]
+  RunOps --> ClearOps[clearOps and open OpsPanel]
+  RunOps --> StreamOps[api.streamOps]
+
+  StreamChat --> StreamRequest[streamRequest fetch POST]
+  StreamOps --> StreamRequest
+  StreamRequest --> Reader[response.body reader]
+  Reader --> ParseSSE[split by blank line\ncollect data lines]
+  ParseSSE --> Dispatch{payload type}
+  Dispatch -->|content| Content[onContent]
+  Dispatch -->|step| Step[onStep]
+  Dispatch -->|interrupt| Interrupt[mapInterruptData]
+  Dispatch -->|done| Done[onDone]
+  Dispatch -->|error| Error[onError]
+  Dispatch -->|command_action trusted| Command[onCommandAction]
+
+  Content --> ChatAppend[append content to last message]
+  Content --> OpsAppend[append content to current ops step]
+  Step --> ChatStep[append or merge message steps]
+  Step --> OpsStep[complete previous and create next ops step]
+  Interrupt --> ChatInterrupt[message.interrupt]
+  Interrupt --> OpsInterrupt[opsStep.interrupt]
+
+  ChatInterrupt --> Card[InterruptCard]
+  OpsInterrupt --> Card
+  Card --> Validate{has checkpoint_id and interrupt_ids?}
+  Validate -->|no| UIError[show validation error]
+  Validate -->|yes| ResumeRoute{resume via ops?}
+  ResumeRoute -->|yes| ResumeOps[api.resumeOps]
+  ResumeRoute -->|no| ResumeChat[api.resumeChat]
+  ResumeOps --> StreamRequest
+  ResumeChat --> StreamRequest
