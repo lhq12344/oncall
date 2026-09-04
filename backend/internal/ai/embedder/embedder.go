@@ -3,6 +3,7 @@ package embedder
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/cloudwego/eino-ext/components/embedding/ark"
@@ -34,7 +35,16 @@ func DoubaoEmbedding(ctx context.Context) (embedding.Embedder, error) {
 		return nil, err
 	}
 
-	return newArkEmbedder(model.String(), apiKey.String(), baseURL.String(), apiType)
+	return newArkEmbedder(model.String(), firstEnvOrValue(apiKey.String(), "ONCALL_EMBEDDING_API_KEY", "DOUBAO_EMBEDDING_API_KEY"), baseURL.String(), apiType)
+}
+
+func firstEnvOrValue(fallback string, names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func newArkEmbedder(model, apiKey, baseURL string, apiType ark.APIType) (embedding.Embedder, error) {

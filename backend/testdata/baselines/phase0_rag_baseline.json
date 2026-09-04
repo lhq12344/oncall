@@ -1,0 +1,13 @@
+{
+  "version": "phase0.rag_baseline.v1",
+  "dataset": "backend/testdata/rag_eval_gold.jsonl",
+  "corpus": "backend/testdata/rag_eval_gold_corpus.jsonl",
+  "metrics": {
+    "recall_at_20": null,
+    "mrr_at_3": null,
+    "top3_hit_rate": null,
+    "p95_latency_ms": null
+  },
+  "status": "schema_locked_pending_eval_command",
+  "notes": "Phase 0 records metric names and input datasets before cmd/ragctl is available or wired in this checkout."
+}

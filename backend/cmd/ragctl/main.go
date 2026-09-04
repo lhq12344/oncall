@@ -49,7 +49,7 @@ func printUsage() {
 	fmt.Println("  inspect      --profile knowledge|ops_case [--query Q] [--top-k 20] [--final-top-k 3]  # offline BM25 only, not live hybrid trace")
 	fmt.Println("  rebuild-bm25 --profile knowledge|ops_case|all --input chunks.jsonl                    # normalized JSONL input, no implicit live Milvus scan")
 	fmt.Println("  eval         --dataset testdata/rag_eval_gold.jsonl --profile knowledge|ops_case|all [--corpus chunks.jsonl] # offline BM25 eval; confirmed expected_ids required for quality gates")
-	fmt.Println("  backfill-v2  --profile knowledge|ops_case|all [--input legacy.jsonl --output v2.jsonl --dry-run=false]")
+	fmt.Println("  backfill-v2  --profile knowledge|ops_case|all [--input source.jsonl --output v2.jsonl --dry-run=false]")
 }
 
 func inspect(ctx context.Context, args []string) error {
@@ -92,8 +92,6 @@ func inspect(ctx context.Context, args []string) error {
 			"scope":                   "config_only; inspect does not connect to Milvus",
 			"database":                milvusConfig.Database,
 			"auto_create_collection":  milvusConfig.AutoCreateCollection,
-			"legacy_knowledge":        milvusConfig.Collection,
-			"legacy_ops_cases":        common.MilvusOpsCollection,
 			"knowledge_v2_collection": milvusConfig.KnowledgeV2Collection,
 			"ops_v2_collection":       milvusConfig.OpsV2Collection,
 		},
@@ -608,7 +606,7 @@ func telemetryFromRetrievedContext(context *rag.RetrievedContext) evalCaseTeleme
 func backfillV2(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("backfill-v2", flag.ContinueOnError)
 	profile := fs.String("profile", "knowledge", "knowledge, ops_case, or all")
-	input := fs.String("input", "", "legacy JSONL file containing rag.DocumentChunk records")
+	input := fs.String("input", "", "source JSONL file containing rag.DocumentChunk records")
 	output := fs.String("output", "", "normalized v2 JSONL output path")
 	dryRun := fs.Bool("dry-run", true, "report intended backfill without writing")
 	if err := fs.Parse(args); err != nil {
@@ -625,8 +623,6 @@ func backfillV2(ctx context.Context, args []string) error {
 		"mode":                    "canonical_jsonl_export",
 		"dry_run":                 *dryRun,
 		"profile":                 *profile,
-		"legacy_knowledge":        milvusConfig.Collection,
-		"legacy_ops_cases":        common.MilvusOpsCollection,
 		"knowledge_v2_collection": milvusConfig.KnowledgeV2Collection,
 		"ops_v2_collection":       milvusConfig.OpsV2Collection,
 	}

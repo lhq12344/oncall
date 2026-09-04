@@ -2,26 +2,24 @@
   autonumber
   participant Main as backend/main.go
   participant Env as .env / GoFrame Config
-  participant Infra as Redis / MySQL / ES
+  participant Registry as LayerRegistry
+  participant Infra as Infrastructure Layer
+  participant State as State Layer
   participant Boot as bootstrap.NewApplication
   participant Agents as Dialogue / Knowledge / Ops Agents
-  participant Ctrl as chat.NewV1WithHooks
+  participant Runtime as Runtime Layer
+  participant Ctrl as chat.NewV1FromDeps
   participant Server as GoFrame HTTP Server
 
   Main->>Env: load .env then ../.env
   Main->>Env: read redis / prometheus / kubeconfig / log_sync
-  Main->>Infra: init Redis memory
-  Main->>Infra: init MySQL
-  Main->>Infra: init optional Elasticsearch
   Main->>Boot: NewApplication(Config)
-  Boot->>Boot: init logger + hook engine
-  Boot->>Infra: create Redis client + context storage
-  Boot->>Agents: create DialogueAgent
-  Boot->>Agents: create IntegratedOpsExecutor
-  Boot->>Agents: create KnowledgeAgent
-  Boot->>Agents: create IncidentWorkflowAgent
+  Boot->>Registry: build infrastructure -> state -> agents -> runtime -> background
+  Registry->>Infra: logger + hooks + Redis + MySQL + optional ES + model + embedding
+  Registry->>State: ContextManager from RedisStorage
+  Registry->>Agents: Dialogue + IntegratedOps + Knowledge + IncidentWorkflow
+  Registry->>Runtime: checkpoint store + SessionMemory + slash registry + runners
   Boot-->>Main: Application
-  Main->>Ctrl: NewV1WithHooks(app dependencies)
-  Ctrl->>Ctrl: create checkpoint store + streaming runners
+  Main->>Ctrl: NewV1FromDeps(app.Runtime + app agents/hooks)
   Main->>Server: bind /api/v1 and listen on 6872
 

@@ -1,0 +1,15 @@
+{
+  "version": "phase0.sse_baseline.v1",
+  "snapshots": [
+    {
+      "id": "ordinary-streaming-dialogue",
+      "expected_events": ["run.started", "message.token", "run.finished"],
+      "expected_frontend_terminal_state": "done"
+    },
+    {
+      "id": "approval-interrupt",
+      "expected_events": ["run.started", "run.interrupt"],
+      "expected_frontend_terminal_state": "waiting_for_approval"
+    }
+  ]
+}

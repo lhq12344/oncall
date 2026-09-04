@@ -1,7 +1,7 @@
-﻿# 10 构建、测试与本地调试：哪些命令证明什么
+# 10 构建、测试与本地调试：哪些命令证明什么
 
-> 本节继续保持同一写法：**数据结构跟着调用链讲**，不单独堆类型表。  
-> 目标：把本地运行、测试、构建、RAG 离线检查和常见环境坑串成一张可执行清单。  
+> 本节继续保持同一写法：**数据结构跟着调用链讲**，不单独堆类型表。
+> 目标：把本地运行、测试、构建、RAG 离线检查和常见环境坑串成一张可执行清单。
 > 日期：2026-08-19。
 
 ## 1. 本节目标
@@ -24,7 +24,9 @@
 - `frontend/package.json`
 - `frontend/vite.config.ts`
 - `frontend/src/services/api.ts`
-- `docs/rag-operational-runbook.md`
+- `backend/testdata/rag_eval_seed.jsonl`
+- `backend/testdata/rag_eval_gold.jsonl`
+- `backend/testdata/rag_eval_gold_corpus.jsonl`
 
 ## 2. 后端启动：入口是 backend/main.go，HTTP 端口固定 6872
 
@@ -35,17 +37,16 @@
 ```text
 load env
 -> read GoFrame config
--> init Redis memory utility
--> init MySQL
--> optionally init Elasticsearch
 -> read Prometheus / kubeconfig / log_sync / hooks config
 -> bootstrap.NewApplication
+   -> infrastructure layer initializes Redis / MySQL / optional Elasticsearch
+   -> runtime layer initializes checkpoint/session/slash/runners
 -> register /api/v1 routes
 -> server.SetPort(6872)
 -> server.Run()
 ```
 
-证据在 `backend/main.go:39-136`。
+证据在 `backend/main.go:20-104`、`backend/internal/bootstrap/application_layers.go:34-134` 与 `backend/internal/bootstrap/runtime.go:18-65`。
 
 本地启动命令：
 
@@ -58,13 +59,13 @@ go run main.go
 
 ## 3. 后端依赖边界：启动强依赖和可降级依赖要分开看
 
-`main.go` 中 Redis 会先被用于 `mem.InitRedis`；随后 `bootstrap.NewApplication` 里还会创建 Redis client 并 `Ping`，失败会返回错误，`main.go` 会 `log.Fatalf`。证据在 `backend/main.go:45-64` 与 `backend/internal/bootstrap/app.go:125-145`。
+`main.go` 只读取 Redis 配置并传给 `bootstrap.NewApplication`；真正的 Redis client、Ping 和 `mem.InitRedis` 在 `buildInfrastructureLayer` 中完成。Redis 连接失败会让 `bootstrap.NewApplication` 返回错误，`main.go` 会 `log.Fatalf`。证据在 `backend/main.go:39-68` 与 `backend/internal/bootstrap/application_layers.go:63-83`。
 
-MySQL 初始化失败也是 fatal：`mysql.InitMySQL` 出错会 `log.Fatalf`。证据在 `backend/main.go:66-71`。
+MySQL 初始化也在 `buildInfrastructureLayer` 中，`mysql.InitMySQL` 出错会向上返回 `init mysql failed`，最终让 `main.go` fatal。证据在 `backend/internal/bootstrap/application_layers.go:87-94` 与 `backend/main.go:69-71`。
 
-Elasticsearch 是可降级依赖：如果没有配置地址，会打印 fallback；如果初始化失败，也只是 warning。证据在 `backend/main.go:73-84`。
+Elasticsearch 是可降级依赖：如果没有配置地址，infrastructure layer 会打印 fallback；如果初始化失败，也只是 warning。证据在 `backend/internal/bootstrap/application_layers.go:96-107`。
 
-Prometheus、kubeconfig、log_sync 和 hooks config 会作为 bootstrap 配置传入应用。证据在 `backend/main.go:86-108`。这些依赖主要影响 AIOps 工具能力：Prometheus 与 Kubernetes 相关工具在初始化或调用时可能降级，但不等同于整个 HTTP 服务一定不能启动。
+Prometheus、kubeconfig、log_sync 和 hooks config 会作为 bootstrap 配置传入应用。证据在 `backend/main.go:42-68`。这些依赖主要影响 AIOps 工具能力：Prometheus 与 Kubernetes 相关工具在初始化或调用时可能降级，但不等同于整个 HTTP 服务一定不能启动。
 
 Milvus/RAG 需要更细看：dialogue retriever 初始化失败时会记录 warn 并返回 nil retriever；但 knowledge upload agent 会构造上传索引链路，内部包含 Milvus-backed indexer。证据在 `backend/internal/workflow/dialogue/agent.go:193-208` 与 `backend/internal/knowledge/indexer.go:23-31`。因此本地调试时，如果只想读非上传/非 RAG 功能，也要意识到当前 bootstrap 仍会创建 knowledge agent。
 
@@ -177,6 +178,8 @@ cd backend
 
 注意：如果要证明 live hybrid，必须启动后端以及 Milvus/Embedding 等依赖，再通过 `knowledge_retrieve` 或 `ops_case_retrieve` 走真实工具调用；`ragctl inspect` 不能替代这个验证。
 
+另一个容易误读的点是：`testdata/rag_eval_gold_corpus.jsonl` 是当前可运行 fixture，但其中部分 metadata 的 `source_path` 仍保留旧 runbook 路径；当前仓库没有这个独立 runbook 文档。调试时应以 JSONL 内容、`expected_ids` 和 `cmd/ragctl` 测试为准，不要把旧 metadata path 当成现存源文件。
+
 ## 8. 推荐验证矩阵
 
 | 场景 | 推荐命令 | 能证明 | 不能证明 |
@@ -196,9 +199,10 @@ flowchart TD
   Dev[Developer] --> BackendRun[backend go run main.go]
   BackendRun --> Env[load .env or ../.env]
   Env --> Config[GoFrame config]
-  Config --> Redis[Redis memory + checkpoint]
-  Config --> MySQL[MySQL]
-  Config --> Optional[ES Prometheus Kube Milvus]
+  Config --> Bootstrap[bootstrap.NewApplication]
+  Bootstrap --> Infra[InfrastructureLayer\nRedis MySQL optional ES]
+  Bootstrap --> Runtime[RuntimeLayer\ncheckpoint session slash runners]
+  Config --> Optional[Prometheus Kube Milvus config]
   BackendRun --> API[HTTP SSE API port 6872]
 
   Dev --> FrontendRun[frontend npm run dev]
@@ -219,7 +223,7 @@ flowchart TD
 
 **证据**
 
-- 后端入口固定调用 `server.SetPort(6872)`，前端 API base URL 指向 `127.0.0.1:6872/api/v1`。见 `backend/main.go:118-136` 与 `frontend/src/services/api.ts:1-3`。
+- 后端入口固定调用 `server.SetPort(6872)`，前端 API base URL 指向 `127.0.0.1:6872/api/v1`。见 `backend/main.go:102-103` 与 `frontend/src/services/api.ts:1-3`。
 - 前端 dev 脚本固定 Vite 端口 3000，lint 是 `tsc --noEmit`，build 是 `vite build`。见 `frontend/package.json:6-12`。
 - GoFrame 构建/生成命令集中在 `backend/hack/hack.mk`，其中 `build` 是 `gf build -ew`。见 `backend/hack/hack.mk:1-16`。
 - `ragctl inspect` 是离线 BM25 检查，不调用 live hybrid 链路。见 `backend/cmd/ragctl/main.go:70-77`。

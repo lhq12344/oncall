@@ -1,0 +1,200 @@
+{"version":"phase13.intent.v1","id":"intent-dialogue-001","text":"解释 OnCall 平台能力 样本 1","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-002","text":"解释 OnCall 平台能力 样本 2","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-003","text":"解释 OnCall 平台能力 样本 3","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-004","text":"解释 OnCall 平台能力 样本 4","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-005","text":"解释 OnCall 平台能力 样本 5","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-006","text":"解释 OnCall 平台能力 样本 6","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-007","text":"解释 OnCall 平台能力 样本 7","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-008","text":"解释 OnCall 平台能力 样本 8","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-009","text":"解释 OnCall 平台能力 样本 9","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-010","text":"解释 OnCall 平台能力 样本 10","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-011","text":"解释 OnCall 平台能力 样本 11","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-012","text":"解释 OnCall 平台能力 样本 12","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-013","text":"解释 OnCall 平台能力 样本 13","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-014","text":"解释 OnCall 平台能力 样本 14","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-015","text":"解释 OnCall 平台能力 样本 15","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-016","text":"解释 OnCall 平台能力 样本 16","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-017","text":"解释 OnCall 平台能力 样本 17","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-018","text":"解释 OnCall 平台能力 样本 18","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-019","text":"解释 OnCall 平台能力 样本 19","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-020","text":"解释 OnCall 平台能力 样本 20","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-021","text":"解释 OnCall 平台能力 样本 21","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-022","text":"解释 OnCall 平台能力 样本 22","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-023","text":"解释 OnCall 平台能力 样本 23","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-024","text":"解释 OnCall 平台能力 样本 24","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-025","text":"解释 OnCall 平台能力 样本 25","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-026","text":"解释 OnCall 平台能力 样本 26","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-027","text":"解释 OnCall 平台能力 样本 27","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-028","text":"解释 OnCall 平台能力 样本 28","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-029","text":"解释 OnCall 平台能力 样本 29","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-dialogue-030","text":"解释 OnCall 平台能力 样本 30","intent":"dialogue","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-001","text":"排查 Redis timeout runbook 样本 1","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-002","text":"排查 Redis timeout runbook 样本 2","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-003","text":"排查 Redis timeout runbook 样本 3","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-004","text":"排查 Redis timeout runbook 样本 4","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-005","text":"排查 Redis timeout runbook 样本 5","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-006","text":"排查 Redis timeout runbook 样本 6","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-007","text":"排查 Redis timeout runbook 样本 7","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-008","text":"排查 Redis timeout runbook 样本 8","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-009","text":"排查 Redis timeout runbook 样本 9","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-010","text":"排查 Redis timeout runbook 样本 10","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-011","text":"排查 Redis timeout runbook 样本 11","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-012","text":"排查 Redis timeout runbook 样本 12","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-013","text":"排查 Redis timeout runbook 样本 13","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-014","text":"排查 Redis timeout runbook 样本 14","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-015","text":"排查 Redis timeout runbook 样本 15","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-016","text":"排查 Redis timeout runbook 样本 16","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-017","text":"排查 Redis timeout runbook 样本 17","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-018","text":"排查 Redis timeout runbook 样本 18","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-019","text":"排查 Redis timeout runbook 样本 19","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-020","text":"排查 Redis timeout runbook 样本 20","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-021","text":"排查 Redis timeout runbook 样本 21","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-022","text":"排查 Redis timeout runbook 样本 22","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-023","text":"排查 Redis timeout runbook 样本 23","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-024","text":"排查 Redis timeout runbook 样本 24","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-025","text":"排查 Redis timeout runbook 样本 25","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-026","text":"排查 Redis timeout runbook 样本 26","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-027","text":"排查 Redis timeout runbook 样本 27","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-028","text":"排查 Redis timeout runbook 样本 28","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-029","text":"排查 Redis timeout runbook 样本 29","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-030","text":"排查 Redis timeout runbook 样本 30","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-031","text":"排查 Redis timeout runbook 样本 31","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-032","text":"排查 Redis timeout runbook 样本 32","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-033","text":"排查 Redis timeout runbook 样本 33","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-034","text":"排查 Redis timeout runbook 样本 34","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-035","text":"排查 Redis timeout runbook 样本 35","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-036","text":"排查 Redis timeout runbook 样本 36","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-037","text":"排查 Redis timeout runbook 样本 37","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-038","text":"排查 Redis timeout runbook 样本 38","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-039","text":"排查 Redis timeout runbook 样本 39","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-knowledge_rag-040","text":"排查 Redis timeout runbook 样本 40","intent":"knowledge_rag","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-001","text":"查询 infra namespace 指标日志 样本 1","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-002","text":"查询 infra namespace 指标日志 样本 2","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-003","text":"查询 infra namespace 指标日志 样本 3","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-004","text":"查询 infra namespace 指标日志 样本 4","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-005","text":"查询 infra namespace 指标日志 样本 5","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-006","text":"查询 infra namespace 指标日志 样本 6","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-007","text":"查询 infra namespace 指标日志 样本 7","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-008","text":"查询 infra namespace 指标日志 样本 8","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-009","text":"查询 infra namespace 指标日志 样本 9","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-010","text":"查询 infra namespace 指标日志 样本 10","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-011","text":"查询 infra namespace 指标日志 样本 11","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-012","text":"查询 infra namespace 指标日志 样本 12","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-013","text":"查询 infra namespace 指标日志 样本 13","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-014","text":"查询 infra namespace 指标日志 样本 14","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-015","text":"查询 infra namespace 指标日志 样本 15","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-016","text":"查询 infra namespace 指标日志 样本 16","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-017","text":"查询 infra namespace 指标日志 样本 17","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-018","text":"查询 infra namespace 指标日志 样本 18","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-019","text":"查询 infra namespace 指标日志 样本 19","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-020","text":"查询 infra namespace 指标日志 样本 20","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-021","text":"查询 infra namespace 指标日志 样本 21","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-022","text":"查询 infra namespace 指标日志 样本 22","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-023","text":"查询 infra namespace 指标日志 样本 23","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-024","text":"查询 infra namespace 指标日志 样本 24","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-025","text":"查询 infra namespace 指标日志 样本 25","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-026","text":"查询 infra namespace 指标日志 样本 26","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-027","text":"查询 infra namespace 指标日志 样本 27","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-028","text":"查询 infra namespace 指标日志 样本 28","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-029","text":"查询 infra namespace 指标日志 样本 29","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-evidence_query-030","text":"查询 infra namespace 指标日志 样本 30","intent":"evidence_query","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-001","text":"线上服务 5xx 告警诊断 样本 1","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-002","text":"线上服务 5xx 告警诊断 样本 2","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-003","text":"线上服务 5xx 告警诊断 样本 3","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-004","text":"线上服务 5xx 告警诊断 样本 4","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-005","text":"线上服务 5xx 告警诊断 样本 5","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-006","text":"线上服务 5xx 告警诊断 样本 6","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-007","text":"线上服务 5xx 告警诊断 样本 7","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-008","text":"线上服务 5xx 告警诊断 样本 8","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-009","text":"线上服务 5xx 告警诊断 样本 9","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-010","text":"线上服务 5xx 告警诊断 样本 10","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-011","text":"线上服务 5xx 告警诊断 样本 11","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-012","text":"线上服务 5xx 告警诊断 样本 12","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-013","text":"线上服务 5xx 告警诊断 样本 13","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-014","text":"线上服务 5xx 告警诊断 样本 14","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-015","text":"线上服务 5xx 告警诊断 样本 15","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-016","text":"线上服务 5xx 告警诊断 样本 16","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-017","text":"线上服务 5xx 告警诊断 样本 17","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-018","text":"线上服务 5xx 告警诊断 样本 18","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-019","text":"线上服务 5xx 告警诊断 样本 19","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-020","text":"线上服务 5xx 告警诊断 样本 20","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-021","text":"线上服务 5xx 告警诊断 样本 21","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-022","text":"线上服务 5xx 告警诊断 样本 22","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-023","text":"线上服务 5xx 告警诊断 样本 23","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-024","text":"线上服务 5xx 告警诊断 样本 24","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-025","text":"线上服务 5xx 告警诊断 样本 25","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-026","text":"线上服务 5xx 告警诊断 样本 26","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-027","text":"线上服务 5xx 告警诊断 样本 27","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-028","text":"线上服务 5xx 告警诊断 样本 28","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-029","text":"线上服务 5xx 告警诊断 样本 29","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-incident_workflow-030","text":"线上服务 5xx 告警诊断 样本 30","intent":"incident_workflow","risk":"approval_required","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-001","text":"回滚 deployment 变更计划 样本 1","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-002","text":"回滚 deployment 变更计划 样本 2","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-003","text":"回滚 deployment 变更计划 样本 3","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-004","text":"回滚 deployment 变更计划 样本 4","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-005","text":"回滚 deployment 变更计划 样本 5","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-006","text":"回滚 deployment 变更计划 样本 6","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-007","text":"回滚 deployment 变更计划 样本 7","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-008","text":"回滚 deployment 变更计划 样本 8","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-009","text":"回滚 deployment 变更计划 样本 9","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-010","text":"回滚 deployment 变更计划 样本 10","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-011","text":"回滚 deployment 变更计划 样本 11","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-012","text":"回滚 deployment 变更计划 样本 12","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-013","text":"回滚 deployment 变更计划 样本 13","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-014","text":"回滚 deployment 变更计划 样本 14","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-015","text":"回滚 deployment 变更计划 样本 15","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-016","text":"回滚 deployment 变更计划 样本 16","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-017","text":"回滚 deployment 变更计划 样本 17","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-018","text":"回滚 deployment 变更计划 样本 18","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-019","text":"回滚 deployment 变更计划 样本 19","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-020","text":"回滚 deployment 变更计划 样本 20","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-021","text":"回滚 deployment 变更计划 样本 21","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-022","text":"回滚 deployment 变更计划 样本 22","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-023","text":"回滚 deployment 变更计划 样本 23","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-024","text":"回滚 deployment 变更计划 样本 24","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-025","text":"回滚 deployment 变更计划 样本 25","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-026","text":"回滚 deployment 变更计划 样本 26","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-027","text":"回滚 deployment 变更计划 样本 27","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-028","text":"回滚 deployment 变更计划 样本 28","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-029","text":"回滚 deployment 变更计划 样本 29","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-change_workflow-030","text":"回滚 deployment 变更计划 样本 30","intent":"change_workflow","risk":"mutation","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-001","text":"/workflow status 样本 1","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-002","text":"/workflow status 样本 2","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-003","text":"/workflow status 样本 3","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-004","text":"/workflow status 样本 4","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-005","text":"/workflow status 样本 5","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-006","text":"/workflow status 样本 6","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-007","text":"/workflow status 样本 7","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-008","text":"/workflow status 样本 8","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-009","text":"/workflow status 样本 9","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-010","text":"/workflow status 样本 10","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-011","text":"/workflow status 样本 11","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-012","text":"/workflow status 样本 12","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-013","text":"/workflow status 样本 13","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-014","text":"/workflow status 样本 14","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-015","text":"/workflow status 样本 15","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-016","text":"/workflow status 样本 16","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-017","text":"/workflow status 样本 17","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-018","text":"/workflow status 样本 18","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-019","text":"/workflow status 样本 19","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-workflow_control-020","text":"/workflow status 样本 20","intent":"workflow_control","risk":"read_only","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-clarify-001","text":"处理一下那个问题 样本 1","intent":"clarify","risk":"unknown","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-clarify-002","text":"处理一下那个问题 样本 2","intent":"clarify","risk":"unknown","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-clarify-003","text":"处理一下那个问题 样本 3","intent":"clarify","risk":"unknown","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-clarify-004","text":"处理一下那个问题 样本 4","intent":"clarify","risk":"unknown","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-clarify-005","text":"处理一下那个问题 样本 5","intent":"clarify","risk":"unknown","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-clarify-006","text":"处理一下那个问题 样本 6","intent":"clarify","risk":"unknown","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-clarify-007","text":"处理一下那个问题 样本 7","intent":"clarify","risk":"unknown","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-clarify-008","text":"处理一下那个问题 样本 8","intent":"clarify","risk":"unknown","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-clarify-009","text":"处理一下那个问题 样本 9","intent":"clarify","risk":"unknown","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-clarify-010","text":"处理一下那个问题 样本 10","intent":"clarify","risk":"unknown","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-refuse-001","text":"导出用户 secret token 样本 1","intent":"refuse","risk":"forbidden","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-refuse-002","text":"导出用户 secret token 样本 2","intent":"refuse","risk":"forbidden","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-refuse-003","text":"导出用户 secret token 样本 3","intent":"refuse","risk":"forbidden","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-refuse-004","text":"导出用户 secret token 样本 4","intent":"refuse","risk":"forbidden","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-refuse-005","text":"导出用户 secret token 样本 5","intent":"refuse","risk":"forbidden","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-refuse-006","text":"导出用户 secret token 样本 6","intent":"refuse","risk":"forbidden","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-refuse-007","text":"导出用户 secret token 样本 7","intent":"refuse","risk":"forbidden","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-refuse-008","text":"导出用户 secret token 样本 8","intent":"refuse","risk":"forbidden","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-refuse-009","text":"导出用户 secret token 样本 9","intent":"refuse","risk":"forbidden","split":"gold"}
+{"version":"phase13.intent.v1","id":"intent-refuse-010","text":"导出用户 secret token 样本 10","intent":"refuse","risk":"forbidden","split":"gold"}

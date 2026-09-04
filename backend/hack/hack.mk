@@ -15,6 +15,16 @@ build: cli.install
 ctrl: cli.install
 	@gf gen ctrl
 
+# Run the Phase 13 local architecture cutover verification matrix.
+.PHONY: phase13.verify
+phase13.verify:
+	@powershell -NoProfile -ExecutionPolicy Bypass -File ./hack/phase13-verify.ps1
+
+# Run Phase 13 live environment verification. Requires ONCALL_LIVE_* variables.
+.PHONY: phase13.live.verify
+phase13.live.verify:
+	@powershell -NoProfile -ExecutionPolicy Bypass -File ./hack/phase13-live-verify.ps1
+
 # Generate Go files for DAO/DO/Entity.
 .PHONY: dao
 dao: cli.install

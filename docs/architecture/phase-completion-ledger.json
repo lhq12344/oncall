@@ -1,0 +1,120 @@
+{
+  "version": "phase-completion-ledger/v1",
+  "date": "2026-09-03",
+  "source_plan": ".omx/plans/2026-09-02-oncall-complete-architecture-refactor.md",
+  "status": "external_required",
+  "phases": [
+    {
+      "id": "phase_0",
+      "title": "行为冻结、领域契约和评测基线",
+      "status": "local_complete",
+      "implementation_evidence": ["docs/architecture/CONTEXT.md", "docs/architecture/target-modules.md", "docs/architecture/domain-glossary.md", "docs/adr/0001-eino-runtime-kernel.md", "docs/adr/0002-workflow-agent-hybrid.md", "docs/adr/0003-event-trace-audit-separation.md", "docs/adr/0004-storage-and-adapter-policy.md", "docs/adr/0005-data-flywheel-governance.md", "backend/testdata/baselines", "backend/testdata/golden_traces", "backend/testdata/intent", "backend/testdata/security", "backend/testdata/replay"],
+      "verification_commands": ["go test -count=1 ./internal/arch ./internal/bootstrap ./internal/config"],
+      "review_evidence": "Architecture guard and baseline fixtures are covered by backend/internal/arch/architecture_test.go and included in phase13 local verification."
+    },
+    {
+      "id": "phase_1",
+      "title": "Runtime Kernel、Model、Event 和 Telemetry",
+      "status": "local_complete",
+      "implementation_evidence": ["backend/internal/config", "backend/internal/model", "backend/internal/events", "backend/internal/telemetry", "backend/internal/app", "backend/internal/adapters/cozeloop", "backend/cmd/oncall"],
+      "verification_commands": ["go test -count=1 ./internal/config ./internal/model ./internal/events ./internal/telemetry ./internal/app ./internal/adapters/cozeloop"],
+      "review_evidence": "Runtime records and adapter seams are enforced by architecture tests and telemetry redaction tests."
+    },
+    {
+      "id": "phase_2",
+      "title": "Orchestrator、Intent、Risk、Transport 和 SSE",
+      "status": "local_complete",
+      "implementation_evidence": ["backend/internal/orchestration", "backend/internal/server/http", "backend/internal/server/sse", "frontend/src/agent-events", "frontend/src/services/api.ts"],
+      "verification_commands": ["go test -count=1 ./internal/orchestration ./internal/server/... ./internal/controller/chat", "npm run lint", "npm run test", "npm run build"],
+      "review_evidence": "RunEvent reducer, SSE parser removal, and intent/security eval gates are covered by unit tests plus legacy cutover scan."
+    },
+    {
+      "id": "phase_3",
+      "title": "PromptAssembler、Context Pipeline 和 Runtime Notice",
+      "status": "local_complete",
+      "implementation_evidence": ["backend/internal/prompt/assembler.go", "backend/internal/prompt/provider.go", "backend/internal/prompt/budget.go", "backend/internal/prompt/snapshot.go", "backend/internal/context/pipeline", "backend/internal/context/notice"],
+      "verification_commands": ["go test -count=1 ./internal/prompt ./internal/context/pipeline ./internal/context/notice"],
+      "review_evidence": "Prompt ordering, section providers, budget behavior, and notice lifecycle are tested in the local suite."
+    },
+    {
+      "id": "phase_4",
+      "title": "统一 Tool Runtime、PolicyEngine、Approval 和 Hook",
+      "status": "local_complete",
+      "implementation_evidence": ["backend/internal/tools", "backend/internal/tools/invoker", "backend/internal/tools/policy", "backend/internal/tools/registry", "backend/internal/tools/runtime", "backend/internal/hooks"],
+      "verification_commands": ["go test -count=1 ./internal/tools/... ./internal/hooks"],
+      "review_evidence": "Unique Registry, invoker, approval snapshot, and legacy toolkit removal are enforced by architecture and policy tests."
+    },
+    {
+      "id": "phase_5",
+      "title": "Slash Command 和 Skill 渐进式披露",
+      "status": "local_complete",
+      "implementation_evidence": ["backend/internal/commands", "backend/internal/commands/slash", "backend/internal/skills"],
+      "verification_commands": ["go test -count=1 ./internal/commands/... ./internal/skills"],
+      "review_evidence": "Typed command dispatch and skill loading are covered by local command and skill tests."
+    },
+    {
+      "id": "phase_6",
+      "title": "Session、Checkpoint、Compaction、Memory 和 Artifact",
+      "status": "local_complete",
+      "implementation_evidence": ["backend/internal/session/transcript", "backend/internal/session/checkpoint", "backend/internal/context/compact", "backend/internal/context/compact/runtime", "backend/internal/memory", "backend/internal/artifacts"],
+      "verification_commands": ["go test -count=1 ./internal/session/... ./internal/context/... ./internal/memory ./internal/artifacts"],
+      "review_evidence": "Transcript, checkpoint, compaction, memory, and artifact seams are tested independently in the local suite."
+    },
+    {
+      "id": "phase_7",
+      "title": "RAG V2 离线索引和切片",
+      "status": "local_complete",
+      "implementation_evidence": ["backend/internal/rag/ingest", "backend/internal/adapters/milvus", "backend/cmd/ragctl", "backend/testdata/rag_eval_gold.jsonl", "backend/testdata/rag_eval_gold_corpus.jsonl"],
+      "verification_commands": ["go test -count=1 ./internal/rag/... ./internal/adapters/milvus ./cmd/ragctl", "go run ./cmd/ragctl eval --dataset testdata/rag_eval_gold.jsonl --profile all --corpus testdata/rag_eval_gold_corpus.jsonl"],
+      "review_evidence": "RAG ingest and offline index behavior are covered by package tests and the 100-case gold eval."
+    },
+    {
+      "id": "phase_8",
+      "title": "RAG 在线检索、质量门、快照和飞轮采集",
+      "status": "local_complete_live_pending",
+      "implementation_evidence": ["backend/internal/rag/retrieval", "backend/internal/rag/quality", "backend/internal/rag/snapshot.go", "backend/internal/improvement/capture.go"],
+      "verification_commands": ["go test -count=1 ./internal/rag/... ./internal/improvement", "go run ./cmd/ragctl inspect --profile knowledge --query redis timeout --top-k 20 --final-top-k 8"],
+      "review_evidence": "Offline BM25 and quality gates are locally proven; live hybrid retrieval remains an external gate."
+    },
+    {
+      "id": "phase_9",
+      "title": "IncidentIngress、EvidenceCollector 和运维 Tool",
+      "status": "local_complete_live_pending",
+      "implementation_evidence": ["backend/internal/evidence", "backend/internal/tools/ops", "backend/internal/adapters/kubernetes", "backend/internal/adapters/prometheus", "backend/internal/adapters/elasticsearch", "backend/internal/adapters/alertmanager"],
+      "verification_commands": ["go test -count=1 ./internal/evidence ./internal/tools/ops ./internal/adapters/kubernetes ./internal/adapters/prometheus ./internal/adapters/elasticsearch ./internal/adapters/alertmanager"],
+      "review_evidence": "Typed evidence adapters are locally tested; production fault injection remains external."
+    },
+    {
+      "id": "phase_10",
+      "title": "Workflow + Agent 混合运行时",
+      "status": "local_complete",
+      "implementation_evidence": ["backend/internal/workflow/catalog", "backend/internal/workflow/incident", "backend/internal/workflow/ops", "backend/internal/workflow/stages", "backend/cmd/replayctl", "backend/testdata/replay/incident"],
+      "verification_commands": ["go test -count=1 ./internal/workflow/...", "go run ./cmd/replayctl --suite testdata/replay/incident"],
+      "review_evidence": "Workflow replay, idempotency, approval invalidation, and degraded evidence behavior are covered by workflow tests and replay fixtures."
+    },
+    {
+      "id": "phase_11",
+      "title": "数据飞轮、人工审核和知识发布",
+      "status": "local_complete_live_pending",
+      "implementation_evidence": ["backend/internal/improvement", "backend/internal/adapters/sql/sqlite", "backend/internal/adapters/sql/postgres", "frontend/src/features/review-cases", "frontend/src/features/knowledge-publish", "frontend/src/features/traces"],
+      "verification_commands": ["go test -count=1 ./internal/improvement/... ./internal/adapters/sql/...", "npm run lint", "npm run build"],
+      "review_evidence": "ReviewCase capture, triage, publish governance, canary, redaction, rollback, and UI type safety are locally tested; live publish retrieval remains external."
+    },
+    {
+      "id": "phase_12",
+      "title": "Subagent、Team 和 MCP",
+      "status": "local_complete",
+      "implementation_evidence": ["backend/internal/agent/delegation", "backend/internal/agent/team", "backend/internal/mcp", "backend/internal/adapters/mcp"],
+      "verification_commands": ["go test -count=1 ./internal/agent/delegation/... ./internal/agent/team/... ./internal/mcp/... ./internal/adapters/mcp/..."],
+      "review_evidence": "Delegation, Team mailbox, tool allowlist, cancellation, and MCP tool wrapping are covered by local tests and unified policy seams."
+    },
+    {
+      "id": "phase_13",
+      "title": "兼容层关闭、旧代码清退和生产验收",
+      "status": "local_complete_external_required",
+      "implementation_evidence": ["backend/hack/phase13-verify.ps1", "backend/hack/phase13-race-evidence.ps1", "backend/hack/phase13-race-evidence.cmd", "backend/hack/phase13-live-verify.ps1", "backend/hack/phase13-production-evidence-init.ps1", "backend/hack/phase13-production-evidence-init.cmd", "backend/hack/phase13-production-evidence-update.ps1", "backend/hack/phase13-production-evidence-update.cmd", "backend/hack/phase13-production-evidence-verify.ps1", "backend/hack/phase13-status.ps1", "docs/architecture/phase13-verification-checklist.json", "docs/architecture/phase13-verification-report.md", "docs/architecture/phase13-live-verification-runbook.md"],
+      "verification_commands": ["backend/hack/phase13-verify.ps1", "backend/hack/phase13-live-verify.ps1", "backend/hack/phase13-production-evidence-verify.ps1", "backend/hack/phase13-status.ps1"],
+      "review_evidence": "Local code review found no blocking critical/high findings; the CozeLoop adapter avoids the known v0.1.23 ForceFlush race path and its targeted tests pass. A 2026-09-04 WSL race run passed, and the verifier now supports reusable external race evidence for hosts that cannot start WSL directly. Live connectivity gates are complete; remaining production drills stay external_required until real fault-injection, CozeLoop trace, mutation approval, and flywheel publish evidence is collected."
+    }
+  ]
+}

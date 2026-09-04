@@ -38,7 +38,7 @@ interface AppState {
   currentSessionId: string | null;
   isStreaming: boolean;
   connectionStatus: 'idle' | 'connecting' | 'streaming' | 'error';
-  
+
   // Ops Panel State
   isOpsPanelOpen: boolean;
   opsSteps: OpsStep[];
@@ -46,6 +46,7 @@ interface AppState {
   isOpsRunning: boolean;
   isRehydrated: boolean;
   isSidebarOpen: boolean;
+  isWorkbenchOpen: boolean;
 
   toggleTheme: () => void;
   toggleSidebar: () => void;
@@ -72,6 +73,7 @@ interface AppState {
   markOpsInterruptHandled: (id: string, handled: boolean) => void;
   setOpsRunning: (isRunning: boolean) => void;
   setRehydrated: (val: boolean) => void;
+  setWorkbenchOpen: (isOpen: boolean) => void;
 }
 
 export const useStore = create<AppState>()(
@@ -89,10 +91,12 @@ export const useStore = create<AppState>()(
       isOpsRunning: false,
       isRehydrated: false,
       isSidebarOpen: true,
+      isWorkbenchOpen: false,
 
       toggleTheme: () => set((state) => ({ theme: state.theme === 'dark' ? 'light' : 'dark' })),
       toggleSidebar: () => set((state) => ({ isSidebarOpen: !state.isSidebarOpen })),
       setSidebarOpen: (isOpen) => set({ isSidebarOpen: isOpen }),
+      setWorkbenchOpen: (isOpen) => set({ isWorkbenchOpen: isOpen }),
 
       addSession: (title = 'New Session') => {
         const id = crypto.randomUUID();
@@ -122,14 +126,14 @@ export const useStore = create<AppState>()(
         set((state) => ({
           sessions: state.sessions.map((s) => {
             if (s.id !== sessionId) return s;
-            
+
             const isFirstMessage = s.messages.length === 0 && message.role === 'user';
-            const title = isFirstMessage 
-              ? (message.content.substring(0, 50) || '新对话') 
+            const title = isFirstMessage
+              ? (message.content.substring(0, 50) || '新对话')
               : s.title;
 
-            return { 
-              ...s, 
+            return {
+              ...s,
               title,
               messages: [...s.messages, { ...message, id, timestamp: Date.now() }],
               updatedAt: Date.now()
@@ -237,14 +241,14 @@ export const useStore = create<AppState>()(
       },
 
       updateOpsStep: (id, content, status, interrupt) => set((state) => ({
-        opsSteps: state.opsSteps.map((step) => 
-          step.id === id 
-            ? { 
-                ...step, 
+        opsSteps: state.opsSteps.map((step) =>
+          step.id === id
+            ? {
+                ...step,
                 content: content !== undefined ? step.content + content : step.content,
                 status: status || step.status,
                 interrupt: interrupt || step.interrupt
-              } 
+              }
             : step
         )
       })),
@@ -327,7 +331,7 @@ export const useStore = create<AppState>()(
           setStreaming,
           setConnectionStatus
         } = get();
-        
+
         addMessage(sessionId, {
           role: 'user',
           type: 'user',
@@ -380,7 +384,7 @@ export const useStore = create<AppState>()(
     {
       name: 'oncall_history',
       storage: createJSONStorage(() => localStorage),
-      partialize: (state) => ({ 
+      partialize: (state) => ({
         sessions: state.sessions.slice(0, 50),
         theme: state.theme,
         opsSteps: state.opsSteps,

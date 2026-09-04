@@ -3,8 +3,8 @@ package indexer
 import (
 	"context"
 	"fmt"
+	milvusadapter "go_agent/internal/adapters/milvus"
 	embedder2 "go_agent/internal/ai/embedder"
-	"go_agent/utility/client"
 	"go_agent/utility/common"
 	"strings"
 
@@ -18,7 +18,7 @@ func NewMilvusIndexer(ctx context.Context) (*milvus.Indexer, error) {
 }
 
 func NewMilvusIndexerWithCollection(ctx context.Context, collection string) (*milvus.Indexer, error) {
-	cli, err := client.NewMilvusClient(ctx)
+	cli, err := milvusadapter.NewClient(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -31,7 +31,7 @@ func NewMilvusIndexerWithCollection(ctx context.Context, collection string) (*mi
 	if collection == "" {
 		collection = common.LoadMilvusConfig(ctx).Collection
 	}
-	if err := client.EnsureMilvusCollection(ctx, cli, collection); err != nil {
+	if err := milvusadapter.EnsureCollection(ctx, cli, collection); err != nil {
 		return nil, err
 	}
 

@@ -1,0 +1,20 @@
+﻿---
+title: Final Report Archive Loop
+---
+flowchart TD
+  S[IncidentState\nplan execute verify replan] --> FR[finalReportAgent.Run]
+  FR --> SUM[buildFinalOpsSummary\ninferFinalStatus]
+  SUM --> P[persistFinalOpsReport]
+  P --> FILE[(logs/ops_reports/*.md\nfrontmatter + report)]
+  P --> G{finalOpsArchiveEligibility}
+  G -->|fail| SKIP[Skip archive\nlog reasons]
+  G -->|pass| DOC[schema.Document\nfull final report]
+  DOC --> META[metadata\nops_final_report + plan/verify/replan]
+  META --> MV[(Milvus ops_cases_v2)]
+  META --> BM[BM25 ProfileOpsCase]
+  FILE --> LOCAL[retrieveLocalFinalReports]
+  MV --> HY[Hybrid RAG ops_case]
+  BM --> HY
+  LOCAL --> MERGE[mergeOpsCaseResults]
+  HY --> MERGE
+  MERGE --> NEXT[Next incident\nops_case_retrieve result]

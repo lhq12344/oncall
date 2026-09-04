@@ -10,22 +10,21 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	v1 "go_agent/api/chat/v1"
+	"go_agent/internal/commands/slash"
 	appcontext "go_agent/internal/context"
+	"go_agent/internal/events"
 	hookpkg "go_agent/internal/hooks"
 	"go_agent/internal/rag"
-	"go_agent/internal/slash"
+	"go_agent/internal/telemetry"
 
 	"github.com/cloudwego/eino/adk"
-	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/net/ghttp"
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
 
@@ -53,88 +52,65 @@ type ControllerV1 struct {
 	opsAgent         adk.Agent
 	knowledgeAgent   adk.Agent
 	hookEngine       *hookpkg.Engine
+	telemetry        *telemetry.Recorder
 }
 
-// NewV1 创建 V1 版本的聊天控制器。
-//
-// 功能：
-// 1. 初始化控制器实例，绑定各个 Agent
-// 2. 创建检查点存储（Redis 或内存）
-// 3. 初始化聊天流式 Runner 和运维流式 Runner
-//
-// 调用位置：
-// - main.go:118 行，应用启动时调用
-//
-// 输入：
-// - dialogueAgent: 对话代理（可选）
-// - logger: 日志记录器
-// - redisClient: Redis 客户端（可选，用于持久化检查点）
-// - opsAgent: 运维代理（可选）
-// - knowledgeAgent: 知识代理（可选）
-//
-// 输出：
-// - *ControllerV1: 初始化完成的控制器实例
-func NewV1(
-	dialogueAgent adk.ResumableAgent,
-	logger *zap.Logger,
-	redisClient *redis.Client,
-	opsAgent adk.Agent,
-	knowledgeAgent adk.Agent,
-) *ControllerV1 {
-	return NewV1WithHooks(dialogueAgent, logger, redisClient, opsAgent, knowledgeAgent, nil)
+// ControllerDeps is the transport-layer seam for the chat controller.
+// The controller consumes prebuilt runtime modules instead of creating
+// checkpoint stores, runners, or registries from infrastructure clients.
+type ControllerDeps struct {
+	DialogueAgent    adk.ResumableAgent
+	ChatStreamRunner *adk.Runner
+	OpsStreamRunner  *adk.Runner
+	RootAgentName    string
+	OpsRootAgentName string
+	SessionMemory    *appcontext.SessionMemory
+	SlashRegistry    *slash.Registry
+	WorkDir          string
+	Logger           *zap.Logger
+	OpsAgent         adk.Agent
+	KnowledgeAgent   adk.Agent
+	HookEngine       *hookpkg.Engine
+	Telemetry        *telemetry.Recorder
 }
 
-func NewV1WithHooks(
-	dialogueAgent adk.ResumableAgent,
-	logger *zap.Logger,
-	redisClient *redis.Client,
-	opsAgent adk.Agent,
-	knowledgeAgent adk.Agent,
-	hookEngine *hookpkg.Engine,
-) *ControllerV1 {
-	ctrl := &ControllerV1{
-		dialogueAgent:    dialogueAgent,
-		rootAgentName:    "dialogue_agent",
-		opsRootAgentName: "ops_agent",
-		sessionMemory:    appcontext.NewSessionMemory(nil, logger),
-		workDir:          defaultWorkDir(),
-		logger:           logger,
-		opsAgent:         opsAgent,
-		knowledgeAgent:   knowledgeAgent,
-		hookEngine:       hookEngine,
+func NewV1FromDeps(deps ControllerDeps) *ControllerV1 {
+	rootAgentName := strings.TrimSpace(deps.RootAgentName)
+	if rootAgentName == "" {
+		rootAgentName = "dialogue_agent"
 	}
-	ctrl.slashRegistry = slash.CreateDefaultRegistry(ctrl.workDir)
-
-	var checkpointStore compose.CheckPointStore
-	if redisClient != nil {
-		checkpointStore = appcontext.NewRedisCheckPointStore(redisClient, "oncall", 24*time.Hour)
-	} else {
-		checkpointStore = newInMemoryCheckPointStore()
+	opsRootAgentName := strings.TrimSpace(deps.OpsRootAgentName)
+	if opsRootAgentName == "" {
+		opsRootAgentName = "ops_agent"
+	}
+	workDir := strings.TrimSpace(deps.WorkDir)
+	if workDir == "" {
+		workDir = defaultWorkDir()
+	}
+	sessionMemory := deps.SessionMemory
+	if sessionMemory == nil {
+		sessionMemory = appcontext.NewSessionMemory(nil, deps.Logger)
+	}
+	slashRegistry := deps.SlashRegistry
+	if slashRegistry == nil {
+		slashRegistry = slash.CreateDefaultRegistry(workDir)
 	}
 
-	if dialogueAgent != nil {
-		if agentName := strings.TrimSpace(dialogueAgent.Name(context.Background())); agentName != "" {
-			ctrl.rootAgentName = agentName
-		}
-		ctrl.chatStreamRunner = adk.NewRunner(context.Background(), adk.RunnerConfig{
-			Agent:           dialogueAgent,
-			EnableStreaming: true,
-			CheckPointStore: checkpointStore,
-		})
+	return &ControllerV1{
+		dialogueAgent:    deps.DialogueAgent,
+		chatStreamRunner: deps.ChatStreamRunner,
+		opsStreamRunner:  deps.OpsStreamRunner,
+		rootAgentName:    rootAgentName,
+		opsRootAgentName: opsRootAgentName,
+		sessionMemory:    sessionMemory,
+		slashRegistry:    slashRegistry,
+		workDir:          workDir,
+		logger:           deps.Logger,
+		opsAgent:         deps.OpsAgent,
+		knowledgeAgent:   deps.KnowledgeAgent,
+		hookEngine:       deps.HookEngine,
+		telemetry:        deps.Telemetry,
 	}
-
-	if opsAgent != nil {
-		if agentName := strings.TrimSpace(opsAgent.Name(context.Background())); agentName != "" {
-			ctrl.opsRootAgentName = agentName
-		}
-		ctrl.opsStreamRunner = adk.NewRunner(context.Background(), adk.RunnerConfig{
-			Agent:           opsAgent,
-			EnableStreaming: true,
-			CheckPointStore: checkpointStore,
-		})
-	}
-
-	return ctrl
 }
 
 func (c *ControllerV1) SlashCommands(ctx context.Context, req *v1.SlashCommandsReq) (res *v1.SlashCommandsRes, err error) {
@@ -206,6 +182,17 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 	ctx = rag.WithRewriteContext(ctx, rag.BuildRewriteInput(question, messages))
 
 	checkpointID := generateCheckpointID(sessionID)
+	ctx = telemetry.WithContext(ctx, telemetry.ContextInfo{TraceID: "trace:" + checkpointID, RunID: checkpointID, SpanID: telemetry.NewSpanID(), Recorder: c.telemetry})
+	ctx, runFinish := telemetry.BeginRun(ctx, "run.chat", map[string]string{"session_id": sessionID})
+	workflowFinish := func(error) {}
+	if c.telemetry != nil {
+		workflowFinish = c.telemetry.StartContext(ctx, "workflow.dialogue", map[string]string{"session_id": sessionID})
+	}
+	var workflowErr error
+	defer func() {
+		workflowFinish(workflowErr)
+		runFinish(workflowErr)
+	}()
 	if c.logger != nil {
 		c.logger.Info("chat_stream request received",
 			zap.String("session_id", sessionID),
@@ -216,6 +203,12 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 	defer c.runHookEvent(ctx, hookpkg.EventTurnEnd, hookpkg.HookContext{SessionID: sessionID, CheckpointID: checkpointID})
 
 	iter := c.chatStreamRunner.Run(ctx, messages, c.agentRunOptions(sessionID, checkpointID)...)
+
+	stream := newSSERunEventStream(r, checkpointID)
+	stream.emit(events.EventRunStarted, map[string]any{
+		"session_id":    sessionID,
+		"checkpoint_id": checkpointID,
+	})
 
 	var fullAnswer strings.Builder
 	interrupted := false
@@ -236,7 +229,8 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 		}
 		eventCount++
 		if event.Err != nil {
-			writeSSEData(r, "[ERROR] "+event.Err.Error())
+			workflowErr = event.Err
+			stream.emit(events.EventError, map[string]any{"error": event.Err.Error(), "content": event.Err.Error()})
 			return nil, nil
 		}
 		msg, hasMsg := c.resolveEventMessage(event)
@@ -250,8 +244,7 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 		if event.Action != nil && event.Action.Interrupted != nil {
 			interrupted = true
 			payload := buildInterruptPayload(checkpointID, event.Action.Interrupted)
-			payloadBytes, _ := json.Marshal(payload)
-			writeSSEData(r, string(payloadBytes))
+			stream.emit(events.EventInterrupt, payload)
 			continue
 		}
 		//将工具调用信息传回前端
@@ -261,10 +254,10 @@ func (c *ControllerV1) ChatStream(ctx context.Context, req *v1.ChatStreamReq) (r
 		}
 		fullAnswer.WriteString(chunk)
 		contentChunkCount++
-		writeSSEJSON(r, map[string]any{"type": "content", "content": chunk})
+		stream.emit(events.EventToken, map[string]any{"content": chunk})
 	}
 
-	writeSSEData(r, "[DONE]")
+	stream.emit(events.EventRunCompleted, map[string]any{"session_id": sessionID})
 
 	answer := strings.TrimSpace(fullAnswer.String())
 	if c.logger != nil {
@@ -325,6 +318,14 @@ func (c *ControllerV1) ChatResumeStream(ctx context.Context, req *v1.ChatResumeS
 		return nil, fmt.Errorf("id is required")
 	}
 	sessionID := normalizeSessionID(req.Id)
+	ctx = telemetry.WithContext(ctx, telemetry.ContextInfo{
+		TraceID:  "trace:" + req.CheckpointID,
+		RunID:    req.CheckpointID,
+		SpanID:   telemetry.NewSpanID(),
+		Recorder: c.telemetry,
+	})
+	ctx, runFinish := telemetry.BeginRun(ctx, "run.chat.resume", map[string]string{"session_id": sessionID})
+	defer runFinish(nil)
 
 	iter, err := c.resumeAgent(ctx, c.chatStreamRunner, req.CheckpointID, req.InterruptIDs, req.Approved, req.Resolved, req.Comment, req.SelectionValue, map[string]any{
 		"session_id": sessionID,
@@ -337,6 +338,8 @@ func (c *ControllerV1) ChatResumeStream(ctx context.Context, req *v1.ChatResumeS
 	if err != nil {
 		return nil, err
 	}
+	stream := newSSERunEventStream(r, req.CheckpointID)
+	stream.emit(events.EventRunStarted, map[string]any{"session_id": sessionID, "checkpoint_id": req.CheckpointID, "resume": true})
 
 	var fullAnswer strings.Builder
 	interrupted := false
@@ -350,15 +353,14 @@ func (c *ControllerV1) ChatResumeStream(ctx context.Context, req *v1.ChatResumeS
 			continue
 		}
 		if event.Err != nil {
-			writeSSEData(r, "[ERROR] "+event.Err.Error())
+			stream.emit(events.EventError, map[string]any{"error": event.Err.Error(), "content": event.Err.Error()})
 			return nil, nil
 		}
 
 		if event.Action != nil && event.Action.Interrupted != nil {
 			interrupted = true
 			payload := buildInterruptPayload(req.CheckpointID, event.Action.Interrupted)
-			b, _ := json.Marshal(payload)
-			writeSSEData(r, string(b))
+			stream.emit(events.EventInterrupt, payload)
 			continue
 		}
 
@@ -367,10 +369,10 @@ func (c *ControllerV1) ChatResumeStream(ctx context.Context, req *v1.ChatResumeS
 			continue
 		}
 		fullAnswer.WriteString(chunk)
-		writeSSEJSON(r, map[string]any{"type": "content", "content": chunk})
+		stream.emit(events.EventToken, map[string]any{"content": chunk})
 	}
 
-	writeSSEData(r, "[DONE]")
+	stream.emit(events.EventRunCompleted, map[string]any{"session_id": sessionID, "resume": true})
 
 	answer := strings.TrimSpace(fullAnswer.String())
 	if answer != "" && !interrupted {
@@ -496,6 +498,24 @@ func (c *ControllerV1) AIOpsStream(ctx context.Context, req *v1.AIOpsStreamReq) 
 	}
 
 	checkpointID := generateCheckpointID("aiops")
+	ctx = telemetry.WithContext(ctx, telemetry.ContextInfo{
+		TraceID:  "trace:" + checkpointID,
+		RunID:    checkpointID,
+		SpanID:   telemetry.NewSpanID(),
+		Recorder: c.telemetry,
+	})
+	ctx, runFinish := telemetry.BeginRun(ctx, "run.ai_ops", nil)
+	workflowFinish := func(error) {}
+	if c.telemetry != nil {
+		workflowFinish = c.telemetry.StartContext(ctx, "workflow.ai_ops", nil)
+	}
+	var workflowErr error
+	defer func() {
+		workflowFinish(workflowErr)
+		runFinish(workflowErr)
+	}()
+	stream := newSSERunEventStream(r, checkpointID)
+	stream.emit(events.EventRunStarted, map[string]any{"session_id": "aiops", "checkpoint_id": checkpointID, "workflow": sseWorkflowOps, "resume_endpoint": sseResumeEndpointOps})
 	c.runHookEvent(ctx, hookpkg.EventTurnStart, hookpkg.HookContext{SessionID: "aiops", CheckpointID: checkpointID, Message: opsDiagnosticPrompt})
 	defer c.runHookEvent(ctx, hookpkg.EventTurnEnd, hookpkg.HookContext{SessionID: "aiops", CheckpointID: checkpointID})
 
@@ -514,21 +534,21 @@ func (c *ControllerV1) AIOpsStream(ctx context.Context, req *v1.AIOpsStreamReq) 
 			continue
 		}
 		if event.Err != nil {
-			writeSSEData(r, fmt.Sprintf("{\"type\":\"error\",\"content\":%q}", event.Err.Error()))
+			workflowErr = event.Err
+			stream.emit(events.EventError, map[string]any{"error": event.Err.Error(), "content": event.Err.Error(), "workflow": sseWorkflowOps})
 			return nil, nil
 		}
 
 		if event.Action != nil && event.Action.Interrupted != nil {
 			payload := withSSEWorkflow(buildInterruptPayload(checkpointID, event.Action.Interrupted), sseWorkflowOps, sseResumeEndpointOps)
-			payloadBytes, _ := json.Marshal(payload)
-			writeSSEData(r, string(payloadBytes))
+			stream.emit(events.EventInterrupt, payload)
 			continue
 		}
 
 		msg, hasMsg := c.resolveEventMessage(event)
 		if hasMsg && msg != nil {
 			for _, call := range msg.ToolCalls {
-				writeSSEData(r, fmt.Sprintf("{\"type\":\"step\",\"step\":%d,\"content\":%q}", stepNum, "调用工具: "+call.Function.Name))
+				stream.emit(events.EventToolCall, map[string]any{"step": stepNum, "tool": call.Function.Name, "content": "调用工具: " + call.Function.Name, "workflow": sseWorkflowOps})
 				stepNum++
 			}
 
@@ -540,17 +560,17 @@ func (c *ControllerV1) AIOpsStream(ctx context.Context, req *v1.AIOpsStreamReq) 
 				content = formatAIOpsContent(event.AgentName, c.opsRootAgentName, content)
 				if strings.TrimSpace(content) != "" {
 					if !finalReportStepEmitted && isFinalReportContent(event.AgentName, content) {
-						writeSSEData(r, fmt.Sprintf("{\"type\":\"step\",\"step\":%d,\"content\":%q}", stepNum, "输出最终技术报告"))
+						stream.emit(events.EventWorkflowState, map[string]any{"step": stepNum, "content": "输出最终技术报告", "workflow": sseWorkflowOps, "status": "completed"})
 						stepNum++
 						finalReportStepEmitted = true
 					}
-					writeSSEData(r, fmt.Sprintf("{\"type\":\"content\",\"content\":%q}", content))
+					stream.emit(events.EventToken, map[string]any{"content": content, "workflow": sseWorkflowOps})
 				}
 			}
 		}
 	}
 
-	writeSSEData(r, "{\"type\":\"done\"}")
+	stream.emit(events.EventRunCompleted, map[string]any{"session_id": "aiops", "workflow": sseWorkflowOps})
 	return &v1.AIOpsStreamRes{}, nil
 }
 
@@ -561,6 +581,20 @@ func (c *ControllerV1) AIOpsResumeStream(ctx context.Context, req *v1.AIOpsResum
 	if strings.TrimSpace(req.CheckpointID) == "" {
 		return nil, fmt.Errorf("checkpoint_id is required")
 	}
+	ctx = telemetry.WithContext(ctx, telemetry.ContextInfo{
+		TraceID:  "trace:" + req.CheckpointID,
+		RunID:    req.CheckpointID,
+		SpanID:   telemetry.NewSpanID(),
+		Recorder: c.telemetry,
+	})
+	ctx, runFinish := telemetry.BeginRun(ctx, "run.ai_ops.resume", nil)
+	defer runFinish(nil)
+	workflowFinish := func(error) {}
+	if c.telemetry != nil {
+		workflowFinish = c.telemetry.StartContext(ctx, "workflow.ai_ops.resume", nil)
+	}
+	var workflowErr error
+	defer func() { workflowFinish(workflowErr) }()
 
 	iter, err := c.resumeAgent(ctx, c.opsStreamRunner, req.CheckpointID, req.InterruptIDs, req.Approved, req.Resolved, req.Comment, req.SelectionValue, map[string]any{
 		"session_id": "aiops",
@@ -573,6 +607,8 @@ func (c *ControllerV1) AIOpsResumeStream(ctx context.Context, req *v1.AIOpsResum
 	if err != nil {
 		return nil, err
 	}
+	stream := newSSERunEventStream(r, req.CheckpointID)
+	stream.emit(events.EventRunStarted, map[string]any{"session_id": "aiops", "checkpoint_id": req.CheckpointID, "workflow": sseWorkflowOps, "resume_endpoint": sseResumeEndpointOps, "resume": true})
 
 	stepNum := 1
 	finalReportStepEmitted := false
@@ -585,21 +621,21 @@ func (c *ControllerV1) AIOpsResumeStream(ctx context.Context, req *v1.AIOpsResum
 			continue
 		}
 		if event.Err != nil {
-			writeSSEData(r, fmt.Sprintf("{\"type\":\"error\",\"content\":%q}", event.Err.Error()))
+			workflowErr = event.Err
+			stream.emit(events.EventError, map[string]any{"error": event.Err.Error(), "content": event.Err.Error(), "workflow": sseWorkflowOps, "resume": true})
 			return nil, nil
 		}
 
 		if event.Action != nil && event.Action.Interrupted != nil {
 			payload := withSSEWorkflow(buildInterruptPayload(req.CheckpointID, event.Action.Interrupted), sseWorkflowOps, sseResumeEndpointOps)
-			payloadBytes, _ := json.Marshal(payload)
-			writeSSEData(r, string(payloadBytes))
+			stream.emit(events.EventInterrupt, payload)
 			continue
 		}
 
 		msg, hasMsg := c.resolveEventMessage(event)
 		if hasMsg && msg != nil {
 			for _, call := range msg.ToolCalls {
-				writeSSEData(r, fmt.Sprintf("{\"type\":\"step\",\"step\":%d,\"content\":%q}", stepNum, "调用工具: "+call.Function.Name))
+				stream.emit(events.EventToolCall, map[string]any{"step": stepNum, "tool": call.Function.Name, "content": "调用工具: " + call.Function.Name, "workflow": sseWorkflowOps, "resume": true})
 				stepNum++
 			}
 
@@ -611,17 +647,17 @@ func (c *ControllerV1) AIOpsResumeStream(ctx context.Context, req *v1.AIOpsResum
 				content = formatAIOpsContent(event.AgentName, c.opsRootAgentName, content)
 				if strings.TrimSpace(content) != "" {
 					if !finalReportStepEmitted && isFinalReportContent(event.AgentName, content) {
-						writeSSEData(r, fmt.Sprintf("{\"type\":\"step\",\"step\":%d,\"content\":%q}", stepNum, "输出最终技术报告"))
+						stream.emit(events.EventWorkflowState, map[string]any{"step": stepNum, "content": "输出最终技术报告", "workflow": sseWorkflowOps, "status": "completed", "resume": true})
 						stepNum++
 						finalReportStepEmitted = true
 					}
-					writeSSEData(r, fmt.Sprintf("{\"type\":\"content\",\"content\":%q}", content))
+					stream.emit(events.EventToken, map[string]any{"content": content, "workflow": sseWorkflowOps, "resume": true})
 				}
 			}
 		}
 	}
 
-	writeSSEData(r, "{\"type\":\"done\"}")
+	stream.emit(events.EventRunCompleted, map[string]any{"session_id": "aiops", "workflow": sseWorkflowOps, "resume": true})
 	return &v1.AIOpsResumeStreamRes{}, nil
 }
 
@@ -635,21 +671,23 @@ func (c *ControllerV1) Monitoring(ctx context.Context, req *v1.MonitoringReq) (r
 }
 
 func (c *ControllerV1) handleSlashCommand(ctx context.Context, r *ghttp.Request, sessionID string, parsed slash.ParsedCommand) {
+	stream := newSSERunEventStream(r, generateCheckpointID(sessionID+"-slash"))
+	stream.emit(events.EventRunStarted, map[string]any{"session_id": sessionID, "slash_command": parsed.Name})
 	reg := c.ensureSlashRegistry()
 	if strings.TrimSpace(parsed.Name) == "" {
-		writeSSEJSON(r, map[string]any{"type": "content", "content": "请输入斜杠命令，例如 /help。"})
-		writeSSEJSON(r, map[string]any{"type": "done"})
+		stream.emit(events.EventToken, map[string]any{"content": "请输入斜杠命令，例如 /help。"})
+		stream.emit(events.EventRunCompleted, map[string]any{"session_id": sessionID})
 		return
 	}
 	cmd, ok := reg.Find(parsed.Name)
 	if !ok {
-		writeSSEJSON(r, map[string]any{"type": "error", "content": fmt.Sprintf("Unknown slash command /%s. Try /help.", parsed.Name)})
+		stream.emit(events.EventError, map[string]any{"error": fmt.Sprintf("Unknown slash command /%s. Try /help.", parsed.Name), "content": fmt.Sprintf("Unknown slash command /%s. Try /help.", parsed.Name)})
 		return
 	}
 
 	result, err := cmd.Handler(c.buildSlashContext(ctx, sessionID, parsed.Args, reg))
 	if err != nil {
-		writeSSEJSON(r, map[string]any{"type": "error", "content": err.Error()})
+		stream.emit(events.EventError, map[string]any{"error": err.Error(), "content": err.Error()})
 		return
 	}
 	resultType := result.Type
@@ -659,33 +697,41 @@ func (c *ControllerV1) handleSlashCommand(ctx context.Context, r *ghttp.Request,
 
 	switch resultType {
 	case slash.TypeLocal:
-		writeSSEJSON(r, map[string]any{"type": "content", "content": result.Content})
-		writeSSEJSON(r, map[string]any{"type": "done"})
+		stream.emit(events.EventToken, map[string]any{"content": result.Content})
+		stream.emit(events.EventRunCompleted, map[string]any{"session_id": sessionID, "slash_command": parsed.Name})
 	case slash.TypeClientAction:
 		payload := buildTrustedCommandActionPayload(result)
-		writeSSEJSON(r, payload)
-		writeSSEJSON(r, map[string]any{"type": "done"})
+		stream.emit(events.EventToolResult, map[string]any{"command_action": payload, "content": result.Content})
+		stream.emit(events.EventRunCompleted, map[string]any{"session_id": sessionID, "slash_command": parsed.Name})
 	case slash.TypePrompt:
 		c.streamSlashDialoguePrompt(ctx, r, sessionID, parsed.Raw, result.Prompt)
 	case slash.TypeOpsWorkflow:
 		c.streamSlashOpsPrompt(ctx, r, sessionID, result.Prompt)
 	default:
-		writeSSEJSON(r, map[string]any{"type": "error", "content": fmt.Sprintf("unsupported slash command type %s", resultType)})
+		stream.emit(events.EventError, map[string]any{"error": fmt.Sprintf("unsupported slash command type %s", resultType), "content": fmt.Sprintf("unsupported slash command type %s", resultType)})
 	}
 }
 
 func (c *ControllerV1) streamSlashDialoguePrompt(ctx context.Context, r *ghttp.Request, sessionID, displayInput, prompt string) {
+	checkpointID := generateCheckpointID(sessionID)
+	ctx = telemetry.WithContext(ctx, telemetry.ContextInfo{
+		TraceID:  "trace:" + checkpointID,
+		RunID:    checkpointID,
+		SpanID:   telemetry.NewSpanID(),
+		Recorder: c.telemetry,
+	})
+	stream := newSSERunEventStream(r, checkpointID)
+	stream.emit(events.EventRunStarted, map[string]any{"session_id": sessionID, "checkpoint_id": checkpointID, "slash_prompt": true})
 	if c.chatStreamRunner == nil {
-		writeSSEJSON(r, map[string]any{"type": "error", "content": "chat stream runner is not initialized"})
+		stream.emit(events.EventError, map[string]any{"error": "chat stream runner is not initialized", "content": "chat stream runner is not initialized"})
 		return
 	}
 	messages, err := c.sessionMemory.BuildMessages(ctx, sessionID, prompt)
 	if err != nil {
-		writeSSEJSON(r, map[string]any{"type": "error", "content": err.Error()})
+		stream.emit(events.EventError, map[string]any{"error": err.Error(), "content": err.Error()})
 		return
 	}
 	ctx = rag.WithRewriteContext(ctx, rag.BuildRewriteInput(prompt, messages))
-	checkpointID := generateCheckpointID(sessionID)
 	c.runHookEvent(ctx, hookpkg.EventTurnStart, hookpkg.HookContext{SessionID: sessionID, CheckpointID: checkpointID, Message: displayInput})
 	defer c.runHookEvent(ctx, hookpkg.EventTurnEnd, hookpkg.HookContext{SessionID: sessionID, CheckpointID: checkpointID})
 
@@ -702,14 +748,14 @@ func (c *ControllerV1) streamSlashDialoguePrompt(ctx context.Context, r *ghttp.R
 			continue
 		}
 		if event.Err != nil {
-			writeSSEData(r, "[ERROR] "+event.Err.Error())
+			stream.emit(events.EventError, map[string]any{"error": event.Err.Error(), "content": event.Err.Error()})
 			return
 		}
 		msg, hasMsg := c.resolveEventMessage(event)
 		if event.Action != nil && event.Action.Interrupted != nil {
 			interrupted = true
 			payload := buildInterruptPayload(checkpointID, event.Action.Interrupted)
-			writeSSEJSON(r, payload)
+			stream.emit(events.EventInterrupt, payload)
 			continue
 		}
 		chunk, ok := c.extractAssistantContentFromResolved(event, msg)
@@ -720,9 +766,9 @@ func (c *ControllerV1) streamSlashDialoguePrompt(ctx context.Context, r *ghttp.R
 			continue
 		}
 		fullAnswer.WriteString(chunk)
-		writeSSEJSON(r, map[string]any{"type": "content", "content": chunk})
+		stream.emit(events.EventToken, map[string]any{"content": chunk})
 	}
-	writeSSEData(r, "[DONE]")
+	stream.emit(events.EventRunCompleted, map[string]any{"session_id": sessionID, "slash_prompt": true})
 
 	answer := strings.TrimSpace(fullAnswer.String())
 	if answer != "" && !interrupted {
@@ -731,11 +777,19 @@ func (c *ControllerV1) streamSlashDialoguePrompt(ctx context.Context, r *ghttp.R
 }
 
 func (c *ControllerV1) streamSlashOpsPrompt(ctx context.Context, r *ghttp.Request, sessionID, prompt string) {
+	checkpointID := generateCheckpointID(sessionID + "-ops")
+	ctx = telemetry.WithContext(ctx, telemetry.ContextInfo{
+		TraceID:  "trace:" + checkpointID,
+		RunID:    checkpointID,
+		SpanID:   telemetry.NewSpanID(),
+		Recorder: c.telemetry,
+	})
+	stream := newSSERunEventStream(r, checkpointID)
+	stream.emit(events.EventRunStarted, map[string]any{"session_id": sessionID, "checkpoint_id": checkpointID, "workflow": sseWorkflowOps, "resume_endpoint": sseResumeEndpointOps, "slash_prompt": true})
 	if c.opsStreamRunner == nil {
-		writeSSEJSON(r, withSSEWorkflow(map[string]any{"type": "error", "content": "ops stream runner is not initialized"}, sseWorkflowOps, sseResumeEndpointOps))
+		stream.emit(events.EventError, map[string]any{"error": "ops stream runner is not initialized", "content": "ops stream runner is not initialized", "workflow": sseWorkflowOps})
 		return
 	}
-	checkpointID := generateCheckpointID(sessionID + "-ops")
 	c.runHookEvent(ctx, hookpkg.EventTurnStart, hookpkg.HookContext{SessionID: sessionID, CheckpointID: checkpointID, Message: prompt})
 	defer c.runHookEvent(ctx, hookpkg.EventTurnEnd, hookpkg.HookContext{SessionID: sessionID, CheckpointID: checkpointID})
 
@@ -754,18 +808,18 @@ func (c *ControllerV1) streamSlashOpsPrompt(ctx context.Context, r *ghttp.Reques
 			continue
 		}
 		if event.Err != nil {
-			writeSSEJSON(r, withSSEWorkflow(map[string]any{"type": "error", "content": event.Err.Error()}, sseWorkflowOps, sseResumeEndpointOps))
+			stream.emit(events.EventError, map[string]any{"error": event.Err.Error(), "content": event.Err.Error(), "workflow": sseWorkflowOps})
 			return
 		}
 		if event.Action != nil && event.Action.Interrupted != nil {
 			payload := withSSEWorkflow(buildInterruptPayload(checkpointID, event.Action.Interrupted), sseWorkflowOps, sseResumeEndpointOps)
-			writeSSEJSON(r, payload)
+			stream.emit(events.EventInterrupt, payload)
 			continue
 		}
 		msg, hasMsg := c.resolveEventMessage(event)
 		if hasMsg && msg != nil {
 			for _, call := range msg.ToolCalls {
-				writeSSEJSON(r, withSSEWorkflow(map[string]any{"type": "step", "step": stepNum, "content": "调用工具: " + call.Function.Name}, sseWorkflowOps, sseResumeEndpointOps))
+				stream.emit(events.EventToolCall, map[string]any{"step": stepNum, "tool": call.Function.Name, "content": "调用工具: " + call.Function.Name, "workflow": sseWorkflowOps})
 				stepNum++
 			}
 			content, ok := c.extractAgentContentByMessage(event.AgentName, msg, "")
@@ -776,16 +830,16 @@ func (c *ControllerV1) streamSlashOpsPrompt(ctx context.Context, r *ghttp.Reques
 				content = formatAIOpsContent(event.AgentName, c.opsRootAgentName, content)
 				if strings.TrimSpace(content) != "" {
 					if !finalReportStepEmitted && isFinalReportContent(event.AgentName, content) {
-						writeSSEJSON(r, withSSEWorkflow(map[string]any{"type": "step", "step": stepNum, "content": "输出最终技术报告"}, sseWorkflowOps, sseResumeEndpointOps))
+						stream.emit(events.EventWorkflowState, map[string]any{"step": stepNum, "content": "输出最终技术报告", "workflow": sseWorkflowOps, "status": "completed"})
 						stepNum++
 						finalReportStepEmitted = true
 					}
-					writeSSEJSON(r, withSSEWorkflow(map[string]any{"type": "content", "content": content}, sseWorkflowOps, sseResumeEndpointOps))
+					stream.emit(events.EventToken, map[string]any{"content": content, "workflow": sseWorkflowOps})
 				}
 			}
 		}
 	}
-	writeSSEJSON(r, withSSEWorkflow(map[string]any{"type": "done"}, sseWorkflowOps, sseResumeEndpointOps))
+	stream.emit(events.EventRunCompleted, map[string]any{"session_id": sessionID, "workflow": sseWorkflowOps, "slash_prompt": true})
 }
 
 func (c *ControllerV1) buildSlashContext(ctx context.Context, sessionID, args string, reg *slash.Registry) *slash.Context {
@@ -1250,13 +1304,53 @@ func withSSEWorkflow(payload map[string]any, workflow, resumeEndpoint string) ma
 	}
 	return payload
 }
-func writeSSEJSON(r *ghttp.Request, payload any) {
-	b, err := json.Marshal(payload)
+func marshalSSEErrorFallback(message string) string {
+	event := events.New(generateCheckpointID("sse-error"), 1, events.EventError, map[string]any{"error": message, "content": message})
+	b, err := json.Marshal(event)
 	if err != nil {
-		writeSSEData(r, fmt.Sprintf("{\"type\":\"error\",\"content\":%q}", err.Error()))
+		return fmt.Sprintf(`{"version":%q,"id":"sse-error","run_id":"sse-error","sequence":1,"type":%q,"timestamp":%q,"payload":{"error":%q}}`, events.Schema, string(events.EventError), time.Now().UTC().Format(time.RFC3339Nano), message)
+	}
+	return string(b)
+}
+
+func writeSSERunEvent(r *ghttp.Request, event events.RunEvent) {
+	if r == nil {
 		return
 	}
-	writeSSEData(r, string(b))
+	if err := event.Validate(); err != nil {
+		writeSSEData(r, marshalSSEErrorFallback(err.Error()))
+		return
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		writeSSEData(r, marshalSSEErrorFallback(err.Error()))
+		return
+	}
+	r.Response.Write("id: ", event.ID, "\n")
+	_ = writeSSEPayload(sseResponseWriter{resp: r.Response}, string(payload))
+	r.Response.Flush()
+}
+
+type sseRunEventStream struct {
+	r        *ghttp.Request
+	runID    string
+	sequence int64
+}
+
+func newSSERunEventStream(r *ghttp.Request, runID string) *sseRunEventStream {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		runID = generateCheckpointID("run")
+	}
+	return &sseRunEventStream{r: r, runID: runID, sequence: 1}
+}
+
+func (s *sseRunEventStream) emit(eventType events.EventType, payload map[string]any) {
+	if s == nil {
+		return
+	}
+	writeSSERunEvent(s.r, events.New(s.runID, s.sequence, eventType, payload))
+	s.sequence++
 }
 
 type sseResponseWriter struct {
@@ -1686,38 +1780,4 @@ func buildInterruptMessage(data any) string {
 		detail = string([]rune(detail)[:300]) + "..."
 	}
 	return base + "\n中断信息：" + detail
-}
-
-type inMemoryCheckPointStore struct {
-	mu   sync.RWMutex
-	data map[string][]byte
-}
-
-func newInMemoryCheckPointStore() compose.CheckPointStore {
-	return &inMemoryCheckPointStore{
-		data: make(map[string][]byte),
-	}
-}
-
-func (s *inMemoryCheckPointStore) Get(_ context.Context, checkpointID string) ([]byte, bool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	value, exists := s.data[checkpointID]
-	if !exists {
-		return nil, false, nil
-	}
-	copied := make([]byte, len(value))
-	copy(copied, value)
-	return copied, true, nil
-}
-
-func (s *inMemoryCheckPointStore) Set(_ context.Context, checkpointID string, checkpoint []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	copied := make([]byte, len(checkpoint))
-	copy(copied, checkpoint)
-	s.data[checkpointID] = copied
-	return nil
 }

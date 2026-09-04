@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"runtime"
@@ -101,22 +102,22 @@ func DetectEnvironment(workDir string) EnvironmentContext {
 }
 
 func BuildSystemPrompt(env EnvironmentContext, opts BuildOptions) string {
-	b := NewBuilder()
-	addBaseSections(b)
-	addContextSections(b, env, opts)
-	return b.Build()
+	snapshot, err := DefaultAssembler().Assemble(contextBackground(), PromptRequest{Environment: env, Options: opts})
+	if err != nil {
+		return ""
+	}
+	return snapshot.Rendered
 }
 
 func BuildAgentPrompt(role Role, env EnvironmentContext, opts BuildOptions) string {
-	b := NewBuilder()
-	addBaseSections(b)
-	if guidance := strings.TrimSpace(DeferredToolGuidance(role)); guidance != "" {
-		b.Add(Section{Name: "DeferredToolGuidance", Priority: 45, Content: guidance})
+	snapshot, err := DefaultAssembler().Assemble(contextBackground(), PromptRequest{Role: role, Environment: env, Options: opts})
+	if err != nil {
+		return ""
 	}
-	b.Add(RoleSection(role))
-	addContextSections(b, env, opts)
-	return b.Build()
+	return snapshot.Rendered
 }
+
+func contextBackground() context.Context { return context.Background() }
 
 func addBaseSections(b *Builder) {
 	b.Add(IdentitySection())

@@ -10,17 +10,22 @@
   API --> Controller[Chat Controller\nbackend/internal/controller/chat]
 
   subgraph Backend[backend/]
-    Controller --> Bootstrap[Application Container\nbackend/internal/bootstrap]
-    Bootstrap --> Dialogue[Dialogue Workflow\ninternal/workflow/dialogue]
-    Bootstrap --> Ops[AIOps Workflow\ninternal/workflow/ops]
-    Bootstrap --> Knowledge[Knowledge Agent\ninternal/knowledge]
+    Bootstrap[Layered Application Bootstrap\nbackend/internal/bootstrap]
+    Bootstrap --> InfraLayer[Infrastructure Layer\nlogger/hooks/Redis/MySQL/ES/model]
+    Bootstrap --> StateLayer[State Layer\nContextManager]
+    Bootstrap --> AgentLayer[Agent Layer\ndialogue/knowledge/ops]
+    Bootstrap --> RuntimeLayer[Runtime Layer\ncheckpoint/session/slash/runners]
+    RuntimeLayer --> Controller
+    AgentLayer --> Dialogue[Dialogue Workflow\ninternal/workflow/dialogue]
+    AgentLayer --> Ops[AIOps Workflow\ninternal/workflow/ops]
+    AgentLayer --> Knowledge[Knowledge Agent\ninternal/knowledge]
 
     Ops --> Execution[Execution Agent + Tools\ninternal/execution]
     Ops --> Toolkit[Tool Registry / Calls\ninternal/toolkit]
     Knowledge --> RAG[RAG / AI Retriever\ninternal/rag + internal/ai]
 
-    Controller --> Checkpoint[Checkpoint / Context\ninternal/context]
-    Bootstrap --> Hooks[Hook Engine\ninternal/hooks]
+    RuntimeLayer --> Checkpoint[Checkpoint / SessionMemory\ninternal/context]
+    InfraLayer --> Hooks[Hook Engine\ninternal/hooks]
   end
 
   subgraph Infra[Infrastructure]
@@ -30,9 +35,10 @@
     K8s[(Kubernetes / Prometheus)]
   end
 
+  InfraLayer --> Redis
+  InfraLayer --> MySQL
+  InfraLayer --> ES
   Checkpoint --> Redis
-  Bootstrap --> MySQL
-  Bootstrap --> ES
   Execution --> K8s
   RAG --> ES
 

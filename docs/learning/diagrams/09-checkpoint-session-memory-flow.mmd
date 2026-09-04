@@ -1,12 +1,12 @@
 ﻿flowchart TD
   Main[main.go] --> Bootstrap[bootstrap.NewApplication]
-  Bootstrap --> Redis[(Redis client)]
-  Bootstrap --> MemInit[mem.InitRedis\nfor SessionMemory]
-  Bootstrap --> ContextMgr[ContextManager\nRedisStorage oncall]
-  Main --> Controller[chat.NewV1WithHooks]
-  Redis --> Controller
+  Bootstrap --> Infra[InfrastructureLayer\nRedis + mem.InitRedis]
+  Bootstrap --> State[StateLayer\nContextManager]
+  Bootstrap --> Runtime[RuntimeLayer]
+  Main --> Controller[chat.NewV1FromDeps]
+  Runtime --> Controller
 
-  Controller --> StoreChoice{redisClient nil?}
+  Runtime --> StoreChoice{Redis client nil?}
   StoreChoice -->|no| RedisCkpt[RedisCheckPointStore\nprefix oncall ttl 24h]
   StoreChoice -->|yes| MemCkpt[inMemoryCheckPointStore\nprocess local map]
   RedisCkpt --> Runner[adk.NewRunner\nchat + ops]
@@ -29,7 +29,8 @@
   ResumeWithParams --> StoreGet
   StoreGet --> Continue[ADK continues from interrupt]
 
-  Controller --> SessionMemory[SessionMemory]
+  Runtime --> SessionMemory[SessionMemory]
+  SessionMemory --> Controller
   Chat[Chat / Slash dialogue] --> BuildMessages[BuildMessages]
   BuildMessages --> MemGet[mem.GetMessagesForRequest]
   MemGet --> MemKeys[(aiagent:ctx:session:sys\nsummary / turns / meta)]

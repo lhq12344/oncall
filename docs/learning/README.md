@@ -1,6 +1,6 @@
-﻿# OnCall 学习笔记导航
+# OnCall 学习笔记导航
 
-> 目标：按“先主链路、再核心机制、最后高级主题”的顺序重新学习项目。  
+> 目标：按“先主链路、再核心机制、最后高级主题”的顺序重新学习项目。
 > 日期：2026-08-19。
 
 ## 推荐阅读顺序
@@ -19,12 +19,23 @@
 | 09 | `09-frontend-sse-interrupts.md` | 前端 SSE、Zustand、InterruptCard | `diagrams/11-frontend-sse-interrupt-flow.mmd` |
 | 10 | `10-build-test-local-debug.md` | 构建、测试、本地调试与验证矩阵 | `diagrams/12-build-test-debug-map.mmd` |
 | 11 | `11-source-roadmap-pitfalls.md` | 源码阅读路线图与踩坑笔记 | `diagrams/13-source-roadmap-pitfalls.mmd` |
+| 12 | `12-second-round-questions.md` | 第二轮专题清单：从能解释到能安全修改 | - |
+| 13 | `13-diagnosis-gate-deep-dive.md` | diagnosis_gate、incident contract、执行前守卫 | `diagrams/14-diagnosis-gate-contract-flow.mmd` |
+| 14 | `14-prompt-system-deep-dive.md` | prompt 拼装、角色边界、工具暴露与代码安全边界 | `diagrams/15-prompt-system-role-boundaries.mmd` |
+| 15 | `15-permissions-rule-engine-deep-dive.md` | permissions、RuleEngine、deferred gateway 与审批中断 | `diagrams/16-permissions-rule-engine-flow.mmd` |
+| 16 | `16-hybrid-rag-eval-deep-dive.md` | Hybrid RAG、degraded、RRF、ops_case fallback 与 eval | `diagrams/17-hybrid-rag-eval-flow.mmd` |
+| 17 | `17-frontend-interrupt-qa.md` | 前端 interrupt、approve/reject/detail selection payload | `diagrams/18-frontend-interrupt-qa-flow.mmd` |
+| 18 | `18-milvus-embedding-schema.md` | Milvus collection、embedding adapter、metadata schema | `diagrams/19-milvus-embedding-schema-flow.mmd` |
+| 19 | `19-context-compact-memory.md` | SessionMemory、Redis history、live compact 三层边界 | `diagrams/20-context-compact-memory-flow.mmd` |
+| 20 | `20-final-report-archive-loop.md` | final report 落盘、ops_v2 归档、BM25 与 ops_case 召回闭环 | `diagrams/21-final-report-archive-loop.mmd` |
+| 21 | `21-doc-truth-audit.md` | 文档真实性审计、已修正问题、仍需 live 补证项 | - |
 
 ## 阅读建议
 
 - 第一遍：只读 01、02、04、06、09，先理解请求到响应和 interrupt/resume 主链路。
 - 第二遍：补 03、05、07、08，理解 Graph State、执行计划、checkpoint 和 RAG。
 - 第三遍：读 10、11，把验证命令和长期阅读路线固化。
+- 第二轮：从 12 开始按专题深挖；当前已完成 13–20 第一版，覆盖 diagnosis_gate、prompt、permissions、Hybrid RAG、前端 interrupt、Milvus、context compact 和 final report archive；`21-doc-truth-audit.md` 记录本轮文档真实性审计和后续补证项。
 
 ## 当前边界
 

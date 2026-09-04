@@ -6,10 +6,9 @@ import (
 	"strings"
 
 	"go_agent/internal/ai/models"
-	"go_agent/internal/compact"
-	"go_agent/internal/permissions"
+	"go_agent/internal/context/compact/runtime"
 	"go_agent/internal/prompt"
-	"go_agent/internal/toolkit"
+	toolregistry "go_agent/internal/tools"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/compose"
@@ -39,12 +38,15 @@ func NewOpsAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 		return nil, fmt.Errorf("chat model is required")
 	}
 
-	deferredTools, err := buildOpsIncidentDeferredTools(cfg)
+	toolsList, err := toolregistry.NewRegistry(toolregistry.Dependencies{
+		ChatModel:     cfg.ChatModel,
+		KubeConfig:    cfg.KubeConfig,
+		PrometheusURL: cfg.PrometheusURL,
+		Logger:        cfg.Logger,
+	}).ExecutableToolsForAgent(ctx, toolregistry.AgentOpsIncident, toolregistry.ToolExposureDeferredGateway)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build ops incident tools: %w", err)
 	}
-	checker := permissions.NewChecker(permissions.Options{})
-	toolsList := toolkit.BuildDeferredGatewayEinoTools(ctx, checker, deferredTools...)
 
 	env := prompt.DetectEnvironment("")
 	instruction := prompt.BuildAgentPrompt(prompt.RoleOps, env, prompt.BuildOptions{})
@@ -69,7 +71,7 @@ func NewOpsAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 
 	if cfg.Logger != nil {
 		cfg.Logger.Info("ops incident agent initialized with deferred diagnostic tools",
-			zap.Int("deferred_tools", len(deferredTools)))
+			zap.Int("executable_tools", len(toolsList)))
 	}
 	return agent, nil
 }

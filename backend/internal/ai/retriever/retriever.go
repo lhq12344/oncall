@@ -3,8 +3,8 @@ package retriever
 import (
 	"context"
 	"fmt"
+	milvusadapter "go_agent/internal/adapters/milvus"
 	"go_agent/internal/ai/embedder"
-	clientutil "go_agent/utility/client"
 	"go_agent/utility/common"
 	"strings"
 
@@ -27,7 +27,7 @@ func NewMilvusRetriever(ctx context.Context) (rtr retriever.Retriever, err error
 }
 
 func NewMilvusRetrieverWithCollection(ctx context.Context, collection string) (rtr retriever.Retriever, err error) {
-	cli, err := clientutil.NewMilvusClient(ctx)
+	cli, err := milvusadapter.NewClient(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +48,7 @@ func NewMilvusRetrieverWithCollection(ctx context.Context, collection string) (r
 		collection = milvusConfig.Collection
 	}
 	if milvusConfig.AutoCreateCollection {
-		if err := clientutil.EnsureMilvusCollection(ctx, cli, collection); err != nil {
+		if err := milvusadapter.EnsureCollection(ctx, cli, collection); err != nil {
 			return nil, err
 		}
 	}

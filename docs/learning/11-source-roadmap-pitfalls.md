@@ -1,7 +1,7 @@
-﻿# 11 源码阅读路线图与踩坑笔记：按难度逐层进入项目
+# 11 源码阅读路线图与踩坑笔记：按难度逐层进入项目
 
-> 本节继续保持同一写法：**数据结构跟着调用链讲**，不单独堆类型表。  
-> 目标：把前 10 节变成可执行的源码阅读顺序，并记录容易误读的模块边界。  
+> 本节继续保持同一写法：**数据结构跟着调用链讲**，不单独堆类型表。
+> 目标：把前 10 节变成可执行的源码阅读顺序，并记录容易误读的模块边界。
 > 日期：2026-08-19。
 
 ## 1. 本节目标
@@ -20,7 +20,8 @@
 ```text
 main.go
 -> bootstrap.NewApplication
--> chat.NewV1WithHooks
+-> RuntimeLayer
+-> chat.NewV1FromDeps
 -> ChatStream / AIOpsStream
 -> dialogue_agent / ops_agent / knowledge_agent
 -> tool calls / checkpoint / frontend SSE
@@ -58,8 +59,8 @@ main.go
 
 第二层开始读运行时：
 
-- `backend/main.go`：进程入口、配置加载、基础设施初始化、路由注册、端口 6872。
-- `backend/internal/bootstrap/app.go`：应用容器，创建 DialogueAgent、KnowledgeAgent、OpsAgent、Redis、ContextManager、HookEngine。
+- `backend/main.go`：进程入口、配置加载、调用 layered bootstrap、用 `RuntimeLayer` 绑定 controller、路由注册、端口 6872。
+- `backend/internal/bootstrap/app.go`、`application_layers.go`、`runtime.go`：应用容器与 layer registry，创建 Infrastructure、State、Agents、Runtime、Background。
 - `backend/internal/controller/chat/chat_v1.go`：后端最重要的 controller，大部分 SSE、checkpoint、resume、upload、slash 分发都在这里。
 - `backend/internal/context/checkpoint_store.go`：ADK checkpoint Redis store。
 - `backend/internal/context/session_memory.go` 和 `backend/utility/mem/mem.go`：跨轮聊天历史。
@@ -125,7 +126,7 @@ main.go
 - `backend/internal/workflow/agentteams/*`：ADK team builder 抽象。
 - `backend/internal/workflow/ops/pod_log_shipper.go`：Kubernetes 日志同步到 ES 的后台任务。
 - `backend/internal/context/manager.go`、`redis_storage.go`：ContextManager 与 L1/L2 迁移。
-- `backend/internal/agent/rca`、`backend/internal/agent/strategy`：保留/旧方向或未直接接入当前主 bootstrap 的 agent 实现，读之前先确认是否在当前链路被调用。
+- `backend/internal/agent/rca`、`backend/internal/agent/strategy`：保留/旧方向或未直接接入当前主 bootstrap 的 agent 实现；但 `workflow/ops/diagnostic_toolset.go` 会复用 `internal/agent/rca/tools`，所以读之前先区分“agent 本体是否接入”和“工具是否被复用”。
 
 高级主题的原则：先确认“是否在当前 bootstrap 主链路”，再决定投入多少精力。
 
@@ -133,7 +134,7 @@ main.go
 
 | 坑 | 容易误读 | 修正方式 |
 | --- | --- | --- |
-| 看到 `internal/agent/rca`、`internal/agent/strategy` 就从那里读 | 误以为当前 AIOps 仍是旧 RCA/Strategy 串联 | 先看 `bootstrap.NewApplication` 实际创建的是 dialogue、knowledge、ops；当前主 AIOps 在 `internal/workflow/ops` |
+| 看到 `internal/agent/rca`、`internal/agent/strategy` 就从那里读 | 误以为当前 AIOps 仍是旧 RCA/Strategy agent 串联，或误以为整个目录完全没用 | 先看 `bootstrap.NewApplication` 实际创建的是 dialogue、knowledge、ops；当前主 AIOps 在 `internal/workflow/ops`，其中 diagnostic toolset 复用了 RCA tools |
 | 把 `knowledge_agent` 当问答 agent | 上传 agent 只负责分片入库 | 在线检索看 `dialogue/tools/KnowledgeRetrieveTool.go` 与 `rag.HybridRetriever` |
 | 把 checkpoint 和 SessionMemory 混在一起 | 两者都可能用 Redis | checkpoint 是 ADK resume 状态；SessionMemory 是跨轮 prompt 历史 |
 | 用 `ragctl inspect` 证明 live RAG | inspect 只看离线 BM25 | live 需要服务+Milvus+Embedding，并通过工具调用验证 |
@@ -147,7 +148,7 @@ main.go
 
 第一轮学习完成时，建议你能做到：
 
-- 能画出 `main.go -> bootstrap -> controller -> runner -> agent -> tool -> SSE -> frontend` 主链路。
+- 能画出 `main.go -> bootstrap layers -> RuntimeLayer -> controller -> runner -> agent -> tool -> SSE -> frontend` 主链路。
 - 能解释 `checkpoint_id`、`interrupt_ids`、`session_id`、`plan_id`、`plan_revision` 分别在哪条链路使用。
 - 能从 AIOps 的一个中断事件，追踪到后端生成 payload、前端渲染 `InterruptCard`、用户点击 resume、后端 `ResumeWithParams`。
 - 能区分 `knowledge` 与 `ops_case` profile，知道上传、检索、归档分别看哪些文件。
@@ -170,7 +171,7 @@ flowchart TD
   L7 --> Done[First round complete]
 
   L1 --> F1[api chat v1\nfrontend types\nrag types]
-  L2 --> F2[main.go\nbootstrap app\nchat_v1\ncontext memory]
+  L2 --> F2[main.go\nbootstrap layers\nruntime layer\nchat_v1\ncontext memory]
   L3 --> F3[workflow ops\nstate_bridge\nincident_nodes\nplan_gate]
   L4 --> F4[toolkit\nexecution tools\npermissions\nhooks]
   L5 --> F5[knowledge\nrag\nretrieve tools\nragctl]
@@ -194,7 +195,7 @@ flowchart TD
 **推断**
 
 - 对学习者来说，按“请求链路 -> 状态主干 -> 工具执行 -> RAG -> 前端 -> 高级主题”的顺序，比按目录字母顺序阅读更不容易迷路。
-- `internal/agent/rca` 和 `internal/agent/strategy` 仍有实现，但在深入前应先用 bootstrap 和调用关系确认它们是否属于当前活跃路径。
+- `internal/agent/rca` 和 `internal/agent/strategy` 仍有实现；当前证据显示 agent 本体不在 bootstrap 主链路中，但 RCA tools 由 ops diagnostic toolset 复用，所以不能简单归类为“全无用”或“主入口”。
 
 **未知 / 后续可读**
 

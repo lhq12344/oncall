@@ -5,11 +5,15 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/gogf/gf/v2/frame/g"
+
+	"go_agent/internal/telemetry"
 )
 
 const (
@@ -22,22 +26,14 @@ const (
 // 输入：ctx。
 // 输出：带超时与瞬时故障重试能力的 ToolCallingChatModel。
 func OpenAIForDeepSeekV3Quick(ctx context.Context) (cm model.ToolCallingChatModel, err error) {
-	model, err := g.Cfg().Get(ctx, "ds_quick_chat_model.model")
-	if err != nil {
-		return nil, err
-	}
-	api_key, err := g.Cfg().Get(ctx, "ds_quick_chat_model.api_key")
-	if err != nil {
-		return nil, err
-	}
-	base_url, err := g.Cfg().Get(ctx, "ds_quick_chat_model.base_url")
+	modelName, apiKey, baseURL, err := resolveQuickChatModelConfig(ctx)
 	if err != nil {
 		return nil, err
 	}
 	config := &openai.ChatModelConfig{
-		Model:      model.String(),
-		APIKey:     api_key.String(),
-		BaseURL:    base_url.String(),
+		Model:      modelName,
+		APIKey:     apiKey,
+		BaseURL:    baseURL,
 		Timeout:    defaultChatModelTimeout,
 		HTTPClient: newRetryHTTPClient(defaultChatModelTimeout),
 	}
@@ -48,6 +44,35 @@ func OpenAIForDeepSeekV3Quick(ctx context.Context) (cm model.ToolCallingChatMode
 	return cm, nil
 }
 
+func resolveQuickChatModelConfig(ctx context.Context) (modelName string, apiKey string, baseURL string, err error) {
+	modelValue, err := g.Cfg().Get(ctx, "ds_quick_chat_model.model")
+	if err != nil {
+		return "", "", "", err
+	}
+	apiKeyValue, err := g.Cfg().Get(ctx, "ds_quick_chat_model.api_key")
+	if err != nil {
+		return "", "", "", err
+	}
+	baseURLValue, err := g.Cfg().Get(ctx, "ds_quick_chat_model.base_url")
+	if err != nil {
+		return "", "", "", err
+	}
+
+	modelName = firstEnvOrValue(modelValue.String(), "ONCALL_CHAT_MODEL", "DS_QUICK_CHAT_MODEL")
+	apiKey = firstEnvOrValue(apiKeyValue.String(), "ONCALL_CHAT_API_KEY", "DS_QUICK_CHAT_API_KEY", "DEEPSEEK_API_KEY")
+	baseURL = firstEnvOrValue(baseURLValue.String(), "ONCALL_CHAT_BASE_URL", "DS_QUICK_CHAT_BASE_URL")
+	return modelName, apiKey, baseURL, nil
+}
+
+func firstEnvOrValue(fallback string, names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return strings.TrimSpace(fallback)
+}
+
 // ChatModel 封装 LLM 客户端
 type ChatModel struct {
 	Client model.ToolCallingChatModel
@@ -55,11 +80,17 @@ type ChatModel struct {
 
 // GetChatModel 获取默认的 ChatModel
 func GetChatModel() (*ChatModel, error) {
+	return GetChatModelWithTelemetry(nil)
+}
+
+func GetChatModelWithTelemetry(recorder *telemetry.Recorder) (*ChatModel, error) {
 	ctx := context.Background()
 	client, err := OpenAIForDeepSeekV3Quick(ctx)
 	if err != nil {
 		return nil, err
 	}
+	modelName, _, _, _ := resolveQuickChatModelConfig(ctx)
+	client = InstrumentChatModel(client, recorder, modelName)
 	return &ChatModel{Client: client}, nil
 }
 

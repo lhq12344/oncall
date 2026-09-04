@@ -7,12 +7,10 @@ import (
 
 	"go_agent/internal/ai/models"
 	airetriever "go_agent/internal/ai/retriever"
-	"go_agent/internal/compact"
-	"go_agent/internal/permissions"
+	"go_agent/internal/context/compact/runtime"
 	"go_agent/internal/prompt"
 	"go_agent/internal/rag"
-	"go_agent/internal/toolkit"
-	"go_agent/internal/workflow/dialogue/tools"
+	toolregistry "go_agent/internal/tools"
 	"go_agent/utility/common"
 
 	"github.com/cloudwego/eino/adk"
@@ -58,20 +56,23 @@ func NewDialogueAgent(ctx context.Context, cfg *Config) (adk.ResumableAgent, err
 
 	milvusConfig := common.LoadMilvusConfig(ctx)
 	ragConfig := rag.LoadConfig(ctx)
-	knowledgePrimary, knowledgeLegacy, opsPrimary, opsLegacy, useHybrid := dialogueRetrieverCollections(ragConfig, milvusConfig)
+	knowledgeCollection, opsCollection, useHybrid := dialogueRetrieverCollections(ragConfig, milvusConfig)
 	var knowledgeRetriever einoretriever.Retriever
 	var opsCaseRetriever einoretriever.Retriever
 	if useHybrid {
 		rewriter := newDialogueQueryRewriter(cfg, ragConfig)
-		knowledgeRetriever = newDialogueHybridRetriever(ctx, rag.ProfileKnowledge, knowledgePrimary, knowledgeLegacy, ragConfig, rewriter, cfg.Logger)
-		opsCaseRetriever = newDialogueHybridRetriever(ctx, rag.ProfileOpsCase, opsPrimary, opsLegacy, ragConfig, rewriter, cfg.Logger)
+		knowledgeRetriever = newDialogueHybridRetriever(ctx, rag.ProfileKnowledge, knowledgeCollection, ragConfig, rewriter, cfg.Logger)
+		opsCaseRetriever = newDialogueHybridRetriever(ctx, rag.ProfileOpsCase, opsCollection, ragConfig, rewriter, cfg.Logger)
 	} else {
-		knowledgeRetriever = newDialogueMilvusRetriever(ctx, knowledgePrimary, cfg.Logger)
-		opsCaseRetriever = newDialogueMilvusRetriever(ctx, opsPrimary, cfg.Logger)
+		knowledgeRetriever = newDialogueMilvusRetriever(ctx, knowledgeCollection, cfg.Logger)
+		opsCaseRetriever = newDialogueMilvusRetriever(ctx, opsCollection, cfg.Logger)
 	}
 
 	// 创建工具集
-	toolsList := buildDialogueTools(ctx, cfg, knowledgeRetriever, opsCaseRetriever)
+	toolsList, err := buildDialogueTools(ctx, cfg, knowledgeRetriever, opsCaseRetriever)
+	if err != nil {
+		return nil, err
+	}
 
 	compactHandler := compact.NewMiddleware(compact.Config{Model: cfg.ChatModel.Client})
 
@@ -116,35 +117,25 @@ func noFormatGenModelInput(_ context.Context, instruction string, input *adk.Age
 // buildDialogueTools 构建 dialogue_agent 可用工具集合。
 // 输入：ctx 运行上下文，cfg 对话代理配置，knowledgeRetriever/opsCaseRetriever 检索器。
 // 输出：可注册到 ToolsNode 的工具列表。
-func buildDialogueTools(ctx context.Context, cfg *Config, knowledgeRetriever einoretriever.Retriever, opsCaseRetriever einoretriever.Retriever) []tool.BaseTool {
-	deferredTools := []tool.BaseTool{
-		tools.NewIntentAnalysisTool(cfg.ChatModel, cfg.Embedder, cfg.Logger, cfg.EnableToolLLM),
-		tools.NewDetailSelectionTool(cfg.Logger),
-		tools.NewKnowledgeRetrieveTool(knowledgeRetriever, cfg.Logger),
-		tools.NewOpsCaseRetrieveTool(opsCaseRetriever, cfg.Logger),
-		tools.NewBashApprovalTool(cfg.Logger),
-		tools.NewWebSearchTool(cfg.Logger),
+func buildDialogueTools(ctx context.Context, cfg *Config, knowledgeRetriever einoretriever.Retriever, opsCaseRetriever einoretriever.Retriever) ([]tool.BaseTool, error) {
+	toolsList, err := toolregistry.NewRegistry(toolregistry.Dependencies{
+		ChatModel:          cfg.ChatModel,
+		Embedder:           cfg.Embedder,
+		KnowledgeRetriever: knowledgeRetriever,
+		OpsCaseRetriever:   opsCaseRetriever,
+		KubeConfig:         cfg.KubeConfig,
+		PrometheusURL:      cfg.PrometheusURL,
+		EnableToolLLM:      cfg.EnableToolLLM,
+		Logger:             cfg.Logger,
+	}).ExecutableToolsForAgent(ctx, toolregistry.AgentDialogue, toolregistry.ToolExposureAlways)
+	if err != nil {
+		return nil, fmt.Errorf("build dialogue tools: %w", err)
 	}
-
-	if k8sTool, err := tools.NewDialogueK8sMonitorTool(cfg.KubeConfig, cfg.Logger); err == nil {
-		deferredTools = append(deferredTools, k8sTool)
-	} else if cfg.Logger != nil {
-		cfg.Logger.Warn("failed to create dialogue k8s monitor tool", zap.Error(err))
-	}
-
-	if metricsTool, err := tools.NewDialogueMetricsCollectorTool(cfg.PrometheusURL, cfg.Logger); err == nil {
-		deferredTools = append(deferredTools, metricsTool)
-	} else if cfg.Logger != nil {
-		cfg.Logger.Warn("failed to create dialogue metrics collector tool", zap.Error(err))
-	}
-
-	checker := permissions.NewChecker(permissions.Options{})
-	return toolkit.BuildAlwaysEinoTools(ctx, checker, deferredTools...)
+	return toolsList, nil
 }
 
-func newDialogueHybridRetriever(ctx context.Context, profile rag.RetrievalProfile, primaryCollection, legacyCollection string, ragConfig rag.Config, rewriter rag.QueryRewriter, logger *zap.Logger) einoretriever.Retriever {
-	primary := newDialogueMilvusRetriever(ctx, primaryCollection, logger)
-	legacy := newDialogueMilvusRetriever(ctx, legacyCollection, logger)
+func newDialogueHybridRetriever(ctx context.Context, profile rag.RetrievalProfile, collection string, ragConfig rag.Config, rewriter rag.QueryRewriter, logger *zap.Logger) einoretriever.Retriever {
+	vector := newDialogueMilvusRetriever(ctx, collection, logger)
 
 	var bm25 rag.BM25Index
 	if ragConfig.BM25Enabled {
@@ -168,8 +159,7 @@ func newDialogueHybridRetriever(ctx context.Context, profile rag.RetrievalProfil
 	return rag.NewHybridRetriever(rag.HybridRetrieverConfig{
 		Profile:         profile,
 		Config:          ragConfig,
-		VectorRetriever: primary,
-		LegacyRetriever: legacy,
+		VectorRetriever: vector,
 		BM25Index:       bm25,
 		Rewriter:        rewriter,
 		Reranker:        reranker,
@@ -183,11 +173,8 @@ func newDialogueQueryRewriter(cfg *Config, ragConfig rag.Config) rag.QueryRewrit
 	return rag.NoopRewriter{}
 }
 
-func dialogueRetrieverCollections(ragConfig rag.Config, milvusConfig common.MilvusConfig) (knowledgePrimary, knowledgeLegacy, opsPrimary, opsLegacy string, useHybrid bool) {
-	if !ragConfig.HybridEnabled {
-		return milvusConfig.Collection, "", common.MilvusOpsCollection, "", false
-	}
-	return milvusConfig.KnowledgeV2Collection, milvusConfig.Collection, milvusConfig.OpsV2Collection, common.MilvusOpsCollection, true
+func dialogueRetrieverCollections(ragConfig rag.Config, milvusConfig common.MilvusConfig) (knowledgeCollection, opsCollection string, useHybrid bool) {
+	return milvusConfig.KnowledgeV2Collection, milvusConfig.OpsV2Collection, ragConfig.HybridEnabled
 }
 
 func newDialogueMilvusRetriever(ctx context.Context, collection string, logger *zap.Logger) einoretriever.Retriever {

@@ -2,9 +2,10 @@
   Dev[Developer] --> BackendRun[backend go run main.go]
   BackendRun --> Env[load .env or ../.env]
   Env --> Config[GoFrame config]
-  Config --> Redis[Redis memory + checkpoint]
-  Config --> MySQL[MySQL]
-  Config --> Optional[ES Prometheus Kube Milvus]
+  Config --> Bootstrap[bootstrap.NewApplication]
+  Bootstrap --> Infra[InfrastructureLayer\nRedis MySQL optional ES]
+  Bootstrap --> Runtime[RuntimeLayer\ncheckpoint session slash runners]
+  Config --> Optional[Prometheus Kube Milvus config]
   BackendRun --> API[HTTP SSE API port 6872]
 
   Dev --> FrontendRun[frontend npm run dev]

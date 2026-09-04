@@ -5,14 +5,11 @@ import (
 	"fmt"
 
 	"go_agent/internal/ai/models"
-	"go_agent/internal/compact"
-	executiontools "go_agent/internal/execution/tools"
-	"go_agent/internal/permissions"
+	"go_agent/internal/context/compact/runtime"
 	"go_agent/internal/prompt"
-	"go_agent/internal/toolkit"
+	toolregistry "go_agent/internal/tools"
 
 	"github.com/cloudwego/eino/adk"
-	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"go.uber.org/zap"
 )
@@ -36,13 +33,13 @@ func NewPlanAgent(ctx context.Context, cfg *PlanAgentConfig) (adk.Agent, error) 
 		return nil, fmt.Errorf("chat model is required")
 	}
 
-	deferredTools := []tool.BaseTool{
-		executiontools.NewNormalizePlanTool(cfg.ChatModel, cfg.Logger),
-		executiontools.NewGeneratePlanTool(cfg.ChatModel, cfg.Logger),
-		executiontools.NewValidatePlanTool(cfg.Logger),
+	toolsList, err := toolregistry.NewRegistry(toolregistry.Dependencies{
+		ChatModel: cfg.ChatModel,
+		Logger:    cfg.Logger,
+	}).ExecutableToolsForAgent(ctx, toolregistry.AgentPlan, toolregistry.ToolExposureDeferredGateway)
+	if err != nil {
+		return nil, fmt.Errorf("build plan tools: %w", err)
 	}
-	checker := permissions.NewChecker(permissions.Options{})
-	toolsList := toolkit.BuildDeferredGatewayEinoTools(ctx, checker, deferredTools...)
 
 	env := prompt.DetectEnvironment("")
 	instruction := prompt.BuildAgentPrompt(prompt.RolePlan, env, prompt.BuildOptions{})
@@ -66,7 +63,7 @@ func NewPlanAgent(ctx context.Context, cfg *PlanAgentConfig) (adk.Agent, error) 
 	}
 
 	if cfg.Logger != nil {
-		cfg.Logger.Info("plan agent initialized with planner-only deferred tools", zap.Int("deferred_tools", len(deferredTools)))
+		cfg.Logger.Info("plan agent initialized with planner-only deferred tools", zap.Int("executable_tools", len(toolsList)))
 	}
 	return agent, nil
 }

@@ -6,13 +6,13 @@ import (
 
 	"go_agent/internal/ai/models"
 	"go_agent/internal/execution"
-	"go_agent/internal/workflow/agentteams"
+	"go_agent/internal/workflow/stages"
 
 	"github.com/cloudwego/eino/adk"
 	"go.uber.org/zap"
 )
 
-const incidentDefaultMaxExecutionLoops = agentteams.DefaultLoopMaxIterations
+const incidentDefaultMaxExecutionLoops = stages.DefaultLoopMaxIterations
 
 // IncidentWorkflowConfig 显式 Plan -> Execute -> Replan 故障处置工作流配置。
 type IncidentWorkflowConfig struct {
@@ -152,12 +152,12 @@ type incidentWorkflowMembers struct {
 	reporter      adk.Agent
 }
 
-func newIncidentWorkflowTeam(maxLoops int, members incidentWorkflowMembers) (*agentteams.Team, int, error) {
+func newIncidentWorkflowTeam(maxLoops int, members incidentWorkflowMembers) (*stages.Team, int, error) {
 	if maxLoops <= 0 {
 		maxLoops = incidentDefaultMaxExecutionLoops
 	}
 
-	team := agentteams.NewTeam(
+	team := stages.NewTeam(
 		"incident_workflow_agent",
 		"Auditable incident response workflow: diagnosis, canonical plan approval, execution, verification, replanning, and final report",
 	)

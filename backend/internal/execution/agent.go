@@ -6,14 +6,11 @@ import (
 	"strings"
 
 	"go_agent/internal/ai/models"
-	"go_agent/internal/compact"
-	"go_agent/internal/execution/tools"
-	"go_agent/internal/permissions"
+	"go_agent/internal/context/compact/runtime"
 	"go_agent/internal/prompt"
-	"go_agent/internal/toolkit"
+	toolregistry "go_agent/internal/tools"
 
 	"github.com/cloudwego/eino/adk"
-	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
@@ -64,13 +61,13 @@ func NewExecutionAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	}
 
 	// 创建执行专用 deferred 工具集，避免 execution 阶段重新生成或校验计划。
-	deferredTools := []tool.BaseTool{
-		tools.NewExecuteStepTool(cfg.Logger),
-		tools.NewValidateResultTool(cfg.Logger),
-		tools.NewRollbackTool(cfg.Logger),
+	toolsList, err := toolregistry.NewRegistry(toolregistry.Dependencies{
+		ChatModel: cfg.ChatModel,
+		Logger:    cfg.Logger,
+	}).ExecutableToolsForAgent(ctx, toolregistry.AgentExecution, toolregistry.ToolExposureDeferredGateway)
+	if err != nil {
+		return nil, fmt.Errorf("build execution tools: %w", err)
 	}
-	checker := permissions.NewChecker(permissions.Options{})
-	toolsList := toolkit.BuildDeferredGatewayEinoTools(ctx, checker, deferredTools...)
 
 	// 创建 ChatModelAgent
 	env := prompt.DetectEnvironment("")
@@ -96,7 +93,7 @@ func NewExecutionAgent(ctx context.Context, cfg *Config) (adk.Agent, error) {
 	}
 
 	if cfg.Logger != nil {
-		cfg.Logger.Info("execution agent initialized with execution-only tools", zap.Int("deferred_tools", len(deferredTools)))
+		cfg.Logger.Info("execution agent initialized with execution-only tools", zap.Int("executable_tools", len(toolsList)))
 	}
 
 	return agent, nil

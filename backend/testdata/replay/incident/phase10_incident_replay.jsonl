@@ -1,0 +1,20 @@
+{"version":"phase10.incident_replay/v1","id":"incident-001","expected_terminal":"complete","evidence":["pod restart count elevated"],"diagnosis_confidence":0.91,"plan_risk":"low","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-002","expected_terminal":"complete","evidence":["metrics spike"],"diagnosis_confidence":0.90,"plan_risk":"low","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-003","expected_terminal":"complete","evidence":["logs contain timeout"],"diagnosis_confidence":0.88,"plan_risk":"low","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-004","expected_terminal":"complete","evidence":["deployment unstable"],"diagnosis_confidence":0.87,"plan_risk":"write","approval":"approved","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-005","expected_terminal":"waiting_for_approval","evidence":["deployment unstable"],"diagnosis_confidence":0.87,"plan_risk":"write","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-006","expected_terminal":"failed","evidence":[],"diagnosis_confidence":0.20,"plan_risk":"low","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-007","expected_terminal":"failed","evidence":["weak evidence"],"diagnosis_confidence":0.50,"plan_risk":"low","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-008","expected_terminal":"complete","evidence":["verify initially fails"],"diagnosis_confidence":0.90,"plan_risk":"low","verify":"fail"}
+{"version":"phase10.incident_replay/v1","id":"incident-009","expected_terminal":"complete","evidence":["node pressure"],"diagnosis_confidence":0.93,"plan_risk":"low","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-010","expected_terminal":"complete","evidence":["oom kill"],"diagnosis_confidence":0.86,"plan_risk":"low","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-011","expected_terminal":"complete","evidence":["readiness failing"],"diagnosis_confidence":0.84,"plan_risk":"low","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-012","expected_terminal":"complete","evidence":["latency p95 high"],"diagnosis_confidence":0.82,"plan_risk":"low","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-013","expected_terminal":"complete","evidence":["error budget burn"],"diagnosis_confidence":0.91,"plan_risk":"write","approval":"approved","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-014","expected_terminal":"waiting_for_approval","evidence":["rollout needed"],"diagnosis_confidence":0.91,"plan_risk":"high","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-015","expected_terminal":"complete","evidence":["history similar incident"],"diagnosis_confidence":0.77,"plan_risk":"low","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-016","expected_terminal":"complete","evidence":["k8s event backoff"],"diagnosis_confidence":0.79,"plan_risk":"low","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-017","expected_terminal":"complete","evidence":["prometheus target down"],"diagnosis_confidence":0.95,"plan_risk":"low","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-018","expected_terminal":"complete","evidence":["log source degraded but metrics available"],"diagnosis_confidence":0.74,"plan_risk":"low","verify":"success"}
+{"version":"phase10.incident_replay/v1","id":"incident-019","expected_terminal":"complete","evidence":["cross source agreement"],"diagnosis_confidence":0.98,"plan_risk":"write","approval":"approved","verify":"fail"}
+{"version":"phase10.incident_replay/v1","id":"incident-020","expected_terminal":"complete","evidence":["manual report only"],"diagnosis_confidence":0.70,"plan_risk":"low","verify":"success"}

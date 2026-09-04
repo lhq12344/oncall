@@ -1,0 +1,23 @@
+﻿---
+title: Permissions Rule Engine Flow
+---
+flowchart TD
+  A[Domain Agent] --> B[Visible Eino tools\nToolSearch + InvokeDeferredTool]
+  B --> C{ToolSearch?}
+  C -->|select/name search| D[Registry.SearchDeferred / FindDeferredByNames]
+  D --> E[Registry.MarkDiscovered\nADK session or scoped context]
+  E --> F[InvokeDeferredTool\ntool_name + arguments]
+  F --> G{Is deferred and discovered?}
+  G -->|no| X[Error: use ToolSearch first]
+  G -->|yes| H[runPreToolHooks]
+  H --> I[permissions.Checker.Check\nreal target tool + args]
+  I -->|allow| J[Execute target deferred tool]
+  I -->|deny| K[Return permission denied]
+  I -->|ask| L[einotool.Interrupt\nToolApprovalInterruptInfo]
+  L --> M[Resume data approved?]
+  M -->|no| N[Rejected / still waiting]
+  M -->|yes| O{allow always?}
+  O -->|yes| P[checker.AllowAlways\nlocal/session rule]
+  O -->|no| J
+  P --> J
+  J --> Q[runPostToolHooks + result]

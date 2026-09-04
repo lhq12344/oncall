@@ -14,7 +14,6 @@ type HybridRetrieverConfig struct {
 	Profile         RetrievalProfile
 	Config          Config
 	VectorRetriever einoretriever.Retriever
-	LegacyRetriever einoretriever.Retriever
 	BM25Index       BM25Index
 	Rewriter        QueryRewriter
 	Reranker        Reranker
@@ -24,7 +23,6 @@ type HybridRetriever struct {
 	profile         RetrievalProfile
 	config          Config
 	vectorRetriever einoretriever.Retriever
-	legacyRetriever einoretriever.Retriever
 	bm25Index       BM25Index
 	rewriter        QueryRewriter
 	reranker        Reranker
@@ -46,7 +44,6 @@ func NewHybridRetriever(cfg HybridRetrieverConfig) *HybridRetriever {
 		profile:         cfg.Profile,
 		config:          cfg.Config,
 		vectorRetriever: cfg.VectorRetriever,
-		legacyRetriever: cfg.LegacyRetriever,
 		bm25Index:       cfg.BM25Index,
 		rewriter:        cfg.Rewriter,
 		reranker:        cfg.Reranker,
@@ -112,28 +109,10 @@ func (h *HybridRetriever) RetrieveContext(ctx context.Context, query string, top
 			docs, err := h.vectorRetriever.Retrieve(ctx, variant, einoretriever.WithTopK(h.config.EmbeddingTopK))
 			if err != nil {
 				degraded = append(degraded, "embedding_retrieval_failed: "+err.Error())
-				if h.legacyRetriever != nil {
-					if legacyDocs, legacyErr := h.legacyRetriever.Retrieve(ctx, variant, einoretriever.WithTopK(h.config.EmbeddingTopK)); legacyErr == nil {
-						legacyResults := documentsToResults(legacyDocs, "embedding_legacy")
-						candidateCounts[CandidateCountSourceLegacyEmbeddingDocs] += len(legacyResults)
-						rankedLists = append(rankedLists, legacyResults)
-					} else {
-						degraded = append(degraded, "legacy_embedding_retrieval_failed: "+legacyErr.Error())
-					}
-				}
 			} else {
 				vectorResults := documentsToResults(docs, "embedding")
 				candidateCounts[CandidateCountSourceEmbeddingDocs] += len(vectorResults)
 				rankedLists = append(rankedLists, vectorResults)
-			}
-		} else if h.legacyRetriever != nil {
-			docs, err := h.legacyRetriever.Retrieve(ctx, variant, einoretriever.WithTopK(h.config.EmbeddingTopK))
-			if err != nil {
-				degraded = append(degraded, "legacy_embedding_retrieval_failed: "+err.Error())
-			} else {
-				legacyResults := documentsToResults(docs, "embedding_legacy")
-				candidateCounts[CandidateCountSourceLegacyEmbeddingDocs] += len(legacyResults)
-				rankedLists = append(rankedLists, legacyResults)
 			}
 		} else {
 			degraded = append(degraded, "embedding_retriever_unavailable")

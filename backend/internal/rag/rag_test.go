@@ -216,7 +216,7 @@ func (f fakeRetriever) Retrieve(ctx context.Context, query string, opts ...einor
 	return f.docs, nil
 }
 
-func TestHybridRetrieverFallsBackToLegacyAndBM25(t *testing.T) {
+func TestHybridRetrieverFallsBackToBM25WhenVectorFails(t *testing.T) {
 	ctx := context.Background()
 	bm25, err := NewFileBM25Index(t.TempDir() + "/idx.jsonl")
 	if err != nil {
@@ -225,12 +225,10 @@ func TestHybridRetrieverFallsBackToLegacyAndBM25(t *testing.T) {
 	if err := bm25.Upsert(ctx, []DocumentChunk{{ID: "bm", ChunkID: "bm", Content: "redis timeout bm25"}}); err != nil {
 		t.Fatal(err)
 	}
-	legacyDoc := (&schema.Document{ID: "legacy", Content: "redis timeout legacy", MetaData: map[string]any{"chunk_id": "legacy"}}).WithScore(0.8)
 	h := NewHybridRetriever(HybridRetrieverConfig{
 		Profile:         ProfileKnowledge,
 		Config:          DefaultConfig(),
 		VectorRetriever: fakeRetriever{err: errors.New("primary down")},
-		LegacyRetriever: fakeRetriever{docs: []*schema.Document{legacyDoc}},
 		BM25Index:       bm25,
 	})
 	got, err := h.RetrieveContext(ctx, "redis timeout", 3)
@@ -246,10 +244,12 @@ func TestHybridRetrieverFallsBackToLegacyAndBM25(t *testing.T) {
 	if got.LatencyMS < 0 {
 		t.Fatalf("latency should be populated: %#v", got)
 	}
-	if got.CandidateCounts[CandidateCountSourceLegacyEmbeddingDocs] == 0 ||
-		got.CandidateCounts[CandidateCountSourceBM25Docs] == 0 ||
+	if got.CandidateCounts[CandidateCountSourceBM25Docs] == 0 ||
 		got.CandidateCounts[CandidateCountStageFinalDocs] == 0 {
 		t.Fatalf("candidate counts not populated: %#v", got.CandidateCounts)
+	}
+	if got.Results[0].Source != "bm25" {
+		t.Fatalf("vector failure should not fall back to old embedding collection: %#v", got.Results)
 	}
 }
 

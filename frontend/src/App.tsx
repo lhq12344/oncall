@@ -9,6 +9,7 @@ import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { ChatArea } from './components/ChatArea';
 import { InputArea } from './components/InputArea';
+import { OperationalWorkbench } from './features/workbench/OperationalWorkbench';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -50,9 +51,9 @@ export default function App() {
     )}>
       {/* Background Image Layer */}
       <div className="fixed inset-0 pointer-events-none z-0">
-        <img 
-          src="https://images.unsplash.com/photo-1605142859862-978be7eba909?auto=format&fit=crop&q=80&w=2070" 
-          alt="Cyberpunk City" 
+        <img
+          src="https://images.unsplash.com/photo-1605142859862-978be7eba909?auto=format&fit=crop&q=80&w=2070"
+          alt="Cyberpunk City"
           className={cn(
             "w-full h-full object-cover transition-all duration-1000",
             theme === 'dark' ? "opacity-20 scale-105" : "opacity-5 grayscale-[0.8]"
@@ -61,8 +62,8 @@ export default function App() {
         />
         <div className={cn(
           "absolute inset-0 transition-colors duration-500 cyber-grid",
-          theme === 'dark' 
-            ? "bg-gradient-to-b from-cyber-bg/40 via-cyber-bg/80 to-cyber-bg" 
+          theme === 'dark'
+            ? "bg-gradient-to-b from-cyber-bg/40 via-cyber-bg/80 to-cyber-bg"
             : "bg-gradient-to-b from-white/40 via-white/80 to-white"
         )} />
       </div>
@@ -78,13 +79,14 @@ export default function App() {
 
       <div className="relative z-10 flex w-full h-full">
         <Sidebar />
-        
+
         <main className="flex-1 flex flex-col relative">
           <Header />
           <ChatArea />
           <InputArea />
         </main>
       </div>
+      <OperationalWorkbench />
     </div>
   );
 }

@@ -10,14 +10,29 @@ const (
 )
 
 type DocumentChunk struct {
-	ID          string         `json:"id"`
-	DocID       string         `json:"doc_id,omitempty"`
-	ChunkID     string         `json:"chunk_id,omitempty"`
-	SourceType  string         `json:"source_type,omitempty"`
-	Content     string         `json:"content"`
-	Metadata    map[string]any `json:"metadata,omitempty"`
-	UpdatedAt   time.Time      `json:"updated_at,omitempty"`
-	ContentHash string         `json:"content_hash,omitempty"`
+	ID               string         `json:"id"`
+	DocID            string         `json:"doc_id,omitempty"`
+	ChunkID          string         `json:"chunk_id,omitempty"`
+	ParentID         string         `json:"parent_id,omitempty"`
+	SourceType       string         `json:"source_type,omitempty"`
+	Tenant           string         `json:"tenant,omitempty"`
+	Project          string         `json:"project,omitempty"`
+	Cluster          string         `json:"cluster,omitempty"`
+	Service          string         `json:"service,omitempty"`
+	Namespace        string         `json:"namespace,omitempty"`
+	Content          string         `json:"content"`
+	ContextualPrefix string         `json:"contextual_prefix,omitempty"`
+	PropositionType  string         `json:"proposition_type,omitempty"`
+	Metadata         map[string]any `json:"metadata,omitempty"`
+	SourceURI        string         `json:"source_uri,omitempty"`
+	Owner            string         `json:"owner,omitempty"`
+	Version          string         `json:"version,omitempty"`
+	UpdatedAt        time.Time      `json:"updated_at,omitempty"`
+	ValidFrom        time.Time      `json:"valid_from,omitempty"`
+	ValidUntil       time.Time      `json:"valid_until,omitempty"`
+	ContentHash      string         `json:"content_hash,omitempty"`
+	ChunkProfile     string         `json:"chunk_profile,omitempty"`
+	IndexVersion     string         `json:"index_version,omitempty"`
 }
 
 type RetrievedResult struct {
@@ -55,7 +70,6 @@ const (
 	CandidateCountStageFinalDocs     = "stage.final_docs"
 
 	CandidateCountSourceEmbeddingDocs        = "source.embedding_docs"
-	CandidateCountSourceLegacyEmbeddingDocs  = "source.embedding_legacy_docs"
 	CandidateCountSourceBM25Docs             = "source.bm25_docs"
 	CandidateCountSourceLocalFinalReportDocs = "source.local_final_report_docs"
 )

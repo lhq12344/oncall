@@ -1,0 +1,29 @@
+flowchart TD
+  Builder[BuildAgentPrompt(role, env, opts)] --> Base[Base Sections\nIdentity/System/Task/Actions/Tool/Output]
+  Builder --> Deferred[DeferredToolGuidance(role)]
+  Builder --> Role[RoleSection(role)]
+  Builder --> Context[Environment + Custom + Knowledge + Memory]
+
+  Base --> Instruction[ChatModelAgent Instruction]
+  Deferred --> Instruction
+  Role --> Instruction
+  Context --> Instruction
+
+  Instruction --> Ops[ops_incident_agent\nread-only evidence + remediation_intent]
+  Instruction --> Plan[plan_agent\nnormalize/generate/validate plan]
+  Instruction --> Exec[execution_agent\nexecute_step/validate_result/rollback]
+
+  Ops --> State[Graph State\nRCA + remediation fields]
+  Plan --> PlanState[Graph State\ncanonical PlanState]
+  Exec --> ExecState[Graph State\nexecution + verification facts]
+
+  State --> Gate[diagnosis_gate]
+  PlanState --> PlanGate[plan_gate + plan_approval]
+  Exec --> Perm[toolkit adapter\nhooks + permissions allow/ask/deny]
+
+  classDef prompt fill:#fff3e8,stroke:#eb6c36,stroke-width:2px;
+  classDef state fill:#eef2f7,stroke:#4f5d75;
+  classDef guard fill:#f8f8f8,stroke:#2d3142;
+  class Builder,Base,Deferred,Role,Context,Instruction prompt;
+  class State,PlanState,ExecState state;
+  class Gate,PlanGate,Perm guard;

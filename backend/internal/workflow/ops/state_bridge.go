@@ -341,8 +341,7 @@ func (a *stateBridgeAgent) updateByStage(state *IncidentState, msg *schema.Messa
 		if ok && validation != nil {
 			applyPlanGateValidationState(state, validation)
 		}
-	// "execution" remains a checkpoint compatibility alias; new workflow stages use execute_plan/verify_plan.
-	case "execution", "execute_plan", "verify_plan":
+	case "execute_plan", "verify_plan":
 		if a.stage == "verify_plan" {
 			if result, ok := parseExecutionResult(messages); ok && result != nil {
 				applyPlanVerificationState(state, result)

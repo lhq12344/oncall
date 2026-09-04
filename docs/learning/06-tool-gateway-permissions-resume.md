@@ -1,7 +1,7 @@
 # 06 工具网关、权限与中断恢复：ToolSearch 到 Resume 的完整链路
 
-> 本节继续保持同一写法：**数据结构跟着调用链讲**，不单独堆类型表。  
-> 目标：看懂 Agent 为什么默认只看到 `ToolSearch` / `InvokeDeferredTool`，目标工具如何被发现、审批、中断、恢复，以及前端如何把中断转成用户操作。  
+> 本节继续保持同一写法：**数据结构跟着调用链讲**，不单独堆类型表。
+> 目标：看懂 Agent 为什么默认只看到 `ToolSearch` / `InvokeDeferredTool`，目标工具如何被发现、审批、中断、恢复，以及前端如何把中断转成用户操作。
 > 日期：2026-08-19。
 
 ## 1. 本节目标
@@ -210,7 +210,7 @@ bypass:      read allow, write allow, command allow
 
 ## 9. Controller：InterruptInfo 通过 SSE 发给前端
 
-后端把 interrupt 转成统一 SSE payload。`buildInterruptPayload` 在 `backend/internal/controller/chat/chat_v1.go:1428-1455` 生成：
+后端把 interrupt 转成统一 SSE payload。`buildInterruptPayload` 在 `backend/internal/controller/chat/chat_v1.go:1492-1520` 生成：
 
 ```text
 type = "interrupt"
@@ -222,11 +222,11 @@ bash_request?
 detail_request?
 ```
 
-其中 `normalizeInterruptData` 在 `chat_v1.go:1457-1475` 把任意 interrupt data 转成 JSON 兼容对象；`extractBashApprovalPayload` 在 `chat_v1.go:1477-1506` 从结构化数据里提取 `command / args / timeout / reason / raw_command`，给前端审批卡片使用；`extractDetailSelectionPayload` 在 `chat_v1.go:1508-1554` 处理需要用户选择的 detail selection。
+其中 `normalizeInterruptData` 在 `chat_v1.go:1521-1540` 把任意 interrupt data 转成 JSON 兼容对象；`extractBashApprovalPayload` 在 `chat_v1.go:1541-1568` 从结构化数据里提取 `command / args / timeout / reason / raw_command`，给前端审批卡片使用；`extractDetailSelectionPayload` 在 `chat_v1.go:1569-1616` 处理需要用户选择的 detail selection。
 
-`writeSSEData` 在 `backend/internal/controller/chat/chat_v1.go:1211-1231` 负责按 SSE 格式写出并 flush。`withSSEWorkflow` 在 `chat_v1.go:1241-1251` 会补充 `workflow` 和 `resume_endpoint`，使同一张前端卡片能判断恢复应该走 chat 还是 ops。
+`writeSSEData` 在 `backend/internal/controller/chat/chat_v1.go:1287-1293` 负责按 SSE 格式写出并 flush。`withSSEWorkflow` 在 `chat_v1.go:1302-1313` 会补充 `workflow` 和 `resume_endpoint`，使同一张前端卡片能判断恢复应该走 chat 还是 ops。
 
-AIOps 恢复流也复用同一套机制。`AIOpsResumeStream` 在 `backend/internal/controller/chat/chat_v1.go:557-625` 调用 `resumeAgent`，如果恢复后又遇到新的 interrupt，会继续把新的 interrupt payload 写回 SSE。
+AIOps 恢复流也复用同一套机制。`AIOpsResumeStream` 在 `backend/internal/controller/chat/chat_v1.go:618-686` 调用 `resumeAgent`，如果恢复后又遇到新的 interrupt，会继续把新的 interrupt payload 写回 SSE。
 
 ## 10. resumeAgent：把用户决策绑定到 interrupt target
 
@@ -242,14 +242,14 @@ AIOpsResumeStreamReq
   selection_value?
 ```
 
-`resumeAgent` 在 `backend/internal/controller/chat/chat_v1.go:966-1005` 会先规范化 `interrupt_ids`，再构造 target payload。如果没有指定 interrupt id，就普通 `runner.Resume(ctx, checkpointID, ...)`；如果有 id，就构造：
+`resumeAgent` 在 `backend/internal/controller/chat/chat_v1.go:1027-1068` 会先规范化 `interrupt_ids`，再构造 target payload。如果没有指定 interrupt id，就普通 `runner.Resume(ctx, checkpointID, ...)`；如果有 id，就构造：
 
 ```text
 targets[interrupt_id] = { approved, resolved, comment, selection_value }
 runner.ResumeWithParams(ctx, checkpointID, ResumeParams{Targets: targets}, ...)
 ```
 
-`buildResumeTargetPayload` 在 `backend/internal/controller/chat/chat_v1.go:1556-1570` 只把用户真实提交的字段放进去；如果用户没传任何字段，`resumeAgent` 会补一个 `comment = "继续执行"`。
+`buildResumeTargetPayload` 在 `backend/internal/controller/chat/chat_v1.go:1617-1633` 只把用户真实提交的字段放进去；如果用户没传任何字段，`resumeAgent` 会补一个 `comment = "继续执行"`。
 
 这一步解释了为什么前端必须保存 `checkpoint_id` 和 `interrupt_contexts[].id`：checkpoint 决定恢复哪个会话状态，interrupt id 决定把用户决策投递给哪个被中断的 tool call。
 
@@ -300,8 +300,8 @@ selection_value
 4. `backend/internal/toolkit/gateway.go:84-119`：读 `InvokeDeferredTool` 的 discovery、hook、permission、target 调用顺序。
 5. `backend/internal/permissions/permissions.go:532-587`：读 `Checker.Check` 的 allow/ask/deny 决策顺序。
 6. `backend/internal/toolkit/gateway.go:174-202`：读 gateway ask 如何进入 `tool.Interrupt` 和 resume context。
-7. `backend/internal/controller/chat/chat_v1.go:1428-1455`：读 interrupt SSE payload。
-8. `backend/internal/controller/chat/chat_v1.go:966-1005`：读 resume target payload 如何投递到 interrupt id。
+7. `backend/internal/controller/chat/chat_v1.go:1492-1520`：读 interrupt SSE payload。
+8. `backend/internal/controller/chat/chat_v1.go:1027-1068`：读 resume target payload 如何投递到 interrupt id。
 9. `frontend/src/services/api.ts:187-204`：读前端如何解析 interrupt。
 10. `frontend/src/components/InterruptCard.tsx:210-234`：读用户决策如何恢复执行。
 
@@ -314,8 +314,8 @@ selection_value
 - `InvokeDeferredTool` 会对目标工具而非网关本身运行 hooks 和权限检查，见 `backend/internal/toolkit/gateway.go:84-119`。
 - 权限系统的核心结果是 `allow / ask / deny`，决策入口是 `Checker.Check`，见 `backend/internal/permissions/permissions.go:12-23` 和 `backend/internal/permissions/permissions.go:532-587`。
 - ask 分支会通过 `tool.Interrupt` 暂停，并在 resume data 中解析 `approved / allowAlways`，见 `backend/internal/toolkit/gateway.go:174-202`。
-- 后端 interrupt SSE payload 包含 `checkpoint_id`、`interrupt_contexts` 和结构化数据，见 `backend/internal/controller/chat/chat_v1.go:1428-1455`。
-- AIOps resume 请求携带 `checkpoint_id`、`interrupt_ids`、`approved/resolved/comment/selection_value`，见 `backend/api/chat/v1/chat.go:68-78` 和 `backend/internal/controller/chat/chat_v1.go:966-1005`。
+- 后端 interrupt SSE payload 包含 `checkpoint_id`、`interrupt_contexts` 和结构化数据，见 `backend/internal/controller/chat/chat_v1.go:1492-1520`。
+- AIOps resume 请求携带 `checkpoint_id`、`interrupt_ids`、`approved/resolved/comment/selection_value`，见 `backend/api/chat/v1/chat.go:68-78` 和 `backend/internal/controller/chat/chat_v1.go:1027-1068`。
 - 前端 `InterruptData` 和 `InterruptCard` 会把 interrupt 展示为审批/选择卡片，并通过 `resumeOps` 或 `resumeChat` 恢复，见 `frontend/src/types.ts:36-45`、`frontend/src/services/api.ts:187-204`、`frontend/src/components/InterruptCard.tsx:210-234`。
 
 **推断**
@@ -327,4 +327,3 @@ selection_value
 
 - 当前文档只解释了 gateway、permission 和 HTTP/SSE 恢复链路；下一节可以继续读 checkpoint store 与 ADK session values，解释 checkpoint 如何落到 Redis 或内存。
 - `permissions.RuleEngine` 的 YAML 解析和本地规则格式还没有展开，后续可单独做“权限配置与安全边界”小节。
-

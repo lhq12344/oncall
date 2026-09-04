@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"go_agent/utility/mem"
 	"go_agent/utility/tokenizer"
 
 	"github.com/cloudwego/eino/schema"
@@ -52,6 +51,7 @@ func DefaultSessionMemoryConfig() SessionMemoryConfig {
 type SessionMemory struct {
 	cfg    SessionMemoryConfig
 	logger *zap.Logger
+	store  TranscriptStore
 }
 
 // NewSessionMemory 创建会话内存管理器。
@@ -63,6 +63,10 @@ type SessionMemory struct {
 // 输出：
 // - *SessionMemory: 初始化完成的会话内存管理器
 func NewSessionMemory(cfg *SessionMemoryConfig, logger *zap.Logger) *SessionMemory {
+	return NewSessionMemoryWithStore(cfg, logger, NewMemoryTranscriptStore())
+}
+
+func NewSessionMemoryWithStore(cfg *SessionMemoryConfig, logger *zap.Logger, store TranscriptStore) *SessionMemory {
 	base := DefaultSessionMemoryConfig()
 	if cfg != nil {
 		if cfg.ReserveToolTokens > 0 {
@@ -78,9 +82,13 @@ func NewSessionMemory(cfg *SessionMemoryConfig, logger *zap.Logger) *SessionMemo
 			base.SummaryMaxRunes = cfg.SummaryMaxRunes
 		}
 	}
+	if store == nil {
+		store = NewMemoryTranscriptStore()
+	}
 	return &SessionMemory{
 		cfg:    base,
 		logger: logger,
+		store:  store,
 	}
 }
 
@@ -108,7 +116,7 @@ func (s *SessionMemory) BuildMessages(ctx context.Context, sessionID, question s
 		return nil, nil
 	}
 
-	messages, err := mem.GetMessagesForRequest(ctx, sessionID, schema.UserMessage(question), s.cfg.ReserveToolTokens)
+	messages, err := s.store.BuildMessages(ctx, sessionID, schema.UserMessage(question), s.cfg.ReserveToolTokens)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Warn("failed to load memory from redis, fallback to current question only",
@@ -154,7 +162,6 @@ func (s *SessionMemory) SaveTurn(
 		return
 	}
 
-	memory := mem.GetSimpleMemory(sessionID)
 	userMsg := schema.UserMessage(question)
 	assistantMsg := schema.AssistantMessage(answer, nil)
 	saveCtx := ctx
@@ -174,11 +181,11 @@ func (s *SessionMemory) SaveTurn(
 		completionTokens = preciseCompletionTokens
 	}
 
-	err := memory.SetMessages(saveCtx, userMsg, assistantMsg, promptMessages, promptTokens, completionTokens)
+	err := s.store.SaveTurn(saveCtx, sessionID, userMsg, assistantMsg, promptMessages, promptTokens, completionTokens)
 	if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		detachedCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		err = memory.SetMessages(detachedCtx, userMsg, assistantMsg, promptMessages, promptTokens, completionTokens)
+		err = s.store.SaveTurn(detachedCtx, sessionID, userMsg, assistantMsg, promptMessages, promptTokens, completionTokens)
 	}
 
 	if err != nil && s.logger != nil {
@@ -188,11 +195,11 @@ func (s *SessionMemory) SaveTurn(
 		return
 	}
 
-	compactErr := memory.CompactHistory(saveCtx, s.cfg.MaxRecentTurns, s.cfg.SummarizeAfterTurns, s.cfg.SummaryMaxRunes)
+	compactErr := s.store.CompactHistory(saveCtx, sessionID, s.cfg.MaxRecentTurns, s.cfg.SummarizeAfterTurns, s.cfg.SummaryMaxRunes)
 	if compactErr != nil && (errors.Is(compactErr, context.Canceled) || errors.Is(compactErr, context.DeadlineExceeded)) {
 		detachedCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		compactErr = memory.CompactHistory(detachedCtx, s.cfg.MaxRecentTurns, s.cfg.SummarizeAfterTurns, s.cfg.SummaryMaxRunes)
+		compactErr = s.store.CompactHistory(detachedCtx, sessionID, s.cfg.MaxRecentTurns, s.cfg.SummarizeAfterTurns, s.cfg.SummaryMaxRunes)
 	}
 	if compactErr != nil && s.logger != nil {
 		s.logger.Warn("failed to compact session memory",

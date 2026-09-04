@@ -48,9 +48,11 @@ AGENTS.md
 .gocache/
 .codegraph/
 .codex/
+.codex.bak-*/
 .cursor/
 .opencode/
 .cache/
+backend/.oncall/
 .oncall/rag/bm25/
 .oncall/rag/cache/
 .oncall/rag/eval_runs/

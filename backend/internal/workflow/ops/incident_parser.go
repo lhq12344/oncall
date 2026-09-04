@@ -26,69 +26,15 @@ func parseRCAReport(messages []adk.Message) (*RCAReport, bool) {
 // 输出：结构化修复提案与是否解析成功。
 func parseRemediationProposal(messages []adk.Message) (*RemediationProposal, bool) {
 	_, raw, ok := findLatestJSONObject(messages, "actions")
-	if ok {
-		var proposal RemediationProposal
-		if err := json.Unmarshal([]byte(raw), &proposal); err == nil {
-			return &proposal, true
-		}
-	}
-
-	obj, raw, ok := findLatestJSONObject(messages, "commands")
 	if !ok {
 		return nil, false
 	}
 
-	type legacyCommand struct {
-		Step     int    `json:"step"`
-		Goal     string `json:"goal"`
-		Command  string `json:"command"`
-		Expected string `json:"expected"`
-		Rollback string `json:"rollback"`
-		ReadOnly bool   `json:"read_only"`
+	var proposal RemediationProposal
+	if err := json.Unmarshal([]byte(raw), &proposal); err != nil {
+		return nil, false
 	}
-	type legacyPlan struct {
-		PlanID       string          `json:"plan_id"`
-		Summary      string          `json:"summary"`
-		RootCause    string          `json:"root_cause"`
-		TargetNode   string          `json:"target_node"`
-		RiskLevel    string          `json:"risk_level"`
-		Commands     []legacyCommand `json:"commands"`
-		FallbackPlan string          `json:"fallback_plan"`
-	}
-
-	var legacy legacyPlan
-	if err := json.Unmarshal([]byte(raw), &legacy); err == nil {
-		proposal := &RemediationProposal{
-			ProposalID:   strings.TrimSpace(legacy.PlanID),
-			Summary:      strings.TrimSpace(legacy.Summary),
-			RootCause:    strings.TrimSpace(legacy.RootCause),
-			TargetNode:   strings.TrimSpace(legacy.TargetNode),
-			RiskLevel:    strings.TrimSpace(legacy.RiskLevel),
-			FallbackPlan: strings.TrimSpace(legacy.FallbackPlan),
-			Actions:      make([]RemediationAction, 0, len(legacy.Commands)),
-		}
-		for _, command := range legacy.Commands {
-			proposal.Actions = append(proposal.Actions, RemediationAction{
-				Step:            command.Step,
-				Goal:            strings.TrimSpace(command.Goal),
-				CommandHint:     strings.TrimSpace(command.Command),
-				SuccessCriteria: strings.TrimSpace(command.Expected),
-				RollbackHint:    strings.TrimSpace(command.Rollback),
-				ReadOnly:        command.ReadOnly,
-			})
-		}
-		return proposal, true
-	}
-
-	proposal := &RemediationProposal{
-		ProposalID:   stringFromMap(obj, "proposal_id"),
-		Summary:      stringFromMap(obj, "summary"),
-		RootCause:    stringFromMap(obj, "root_cause"),
-		TargetNode:   stringFromMap(obj, "target_node"),
-		RiskLevel:    stringFromMap(obj, "risk_level"),
-		FallbackPlan: stringFromMap(obj, "fallback_plan"),
-	}
-	return proposal, true
+	return &proposal, true
 }
 
 func parseValidationResult(messages []adk.Message) (*PlanValidationResult, bool) {

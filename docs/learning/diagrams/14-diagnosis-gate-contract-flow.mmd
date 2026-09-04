@@ -1,0 +1,27 @@
+flowchart TD
+  Start([AIOps loop starts]) --> Incident[incident_analysis\ncollect observations + RCA]
+  Incident --> Gate[diagnosis_gate.Run\nvalidateIncidentDiagnosis]
+
+  Gate --> Parse{RCA available?\nroot cause + evidence + confidence}
+  Parse -->|no| Block[write IncidentContractValid=false\nissues + ValidationBlocked]
+  Parse -->|yes| Evidence{evidence >= 2\nconfidence in range}
+  Evidence -->|no| Block
+  Evidence -->|yes| Pass[write IncidentContractValid=true\nappend contract passed log]
+
+  Block --> Replan[ReplanState.Decision\nrefresh_observation]
+  Replan --> Incident
+
+  Pass --> Plan[plan\ncanonical PlanState]
+  Plan --> PlanGate[plan_gate\nValidateExecutionPlan]
+  PlanGate --> Approval[plan_approval\nPlanID + Revision + SnapshotHash]
+  Approval --> Guard[contractGuardedExecutionAgent\nexecutionGuardAllowsExecution]
+  Guard --> Execute[execute_plan\nPrepareApprovedExecutionPlanFromGraphState]
+  Execute --> Verify[verify_plan]
+  Verify --> Decide[replan_decider]
+
+  classDef gate fill:#fff3e8,stroke:#eb6c36,stroke-width:2px;
+  classDef state fill:#eef2f7,stroke:#4f5d75;
+  classDef exec fill:#f8f8f8,stroke:#2d3142;
+  class Gate,Guard gate;
+  class Block,Pass,Replan state;
+  class Execute,Verify exec;

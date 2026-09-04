@@ -1,7 +1,7 @@
-﻿# 07 Checkpoint、SessionMemory 与恢复：一次中断为什么能继续跑
+# 07 Checkpoint、SessionMemory 与恢复：一次中断为什么能继续跑
 
-> 本节继续保持同一写法：**数据结构跟着调用链讲**，不单独堆类型表。  
-> 目标：区分“可恢复运行状态”和“跨轮对话记忆”，看懂 `checkpoint_id`、ADK session values、Redis checkpoint、`SessionMemory` 在一次 AIOps / Chat 请求里的职责边界。  
+> 本节继续保持同一写法：**数据结构跟着调用链讲**，不单独堆类型表。
+> 目标：区分“可恢复运行状态”和“跨轮对话记忆”，看懂 `checkpoint_id`、ADK session values、Redis checkpoint、`SessionMemory` 在一次 AIOps / Chat 请求里的职责边界。
 > 日期：2026-08-19。
 
 ## 1. 本节目标
@@ -41,25 +41,25 @@
   主要链路：BuildMessages -> mem.GetMessagesForRequest -> SaveTurn -> mem.SetMessages/CompactHistory
 ```
 
-`ControllerV1` 初始化时同时创建了 `sessionMemory` 和 `checkpointStore`。`sessionMemory` 是控制器字段，直接在聊天流完成后保存问答；`checkpointStore` 则被塞进 `adk.NewRunner` 的 `RunnerConfig`，后续具体 Set/Get 由 ADK Runner 在运行和恢复时使用。代码锚点分别在 `NewV1WithHooks` 的 `sessionMemory: appcontext.NewSessionMemory(nil, logger)`，以及 `adk.RunnerConfig{CheckPointStore: checkpointStore}`。见 `backend/internal/controller/chat/chat_v1.go:95-134`。
+生产启动路径中，`RuntimeLayer` 同时创建 `SessionMemory`、`CheckPointStore` 和 chat/ops 两个 `adk.Runner`。`SessionMemory` 进入 controller 字段，直接在聊天流完成后保存问答；`CheckPointStore` 被塞进 `adk.NewRunner` 的 `RunnerConfig`，后续具体 Set/Get 由 ADK Runner 在运行和恢复时使用。代码锚点在 `backend/internal/bootstrap/runtime.go:18-65`。
 
-## 3. 启动注入：Redis 先成为应用依赖，再成为 Runner 的 checkpoint store
+## 3. 启动注入：Redis 先进 Infrastructure，再由 RuntimeLayer 变成 checkpoint store
 
-主程序启动时，`main.go` 先调用 `bootstrap.NewApplication`，成功后把 `app.RedisClient` 传给 `chat.NewV1WithHooks`。这一步把“基础设施初始化”和“控制器/Runner 绑定”分开：`main.go` 不直接创建 checkpoint store，只负责传入已初始化的 Redis client。证据在 `backend/main.go:95-130`。
+主程序启动时，`main.go` 调用 `bootstrap.NewApplication`，由 bootstrap 的 layer registry 依次构建 infrastructure、state、agents、runtime、background。`main.go` 成功拿到 `Application` 后，不再把 `app.RedisClient` 传给 controller；它把 `app.Runtime` 中已经创建好的 runner、SessionMemory、SlashRegistry 等运行时对象封装进 `chat.ControllerDeps`，再调用 `chat.NewV1FromDeps`。证据在 `backend/main.go:54-68` 与 `backend/main.go:82-98`。
 
-`bootstrap.NewApplication` 里 Redis 是强依赖：先创建 `redis.NewClient`，再 `Ping`，失败就返回错误；随后调用 `mem.InitRedis(redisClient, nil)`，初始化 `utility/mem` 这套会话记忆工具；再创建 `NewRedisStorage(redisClient, "oncall")` 和 `NewContextManager(storage)`。证据在 `backend/internal/bootstrap/app.go:125-151`。
+`buildInfrastructureLayer` 里 Redis 是强依赖：先创建 `redis.NewClient`，再 `Ping`，失败就返回错误；随后调用 `mem.InitRedis(redisClient, nil)`，初始化 `utility/mem` 这套会话记忆工具。`buildStateLayer` 再创建 `NewRedisStorage(redisClient, "oncall")` 和 `NewContextManager(storage)`。证据在 `backend/internal/bootstrap/application_layers.go:34-134` 与 `backend/internal/bootstrap/application_layers.go:136-147`。
 
-到了 `NewV1WithHooks`，checkpoint store 的选择逻辑才出现：
+到了 `buildRuntimeLayer`，checkpoint store 的选择逻辑出现：
 
 - `redisClient != nil`：创建 `appcontext.NewRedisCheckPointStore(redisClient, "oncall", 24*time.Hour)`。
 - `redisClient == nil`：退回 `newInMemoryCheckPointStore()`。
-- chat runner 和 ops runner 共用同一个 `checkpointStore`，但 agent 不同：一个绑定 `dialogueAgent`，一个绑定 `opsAgent`。见 `backend/internal/controller/chat/chat_v1.go:108-134`。
+- chat runner 和 ops runner 共用同一个 `checkpointStore`，但 agent 不同：一个绑定 `DialogueAgent`，一个绑定 `OpsAgent`。见 `backend/internal/bootstrap/runtime.go:29-57`。
 
-这里要注意一个细节：生产启动路径里 Redis `Ping` 失败会让 `NewApplication` 失败，所以 `NewV1WithHooks` 的 nil fallback 更像测试或特殊构造路径；不是当前 `main.go` 的正常降级运行方式。这个判断来自 `bootstrap.NewApplication` 的 Redis fatal 行为和 `NewV1WithHooks` 的 nil 分支对照。
+这里要注意一个细节：生产启动路径里 Redis `Ping` 失败会让 `NewApplication` 失败，所以 `RuntimeLayer` 的 nil fallback 主要覆盖部分装配测试或特殊构造路径；不是当前 `main.go` 的正常降级运行方式。`NewV1WithHooks` 仍保留一套同类 fallback，但生产入口已经不走它。
 
 ## 4. Redis checkpoint store：只管字节，不理解业务
 
-`RedisCheckPointStore` 本身很薄：只保存 `client / prefix / ttl` 三个字段。`NewRedisCheckPointStore` 在 ttl 小于等于 0 时默认 24 小时；当前控制器传入的是 `prefix="oncall"` 和 `ttl=24*time.Hour`。见 `backend/internal/context/checkpoint_store.go:11-28` 与 `backend/internal/controller/chat/chat_v1.go:108-113`。
+`RedisCheckPointStore` 本身很薄：只保存 `client / prefix / ttl` 三个字段。`NewRedisCheckPointStore` 在 ttl 小于等于 0 时默认 24 小时；当前生产运行时传入的是 `prefix="oncall"` 和 `ttl=24*time.Hour`。见 `backend/internal/context/checkpoint_store.go:11-28` 与 `backend/internal/bootstrap/runtime.go:29-35`。
 
 真正的 key 规则在 `Get/Set` 里：
 
@@ -69,7 +69,7 @@ oncall:checkpoint:<checkpoint_id>
 
 `Get` 用 `client.Get(...).Bytes()` 读取，遇到 `redis.Nil` 返回 `(nil, false, nil)`；`Set` 用同样的 key 写入 `checkPoint []byte` 并带 ttl。也就是说，这一层不关心 `InterruptContext`、审批结果、Agent 名称或工具名，它只实现 ADK 要求的 CheckPointStore 字节读写接口。证据在 `backend/internal/context/checkpoint_store.go:30-47`。
 
-内存 fallback 同样只管字节：`inMemoryCheckPointStore` 是 `map[string][]byte + sync.RWMutex`，Get/Set 都复制 byte slice，避免调用方共享底层数组。证据在 `backend/internal/controller/chat/chat_v1.go:1691-1723`。推断上，它只能覆盖当前进程生命周期；服务重启或多实例部署时，这个 map 不会共享，也不会持久化。
+内存 fallback 同样只管字节：`inMemoryCheckPointStore` 是 `map[string][]byte + sync.RWMutex`，Get/Set 都复制 byte slice，避免调用方共享底层数组。生产运行时版本在 `backend/internal/bootstrap/runtime.go:84-111`；兼容构造器版本在 `backend/internal/controller/chat/chat_v1.go:1752-1784`。推断上，它只能覆盖当前进程生命周期；服务重启或多实例部署时，这个 map 不会共享，也不会持久化。
 
 ## 5. AIOps 第一次运行：checkpoint_id 从这里出生
 
@@ -84,9 +84,9 @@ AIOps 的入口是 `AIOpsStream`，API 定义在 `/ai_ops_stream`，请求体没
 5. run option 来自 `c.agentRunOptions("aiops", checkpointID)`。
 6. 如果 event 中出现 `Action.Interrupted`，后端把 `checkpointID` 和 interrupt contexts 打包进 SSE payload 发给前端。
 
-证据在 `backend/internal/controller/chat/chat_v1.go:485-525`。
+证据在 `backend/internal/controller/chat/chat_v1.go:546-586`。
 
-`agentRunOptions` 是这个链路里最重要的小函数：它把 `checkpointID` 放进 `adk.WithCheckPointID(checkpointID)`，同时把 `session_id` 放入 `adk.WithSessionValues(map[string]any{"session_id": sessionID})`。如果 hook engine 存在，还会把同样的 `SessionID/CheckpointID` 放入 callback handler 的 hook context。证据在 `backend/internal/controller/chat/chat_v1.go:899-910`。
+`agentRunOptions` 是这个链路里最重要的小函数：它把 `checkpointID` 放进 `adk.WithCheckPointID(checkpointID)`，同时把 `session_id` 放入 `adk.WithSessionValues(map[string]any{"session_id": sessionID})`。如果 hook engine 存在，还会把同样的 `SessionID/CheckpointID` 放入 callback handler 的 hook context。证据在 `backend/internal/controller/chat/chat_v1.go:960-973`。
 
 这里的数据结构不是“独立概念”，而是直接服务运行恢复：
 
@@ -123,11 +123,11 @@ resumeAgent(
 )
 ```
 
-证据在 `backend/internal/controller/chat/chat_v1.go:557-567`。
+证据在 `backend/internal/controller/chat/chat_v1.go:618-628`。
 
-`resumeAgent` 再把 `interrupt_ids` 规范化，发出 `EventResumeRequest` hook，然后构建 `resumeRunOptions(sessionValues, checkpointID)`。如果没有 target ids，就调用 `runner.Resume(ctx, checkpointID, baseOpts...)`；如果有 target ids，就把用户决策封装成 `adk.ResumeParams{Targets: targets}`，再调用 `runner.ResumeWithParams(ctx, checkpointID, ..., baseOpts...)`。证据在 `backend/internal/controller/chat/chat_v1.go:966-1005`。
+`resumeAgent` 再把 `interrupt_ids` 规范化，发出 `EventResumeRequest` hook，然后构建 `resumeRunOptions(sessionValues, checkpointID)`。如果没有 target ids，就调用 `runner.Resume(ctx, checkpointID, baseOpts...)`；如果有 target ids，就把用户决策封装成 `adk.ResumeParams{Targets: targets}`，再调用 `runner.ResumeWithParams(ctx, checkpointID, ..., baseOpts...)`。证据在 `backend/internal/controller/chat/chat_v1.go:1027-1068`。
 
-注意 `resumeRunOptions` 没有再调用 `adk.WithCheckPointID`，它只恢复 `sessionValues` 和 hook callbacks。原因从调用形态可以看出来：resume 的定位点已经作为 `runner.Resume/ResumeWithParams` 的显式参数传入，checkpoint ID 不再需要通过 run option 重复设置。证据在 `backend/internal/controller/chat/chat_v1.go:913-926` 与 `backend/internal/controller/chat/chat_v1.go:990-1005`。
+注意 `resumeRunOptions` 没有再调用 `adk.WithCheckPointID`，它只恢复 `sessionValues` 和 hook callbacks。原因从调用形态可以看出来：resume 的定位点已经作为 `runner.Resume/ResumeWithParams` 的显式参数传入，checkpoint ID 不再需要通过 run option 重复设置。证据在 `backend/internal/controller/chat/chat_v1.go:974-988` 与 `backend/internal/controller/chat/chat_v1.go:1012-1068`。
 
 ## 7. SessionMemory：普通聊天上下文，不是 ADK 恢复点
 
@@ -140,7 +140,7 @@ resumeAgent(
 
 这些默认值来自 `DefaultSessionMemoryConfig`，证据在 `backend/internal/context/session_memory.go:16-44`。
 
-普通 chat 或 slash dialogue prompt 会先调用 `BuildMessages(ctx, sessionID, question)`，它把当前问题 trim 后交给 `mem.GetMessagesForRequest(ctx, sessionID, schema.UserMessage(question), ReserveToolTokens)`。如果 Redis/mem 加载失败，它不会中断请求，而是 warn 后只返回当前 user message。证据在 `backend/internal/context/session_memory.go:87-123`，调用点可见 `streamSlashDialoguePrompt` 的 `c.sessionMemory.BuildMessages(...)`，`backend/internal/controller/chat/chat_v1.go:677-692`。
+普通 chat 或 slash dialogue prompt 会先调用 `BuildMessages(ctx, sessionID, question)`，它把当前问题 trim 后交给 `mem.GetMessagesForRequest(ctx, sessionID, schema.UserMessage(question), ReserveToolTokens)`。如果 Redis/mem 加载失败，它不会中断请求，而是 warn 后只返回当前 user message。证据在 `backend/internal/context/session_memory.go:87-123`，调用点可见 `ChatStream` 与 `streamSlashDialoguePrompt` 的 `c.sessionMemory.BuildMessages(...)`，`backend/internal/controller/chat/chat_v1.go:263` 与 `backend/internal/controller/chat/chat_v1.go:743`。
 
 回答完整且没有中断时，控制器才保存一轮对话。`SaveTurn` 会创建 user/assistant message，按 tokenizer 估算或精确统计 prompt/completion tokens，然后调用 `memory.SetMessages(...)` 写入 Redis，再调用 `memory.CompactHistory(...)` 按阈值压缩历史。证据在 `backend/internal/context/session_memory.go:126-202`。
 
@@ -170,13 +170,13 @@ aiagent:ctx:<session_id>:meta
 ```mermaid
 flowchart TD
   Main[main.go] --> Bootstrap[bootstrap.NewApplication]
-  Bootstrap --> Redis[(Redis client)]
-  Bootstrap --> MemInit[mem.InitRedis\nfor SessionMemory]
-  Bootstrap --> ContextMgr[ContextManager\nRedisStorage oncall]
-  Main --> Controller[chat.NewV1WithHooks]
-  Redis --> Controller
+  Bootstrap --> Infra[InfrastructureLayer\nRedis + mem.InitRedis]
+  Bootstrap --> State[StateLayer\nContextManager]
+  Bootstrap --> Runtime[RuntimeLayer]
+  Main --> Controller[chat.NewV1FromDeps]
+  Runtime --> Controller
 
-  Controller --> StoreChoice{redisClient nil?}
+  Runtime --> StoreChoice{Redis client nil?}
   StoreChoice -->|no| RedisCkpt[RedisCheckPointStore\nprefix oncall ttl 24h]
   StoreChoice -->|yes| MemCkpt[inMemoryCheckPointStore\nprocess local map]
   RedisCkpt --> Runner[adk.NewRunner\nchat + ops]
@@ -199,7 +199,8 @@ flowchart TD
   ResumeWithParams --> StoreGet
   StoreGet --> Continue[ADK continues from interrupt]
 
-  Controller --> SessionMemory[SessionMemory]
+  Runtime --> SessionMemory[SessionMemory]
+  SessionMemory --> Controller
   Chat[Chat / Slash dialogue] --> BuildMessages[BuildMessages]
   BuildMessages --> MemGet[mem.GetMessagesForRequest]
   MemGet --> MemKeys[(aiagent:ctx:session:sys\nsummary / turns / meta)]
@@ -214,16 +215,17 @@ flowchart TD
 
 **证据**
 
-- `main.go` 把 `app.RedisClient` 传入 `chat.NewV1WithHooks`，控制器再将 checkpoint store 注入 chat/ops 两个 `adk.NewRunner`。见 `backend/main.go:95-130` 与 `backend/internal/controller/chat/chat_v1.go:108-134`。
-- `AIOpsStream` 生成 `checkpointID`，通过 `agentRunOptions` 写入 `adk.WithCheckPointID`，中断时再把同一个 ID 放入 SSE payload。见 `backend/internal/controller/chat/chat_v1.go:498-525` 与 `backend/internal/controller/chat/chat_v1.go:899-910`。
-- `AIOpsResumeStream` 必须带 `checkpoint_id`，并通过 `resumeAgent` 调 `runner.Resume` 或 `runner.ResumeWithParams`。见 `backend/api/chat/v1/chat.go:68-76` 与 `backend/internal/controller/chat/chat_v1.go:557-567`、`backend/internal/controller/chat/chat_v1.go:966-1005`。
+- `main.go` 调用 `bootstrap.NewApplication` 后，把 `app.Runtime` 中的 runner、SessionMemory、SlashRegistry 注入 `chat.NewV1FromDeps`。见 `backend/main.go:54-68` 与 `backend/main.go:82-98`。
+- `buildRuntimeLayer` 创建 `RedisCheckPointStore` 或内存 fallback，并把同一个 store 注入 chat/ops 两个 `adk.NewRunner`。见 `backend/internal/bootstrap/runtime.go:18-65`。
+- `AIOpsStream` 生成 `checkpointID`，通过 `agentRunOptions` 写入 `adk.WithCheckPointID`，中断时再把同一个 ID 放入 SSE payload。见 `backend/internal/controller/chat/chat_v1.go:546-586` 与 `backend/internal/controller/chat/chat_v1.go:960-973`。
+- `AIOpsResumeStream` 必须带 `checkpoint_id`，并通过 `resumeAgent` 调 `runner.Resume` 或 `runner.ResumeWithParams`。见 `backend/api/chat/v1/chat.go:68-76` 与 `backend/internal/controller/chat/chat_v1.go:618-628`、`backend/internal/controller/chat/chat_v1.go:1027-1068`。
 - Redis checkpoint key 是 `oncall:checkpoint:<checkpoint_id>`；SessionMemory key 是 `aiagent:ctx:<session_id>:sys/summary/turns/meta`。见 `backend/internal/context/checkpoint_store.go:31-46` 与 `backend/utility/mem/mem.go:389-396`。
 - `SessionMemory` 在读取失败时 fallback 到当前问题，保存时写 Redis 并触发 compact。见 `backend/internal/context/session_memory.go:105-123` 与 `backend/internal/context/session_memory.go:145-202`。
 
 **推断**
 
-- `inMemoryCheckPointStore` 只适合测试或单进程临时 fallback；因为它是进程内 map，源码没有跨进程共享或持久化机制。依据是 `backend/internal/controller/chat/chat_v1.go:1691-1723`。
-- 当前生产入口不太可能走 nil Redis fallback；因为 `bootstrap.NewApplication` Redis Ping 失败会直接返回错误，`main.go` 会 `log.Fatalf`。依据是 `backend/internal/bootstrap/app.go:125-138` 与 `backend/main.go:95-111`。
+- `inMemoryCheckPointStore` 只适合测试或单进程临时 fallback；因为它是进程内 map，源码没有跨进程共享或持久化机制。依据是 `backend/internal/bootstrap/runtime.go:84-111` 与 `backend/internal/controller/chat/chat_v1.go:1752-1784`。
+- 当前生产入口不太可能走 nil Redis fallback；因为 `buildInfrastructureLayer` Redis Ping 失败会让 `bootstrap.NewApplication` 返回错误，`main.go` 会 `log.Fatalf`。依据是 `backend/internal/bootstrap/application_layers.go:63-78` 与 `backend/main.go:54-71`。
 
 **未知 / 后续可读**
 
@@ -237,5 +239,5 @@ flowchart TD
 - `checkpoint_id` 是在哪里生成的？它第一次进入 ADK Runner 的位置在哪里？
 - `/ai_ops_resume_stream` 为什么不需要 `session_id`，但 `/chat_resume_stream` 需要 `id`？
 - Redis 里 `oncall:checkpoint:*` 和 `aiagent:ctx:*` 分别代表什么？
-- 如果 Redis 不可用，当前 `main.go` 启动路径会怎样？`NewV1WithHooks` 的 in-memory fallback 又适合什么场景？
+- 如果 Redis 不可用，当前 `main.go` 启动路径会怎样？`RuntimeLayer` 和 `NewV1WithHooks` 各自保留的 in-memory fallback 又适合什么场景？
 - 为什么不能把 `ContextManager` 直接等同于 ADK checkpoint store？

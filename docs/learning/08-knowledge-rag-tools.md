@@ -1,7 +1,7 @@
-﻿# 08 知识检索、Hybrid RAG 与案例闭环：knowledge_retrieve / ops_case_retrieve 怎么工作
+# 08 知识检索、Hybrid RAG 与案例闭环：knowledge_retrieve / ops_case_retrieve 怎么工作
 
-> 本节继续保持同一写法：**数据结构跟着调用链讲**，不单独堆类型表。  
-> 目标：看懂知识从上传到入库，再到对话工具检索、AIOps 最终报告归档为案例的完整闭环。  
+> 本节继续保持同一写法：**数据结构跟着调用链讲**，不单独堆类型表。
+> 目标：看懂知识从上传到入库，再到对话工具检索、AIOps 最终报告归档为案例的完整闭环。
 > 日期：2026-08-19。
 
 ## 1. 本节目标
@@ -65,7 +65,7 @@ API 层的上传入口是 `/upload`，请求类型声明为 `multipart/form-data
 6. 把这个 JSON 作为一条 user message 发给 `knowledgeAgent.Run`，且 `EnableStreaming=false`。
 7. 消费 agent event，遇到 error 就返回 `knowledge upload failed`；最终返回文件名、虚拟路径和大小。
 
-证据在 `backend/internal/controller/chat/chat_v1.go:412-482`。
+证据在 `backend/internal/controller/chat/chat_v1.go:473-544`。
 
 这里的 `uploadInput` 就是在链路里被使用的数据形状：`Content` 是必填正文，`Title/Tags/Meta` 是可选字段。`KnowledgeUploadAgent.Run` 会调用 `parseUploadInput` 从最后一条 user message 中解析 JSON；如果不是 JSON，就把整段内容当正文，并从第一行推断标题。证据在 `backend/internal/knowledge/agent.go:23-38`、`backend/internal/knowledge/agent.go:72-108`、`backend/internal/knowledge/agent.go:114-175`。
 
@@ -135,7 +135,7 @@ NewOpsCaseRetrieveTool(opsCaseRetriever)
 ctx = rag.WithRewriteContext(ctx, rag.BuildRewriteInput(question, messages))
 ```
 
-再把 `messages` 发给 `chatStreamRunner.Run`。证据在 `backend/internal/controller/chat/chat_v1.go:202-218`。slash dialogue prompt 也有同样做法，证据在 `backend/internal/controller/chat/chat_v1.go:677-692`。
+再把 `messages` 发给 `chatStreamRunner.Run`。证据在 `backend/internal/controller/chat/chat_v1.go:263-292`。slash dialogue prompt 也有同样做法，证据在 `backend/internal/controller/chat/chat_v1.go:738-761`。
 
 `BuildRewriteInput` 会从 messages 中抽取 system summary 和最近 user/assistant turns：
 
@@ -228,6 +228,8 @@ go run ./cmd/ragctl eval --dataset testdata/rag_eval_gold.jsonl --profile all --
 
 但如果要证明线上 `knowledge_retrieve` 真的跑通 rewrite + Milvus + BM25 + fusion，需要启动服务和依赖，然后通过 dialogue tool 做 live smoke。`ragctl inspect` 本身不能证明这件事。
 
+同时要注意：当前 `backend/testdata/rag_eval_gold_corpus.jsonl` 是可运行的离线 fixture，但部分条目的 metadata 仍带旧 runbook `source_path`；仓库里没有对应的独立 runbook 文档。因此本节把 fixture 内容和 `backend/cmd/ragctl/main_test.go` 作为证据，不把旧 metadata path 当作现存文档。
+
 ## 13. 链路图
 
 源文件：`docs/learning/diagrams/10-knowledge-rag-flow.mmd`
@@ -285,7 +287,7 @@ flowchart TD
 
 **证据**
 
-- 上传入口 `/upload` 只允许文本/Markdown，控制器把内容包装为 JSON user message 后调用 `knowledgeAgent.Run`。见 `backend/internal/controller/chat/chat_v1.go:412-482`。
+- 上传入口 `/upload` 只允许文本/Markdown，控制器把内容包装为 JSON user message 后调用 `knowledgeAgent.Run`。见 `backend/internal/controller/chat/chat_v1.go:473-544`。
 - `knowledge_agent` 是上传专用，底层链路是临时 Markdown 文件 -> file loader -> markdown splitter -> Milvus indexer。见 `backend/internal/knowledge/agent.go:41-62` 与 `backend/internal/knowledge/orchestration.go:16-80`。
 - knowledge v2 chunks 写入前会补 `doc_id/chunk_id/source_type/content_hash`，Milvus 写入成功后尝试写 BM25 sidecar。见 `backend/internal/knowledge/indexer.go:33-84` 与 `backend/internal/knowledge/indexer.go:86-138`。
 - Dialogue agent 同时创建 `knowledge_retrieve` 和 `ops_case_retrieve`，Hybrid 开启时使用 v2 + legacy collection。见 `backend/internal/workflow/dialogue/agent.go:59-74` 与 `backend/internal/workflow/dialogue/agent.go:186-190`。
@@ -301,7 +303,7 @@ flowchart TD
 
 - 当前没有在本节做 live smoke，因此不能证明本机 Milvus、Embedding、reranker 服务实际可用；这里只证明源码链路。
 - `internal/ai/retriever` 和 `internal/ai/indexer` 的 Milvus schema、连接配置还没展开。下一轮如果继续深入，可以单独读“Milvus collection 与 embedding 适配层”。
-- `ragctl eval` 的 gold 数据质量边界可继续从 `docs/rag-operational-runbook.md` 和 `testdata/rag_eval_gold*.jsonl` 展开，但那属于 RAG 评估专题。
+- `ragctl eval` 的 gold 数据质量边界应以当前仓库里的 `backend/testdata/rag_eval_seed.jsonl`、`backend/testdata/rag_eval_gold.jsonl`、`backend/testdata/rag_eval_gold_corpus.jsonl` 和 `backend/cmd/ragctl/main_test.go` 为准；当前仓库没有独立的 RAG operational runbook 文档，所以不能把外部/旧 runbook 当作证据源。
 
 ## 15. 阅读检查清单
 

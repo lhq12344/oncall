@@ -1,0 +1,19 @@
+﻿---
+title: Milvus Embedding Schema Flow
+---
+flowchart LR
+  U[Upload content/json] --> A[KnowledgeUploadAgent]
+  A --> P[parseUploadInput\ncontent title tags meta]
+  P --> T[writeUploadToSource\ntemp .md]
+  T --> L[file_loader]
+  L --> S[markdown_splitter]
+  S --> I[milvus_indexer]
+  I --> E[Doubao/Ark embedding]
+  E --> V[[]float64 vectors]
+  V --> C[docConverterFloatVector\n[]float32]
+  C --> M[(Milvus collection)]
+  M --> F1[id VarChar PK]
+  M --> F2[vector FloatVector dim 2048]
+  M --> F3[content VarChar]
+  M --> F4[metadata JSON]
+  M --> R[Milvus retriever\ncontent metadata output]

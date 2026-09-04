@@ -1,8 +1,8 @@
-﻿# OnCall 项目重新学习计划
+# OnCall 项目重新学习计划
 
-> 版本：v0.1  
-> 日期：2026-08-18  
-> 目标：从“知道怎么跑起来”逐步过渡到“能解释核心链路、定位问题、修改关键模块并验证”。  
+> 版本：v0.1
+> 日期：2026-08-18
+> 目标：从“知道怎么跑起来”逐步过渡到“能解释核心链路、定位问题、修改关键模块并验证”。
 > 当前仓库结构基线：根目录拆成 `backend/` Go 后端、`frontend/` React/Vite 前端、`docs/` 学习与设计文档。
 
 ## 0. 对你原计划的评价
@@ -27,10 +27,15 @@ docs/learning/
   03-domain-model-glossary.md      # 核心术语、状态、数据结构
   04-ops-workflow.md               # AIOps / incident workflow 核心链路
   05-execution-plan-tools.md       # ExecutionPlan、审批、执行与回滚工具
-  06-knowledge-rag.md              # Knowledge / RAG / 检索链路
-  07-frontend-sse-ui.md            # 前端 SSE、审批交互、状态管理
-  08-build-test-debug.md           # 构建、测试、本地调试
-  09-pitfalls-and-open-questions.md# 踩坑、不解之处、后续问题
+  06-tool-gateway-permissions-resume.md # 工具网关、权限、恢复协议
+  07-checkpoint-session-memory.md  # checkpoint、session memory、恢复状态
+  08-knowledge-rag-tools.md        # Knowledge / RAG / 检索链路
+  09-frontend-sse-interrupts.md    # 前端 SSE、审批交互、状态管理
+  10-build-test-local-debug.md     # 构建、测试、本地调试
+  11-source-roadmap-pitfalls.md    # 源码阅读路线、踩坑、不解之处
+  12-second-round-questions.md     # 第二轮深挖问题池
+  13-20-*.md                       # 第二轮专题深挖：诊断门、Prompt、权限、RAG、前端 QA、Milvus、上下文压缩、最终报告归档
+  21-doc-truth-audit.md            # 文档真实性审计与后续补证项
 ```
 
 每篇笔记固定包含：
@@ -83,7 +88,7 @@ cmd /c npm run build
 
 1. **Client 层**：`frontend/`，React + Vite，负责聊天界面、SSE 消费、人工审批/恢复交互。
 2. **API/Gateway 层**：`backend/api/chat/v1/` 与 `backend/internal/controller/chat/`，负责 HTTP/SSE 接口与请求分发。
-3. **Application Bootstrap 层**：`backend/internal/bootstrap/`，集中初始化 DialogueAgent、OpsAgent、KnowledgeAgent、HookEngine、Redis/MySQL/ES 等依赖。
+3. **Application Bootstrap 层**：`backend/internal/bootstrap/`，通过 layer registry 按 Infrastructure、State、Agents、Runtime、Background 分层初始化并组合依赖。
 4. **Workflow 层**：`backend/internal/workflow/`，承载对话与 AIOps 主工作流。
 5. **Execution/Tools 层**：`backend/internal/execution/`、`backend/internal/toolkit/`，负责计划生成、校验、命令执行、工具注册与调用。
 6. **Knowledge/RAG 层**：`backend/internal/knowledge/`、`backend/internal/rag/`、`backend/internal/ai/`，负责知识检索、索引、向量/LLM 相关能力。
@@ -110,7 +115,7 @@ internal/bootstrap.Application
    +--> execution / toolkit
    |
    v
-utility: Redis / MySQL / ES / Config
+utility: Redis / MySQL / ES / Kubernetes / Config
 ```
 
 ## 4. 阶段三：入口与启动流程
@@ -127,9 +132,10 @@ utility: Redis / MySQL / ES / Config
 **需要拆解的问题**：
 
 - 配置从哪里读取？
-- Redis、MySQL、ES 如何初始化？
+- Redis、MySQL、ES 分别在哪个 bootstrap layer 初始化？
 - `bootstrap.NewApplication` 创建了哪些 Agent？
-- `chat.NewV1WithHooks` 绑定了哪些依赖？
+- `RuntimeLayer` 创建了哪些 runner/checkpoint/session/slash 运行时对象？
+- `chat.NewV1FromDeps` 绑定了哪些 controller 依赖？
 - `/api/v1/ai_ops_stream` 和 `/api/v1/ai_ops_resume_stream` 分别走哪条链路？
 - 没有 Redis 时 checkpoint 是否退化到内存实现？
 
@@ -299,7 +305,7 @@ cmd /c npm run dev
 - `backend/internal/context/`
 - `backend/internal/toolresult/`
 - `backend/internal/permissions/`
-- `backend/utility/config/`
+- `backend/utility/common/` 与 `backend/manifest/config/config.yaml`
 - `frontend/src/services/api.ts`
 
 目标：知道项目的基础类型、上下文、错误、权限、配置和 API 调用方式。
@@ -371,17 +377,17 @@ cmd /c npm run dev
 ### Day 6：读知识检索与 RAG
 
 - 看 `knowledge`、`rag`、`ai`、`toolkit`。
-- 输出 `06-knowledge-rag.md`。
+- 输出 `08-knowledge-rag-tools.md`。
 
 ### Day 7：读前端交互
 
 - 看 SSE、审批卡片、状态管理。
-- 输出 `07-frontend-sse-ui.md`。
+- 输出 `09-frontend-sse-interrupts.md`。
 
 ### Day 8：回头整理术语和坑
 
 - 补 `03-domain-model-glossary.md`。
-- 补 `09-pitfalls-and-open-questions.md`。
+- 补 `11-source-roadmap-pitfalls.md`，并把第二轮问题沉淀到 `12-second-round-questions.md`。
 - 列出下一轮要深挖的问题。
 
 ## 13. 第一轮学习的完成标准

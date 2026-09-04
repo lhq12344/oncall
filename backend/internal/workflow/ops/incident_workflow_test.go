@@ -184,6 +184,36 @@ func TestStateBridgeIncidentStageCapturesRCAAndProposal(t *testing.T) {
 	}
 }
 
+func TestParseRemediationProposalRejectsCommandsOnlyPayload(t *testing.T) {
+	t.Parallel()
+
+	msg := &schema.Message{Content: `{
+		"plan_id": "old_plan_1",
+		"summary": "legacy command plan",
+		"commands": [
+			{
+				"step": 1,
+				"goal": "check pod",
+				"command": "kubectl get pod api-0 -n infra",
+				"expected": "pod Running",
+				"read_only": true
+			}
+		],
+		"fallback_plan": "manual inspection"
+	}`}
+
+	if proposal, ok := parseRemediationProposal([]adk.Message{msg}); ok || proposal != nil {
+		t.Fatalf("commands-only payload crossed current remediation proposal contract: %#v", proposal)
+	}
+
+	state := &IncidentState{}
+	bridge := &stateBridgeAgent{stage: "incident"}
+	bridge.updateByStage(state, msg)
+	if state.RemediationProposalID != "" || len(state.RemediationProposalActions) != 0 || state.PlanID != "" {
+		t.Fatalf("legacy command plan should not update proposal state: %#v", state)
+	}
+}
+
 func TestStateBridgePlanStageCapturesCanonicalPlanState(t *testing.T) {
 	t.Parallel()
 
@@ -415,5 +445,18 @@ func TestStateBridgeExecutionStageCannotOverwriteCanonicalPlan(t *testing.T) {
 	}
 	if state.ExecutionStatus != "manual_required" || !strings.Contains(state.ExecutionReason, "execute_plan stage attempted") {
 		t.Fatalf("expected bridge to record boundary fact, status=%q reason=%q", state.ExecutionStatus, state.ExecutionReason)
+	}
+}
+
+func TestStateBridgeOldExecutionStageNameIsIgnored(t *testing.T) {
+	t.Parallel()
+
+	state := &IncidentState{}
+	msg := &schema.Message{Content: `{"execution_status":"success","success":true,"executed_steps":[{"step_id":1,"success":true}]}`}
+	bridge := &stateBridgeAgent{stage: "execution"}
+	bridge.updateByStage(state, msg)
+
+	if state.ExecutionStatus != "" || state.ExecutionSuccess || state.ExecutionStepCount != 0 || len(state.ExecutionExecutedSteps) != 0 {
+		t.Fatalf("old execution stage alias should not update state after Phase 13: %#v", state)
 	}
 }

@@ -1,7 +1,7 @@
-﻿# 04 AIOps 主工作流：三条分支读代码
+# 04 AIOps 主工作流：三条分支读代码
 
-> 本节继续沿用上一节约定：**数据结构不独立成小节堆表**，而是放在每个 workflow 节点的代码行为里讲。  
-> 目标：看懂 AIOps workflow 如何从诊断进入计划、审批、执行、验证、重规划和最终报告。  
+> 本节继续沿用上一节约定：**数据结构不独立成小节堆表**，而是放在每个 workflow 节点的代码行为里讲。
+> 目标：看懂 AIOps workflow 如何从诊断进入计划、审批、执行、验证、重规划和最终报告。
 > 日期：2026-08-19。
 
 ## 1. 本节目标
@@ -413,7 +413,7 @@ LoopStage 下一轮回到 incident_analysis
 
 - `diagnosis_gate` 具体如何判断 incident contract 足够，需要下一轮单独读 `diagnosis_gate.go` 更深处。
 - `execute_plan` 内部如何按 step 调 `execute_step` / `validate_result` / `rollback`，下一节 `05-execution-plan-tools.md` 继续拆。
-- `persistFinalOpsReport` 写入的报告是否会进入 RAG 索引，需要 `06-knowledge-rag.md` 验证。
+- `persistFinalOpsReport` 写入的报告是否会进入 RAG 索引，已在 `08-knowledge-rag-tools.md` 和 `20-final-report-archive-loop.md` 展开：源码显示它会先落盘到 `logs/ops_reports`，满足 eligibility 时再写 ops v2 Milvus/BM25；真实 Milvus 写入仍需要 live 环境 smoke 才能证明。
 
 ## 11. 下一节建议
 

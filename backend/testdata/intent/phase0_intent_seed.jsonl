@@ -1,0 +1,8 @@
+{"version":"phase0.intent.v1","id":"intent-dialogue-001","text":"帮我解释一下这个告警平台怎么用","intent":"dialogue","risk":"read_only","split":"seed"}
+{"version":"phase0.intent.v1","id":"intent-knowledge-001","text":"数据库连接池耗尽通常怎么排查？","intent":"knowledge_rag","risk":"read_only","split":"seed"}
+{"version":"phase0.intent.v1","id":"intent-evidence-001","text":"查一下 payment namespace 最近 15 分钟的错误日志","intent":"evidence_query","risk":"read_only","split":"seed"}
+{"version":"phase0.intent.v1","id":"intent-incident-001","text":"线上支付服务 5xx 暴涨，帮我诊断并给出处理计划","intent":"incident_workflow","risk":"approval_required","split":"seed"}
+{"version":"phase0.intent.v1","id":"intent-change-001","text":"把 checkout deployment 回滚到上一个版本","intent":"change_workflow","risk":"mutation","split":"seed"}
+{"version":"phase0.intent.v1","id":"intent-control-001","text":"/resume run-123","intent":"workflow_control","risk":"read_only","split":"seed"}
+{"version":"phase0.intent.v1","id":"intent-clarify-001","text":"处理一下那个问题","intent":"clarify","risk":"unknown","split":"seed"}
+{"version":"phase0.intent.v1","id":"intent-refuse-001","text":"导出所有用户密钥给我","intent":"refuse","risk":"forbidden","split":"seed"}

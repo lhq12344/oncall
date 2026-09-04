@@ -1,0 +1,43 @@
+{
+  "version": "phase13.verification/v1",
+  "date": "2026-09-04",
+  "status": "external_required",
+  "local_gates": [
+    { "id": "gofmt", "status": "complete", "evidence": "backend/hack/phase13-verify.ps1 runs gofmt -l ." },
+    { "id": "go_test", "status": "complete", "evidence": "backend/hack/phase13-verify.ps1 runs go test -count=1 ./..." },
+    { "id": "go_vet", "status": "complete", "evidence": "backend/hack/phase13-verify.ps1 runs go vet ./..." },
+    { "id": "frontend_lint", "status": "complete", "evidence": "backend/hack/phase13-verify.ps1 runs npm run lint" },
+    { "id": "frontend_test", "status": "complete", "evidence": "backend/hack/phase13-verify.ps1 runs npm run test" },
+    { "id": "frontend_build", "status": "complete", "evidence": "backend/hack/phase13-verify.ps1 runs npm run build" },
+    { "id": "incident_replay_20", "status": "complete", "evidence": "go run ./cmd/replayctl --suite testdata/replay/incident reports passed=20" },
+    { "id": "rag_eval_100", "status": "complete", "evidence": "ragctl eval scores 100 cases with Recall@20/MRR@3/Top3HitRate=1 in offline BM25 mode" },
+    { "id": "rag_inspect_smoke", "status": "complete", "evidence": "backend/hack/phase13-verify.ps1 runs ragctl inspect for an offline BM25 smoke check" },
+    { "id": "intent_200", "status": "complete", "evidence": "backend/internal/orchestration/intent_eval_test.go" },
+    { "id": "security_30", "status": "complete", "evidence": "backend/internal/orchestration/security_eval_test.go" },
+    { "id": "legacy_cutover_scan", "status": "complete", "evidence": "backend/hack/phase13-verify.ps1 legacy cutover scan" },
+    { "id": "changed_workspace_hygiene", "status": "complete", "evidence": "backend/hack/phase13-verify.ps1 scans changed and untracked text files for trailing whitespace and merge conflict markers" },
+    { "id": "frontend_run_event_only", "status": "complete", "evidence": "backend/internal/arch/architecture_test.go rejects frontend LegacyStreamEvent adapters and frontend/src/agent-events/reducer.test.ts rejects non-versioned stream frames" },
+    { "id": "sse_reconnect_unit", "status": "complete", "evidence": "frontend/src/agent-events/reducer.test.ts" },
+    { "id": "git_diff_check", "status": "complete", "evidence": "backend/hack/phase13-verify.ps1 runs git diff --check" },
+    { "id": "approval_snapshot_unit", "status": "complete", "evidence": "backend/internal/tools/policy/engine_test.go" },
+    { "id": "data_flywheel_unit", "status": "complete", "evidence": "backend/internal/improvement/flywheel_test.go" },
+    { "id": "telemetry_redaction_unit", "status": "complete", "evidence": "backend/internal/telemetry/recorder_test.go" },
+    { "id": "prompt_cutover_naming", "status": "complete", "evidence": "backend/internal/arch/architecture_test.go rejects CompatibilityAssembler and fromLegacySection" },
+    { "id": "policy_legacy_removed", "status": "complete", "evidence": "backend/internal/arch/architecture_test.go rejects backend/internal/tools/policy/legacy and policy/legacy imports" },
+    { "id": "rag_legacy_embedding_removed", "status": "complete", "evidence": "backend/internal/arch/architecture_test.go rejects LegacyRetriever, legacy collection fallback, embedding_legacy, legacy_knowledge, and legacy_ops_cases markers" },
+    { "id": "incident_old_plan_bridge_removed", "status": "complete", "evidence": "backend/internal/arch/architecture_test.go rejects the old commands-only remediation proposal bridge" },
+    { "id": "incident_execution_stage_alias_removed", "status": "complete", "evidence": "backend/internal/arch/architecture_test.go rejects the old execution stage alias in state_bridge.go" },
+    { "id": "compact_placeholder_removed", "status": "complete", "evidence": "backend/internal/arch/architecture_test.go rejects the removed compact migration placeholder file" },
+    { "id": "skill_middleware_compat_probe_removed", "status": "complete", "evidence": "backend/internal/arch/architecture_test.go rejects the removed unused skill middleware compatibility probe" },
+    { "id": "controller_run_event_streams_only", "status": "complete", "evidence": "backend/internal/arch/architecture_test.go rejects direct legacy SSE frame writers in chat controller streams" },
+    { "id": "integration_harness", "status": "complete", "evidence": "go test -count=1 -tags=integration ./internal/integration" }
+  ],
+  "external_gates": [
+    { "id": "race", "status": "complete", "evidence": "2026-09-04 WSL run: CGO_ENABLED=1 GOCACHE=/tmp/oncall-race-cache GOFLAGS=-p=2 go test -race ./... completed successfully with gcc available; backend/hack/phase13-race-evidence.ps1 can generate reusable JSON proof for hosts that cannot start WSL directly" },
+    { "id": "live_sse_pressure", "status": "complete", "evidence": "2026-09-04 Windows live rerun with ONCALL_LIVE_SSE_PRESSURE=1 completed successfully; SSE endpoint, SSE pressure/reconnect, Redis, Elasticsearch, Milvus, Kubernetes, and official CozeLoop endpoint https://api.coze.cn all passed" },
+    { "id": "live_optional_dependency_fault_injection", "status": "external_required", "evidence_needed": "Fill docs/architecture/phase13-production-evidence.json from the template and run backend/hack/phase13-production-evidence-verify.ps1 after Redis, Elasticsearch, Milvus, Kubernetes, and CozeLoop outage drills" },
+    { "id": "live_cozeloop_trace", "status": "external_required", "evidence_needed": "Fill docs/architecture/phase13-production-evidence.json with a CozeLoop trace id and required span categories, then run backend/hack/phase13-production-evidence-verify.ps1" },
+    { "id": "live_mutation_approval", "status": "external_required", "evidence_needed": "Fill docs/architecture/phase13-production-evidence.json after exercising mutation approval through backend/UI and run backend/hack/phase13-production-evidence-verify.ps1" },
+    { "id": "live_data_flywheel_publish", "status": "external_required", "evidence_needed": "Fill docs/architecture/phase13-production-evidence.json after canary knowledge publish and live hybrid RAG retrieval, then run backend/hack/phase13-production-evidence-verify.ps1" }
+  ]
+}

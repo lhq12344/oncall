@@ -10,19 +10,19 @@ logger:
   stdout: true
 
 ds_think_chat_model:
-  api_key: "sk-eHapaw8ZR7VJWAHwm76fmH2qwaxFeOQQv9kuuCJfws8V5A9O"
+  api_key: ""
   #base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  base_url: "http://newapi.200m.997555.xyz/v1"
+  base_url: "https://api.deepseek.com"
   #model: "doubao-seed-2-0-mini-260215"
-  model: "claude-sonnet-4-6-thinking"
+  model: "deepseek-v4-flash"
 
 ds_quick_chat_model:
-  api_key: "sk-eHapaw8ZR7VJWAHwm76fmH2qwaxFeOQQv9kuuCJfws8V5A9O"
-  base_url: "http://newapi.200m.997555.xyz/v1"
-  model: "claude-sonnet-4-6-thinking"
+  api_key: ""
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-v4-flash"
 
 doubao_embedding_model:
-  api_key: "c3b9d277-0f82-4ef0-970a-1f3b5607c861"
+  api_key: ""
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
   model: "doubao-embedding-vision-250615"  # Doubao Embedding vision-250615
   dimensions: 2048  # vision-250615 使用 2048 维度
@@ -32,18 +32,6 @@ redis:
   addr: "localhost:31029"
   db: 0
   dialTimeout: 2
-
-# MySQL数据库配置
-mysql:
-  dsn: "root:123456@tcp(localhost:30306)/orm_test?charset=utf8mb4&parseTime=True&loc=Local&timeout=3s&readTimeout=5s&writeTimeout=5s"
-  max_open_conns: 50
-  max_idle_conns: 10
-  conn_max_lifetime: "30m"
-  conn_max_idle_time: "5m"
-  ping_timeout: "3s"
-  prepare_stmt: true
-  log_level: "warn"
-  slow_threshold: "500ms"
 
 #web
 web_search:

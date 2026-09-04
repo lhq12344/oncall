@@ -1,21 +1,21 @@
-﻿# 02 启动流程、第一次请求追踪与核心结构分析
+# 02 启动流程、第一次请求追踪与核心结构分析
 
-> 对应 `00-learning-plan.md` 的阶段二：**Entry Point & Bootstrap / 第一次请求追踪**。  
-> 本篇重点不是泛泛描述，而是把启动流程、AIOps 首个请求、主要数据结构、关键函数逐一对上源码证据。  
+> 对应 `00-learning-plan.md` 的阶段二：**Entry Point & Bootstrap / 第一次请求追踪**。
+> 本篇重点不是泛泛描述，而是把启动流程、AIOps 首个请求、主要数据结构、关键函数逐一对上源码证据。
 > 日期：2026-08-18。
 
 ## 1. 本轮问题
 
 本轮要搞懂三件事：
 
-1. **程序从哪里启动？**  
-   入口是 `backend/main.go:24` 的 `main()`。
+1. **程序从哪里启动？**
+   入口是 `backend/main.go:20` 的 `main()`。
 
-2. **核心对象在哪里被组装？**  
-   应用容器是 `backend/internal/bootstrap/app.go:32` 的 `Application`，由 `NewApplication` 创建。
+2. **核心对象在哪里被组装？**
+   应用容器是 `backend/internal/bootstrap/app.go:29` 的 `Application`，由 `NewApplication` 通过 layer registry 分层创建。
 
-3. **第一次 AIOps 请求如何从前端进入后端 workflow？**  
-   前端通过 `frontend/src/services/api.ts:61` 的 `streamOps` 调用 `/ai_ops_stream`，后端由 `backend/internal/controller/chat/chat_v1.go:446` 的 `AIOpsStream` 接住，再交给 `opsStreamRunner.Run`。
+3. **第一次 AIOps 请求如何从前端进入后端 workflow？**
+   前端通过 `frontend/src/services/api.ts:61` 的 `streamOps` 调用 `/ai_ops_stream`，后端由 `backend/internal/controller/chat/chat_v1.go:546` 的 `AIOpsStream` 接住，再交给 `opsStreamRunner.Run`。
 
 ## 2. 启动流程总览
 
@@ -23,22 +23,16 @@
 backend/main.go:main
   -> load .env / ../.env
   -> read GoFrame config
-  -> init Redis memory
-  -> init MySQL
-  -> init optional Elasticsearch
   -> bootstrap.NewApplication
-      -> init logger
-      -> init HookEngine
-      -> init Redis client / RedisStorage / ContextManager
-      -> init chat model
-      -> init dialogue embedding
-      -> create DialogueAgent
-      -> create IntegratedOpsExecutor
-      -> create KnowledgeAgent
-      -> create IncidentWorkflowAgent
+      -> defaultLayerRegistry
+      -> infrastructure layer: logger / hooks / Redis / MySQL / optional ES / model / embedding
+      -> state layer: RedisStorage / ContextManager
+      -> agents layer: DialogueAgent / IntegratedOpsExecutor / KnowledgeAgent / IncidentWorkflowAgent
+      -> runtime layer: checkpoint store / SessionMemory / slash registry / chat+ops runners
+      -> background layer: optional PodLogShipper
       -> start background tasks
   -> g.Server().Group("/api").Group("/v1")
-  -> chat.NewV1WithHooks(...)
+  -> chat.NewV1FromDeps(ControllerDeps from app.Runtime)
   -> v1Group.Bind(chatController)
   -> server.SetPort(6872)
   -> server.Run()
@@ -53,27 +47,25 @@ sequenceDiagram
   autonumber
   participant Main as backend/main.go
   participant Env as .env / GoFrame Config
-  participant Infra as Redis / MySQL / ES
+  participant Registry as LayerRegistry
+  participant Infra as Infrastructure Layer
+  participant State as State Layer
   participant Boot as bootstrap.NewApplication
   participant Agents as Dialogue / Knowledge / Ops Agents
-  participant Ctrl as chat.NewV1WithHooks
+  participant Runtime as Runtime Layer
+  participant Ctrl as chat.NewV1FromDeps
   participant Server as GoFrame HTTP Server
 
   Main->>Env: load .env then ../.env
   Main->>Env: read redis / prometheus / kubeconfig / log_sync
-  Main->>Infra: init Redis memory
-  Main->>Infra: init MySQL
-  Main->>Infra: init optional Elasticsearch
   Main->>Boot: NewApplication(Config)
-  Boot->>Boot: init logger + hook engine
-  Boot->>Infra: create Redis client + context storage
-  Boot->>Agents: create DialogueAgent
-  Boot->>Agents: create IntegratedOpsExecutor
-  Boot->>Agents: create KnowledgeAgent
-  Boot->>Agents: create IncidentWorkflowAgent
+  Boot->>Registry: build infrastructure -> state -> agents -> runtime -> background
+  Registry->>Infra: logger + hooks + Redis + MySQL + optional ES + model + embedding
+  Registry->>State: ContextManager from RedisStorage
+  Registry->>Agents: Dialogue + IntegratedOps + Knowledge + IncidentWorkflow
+  Registry->>Runtime: checkpoint store + SessionMemory + slash registry + runners
   Boot-->>Main: Application
-  Main->>Ctrl: NewV1WithHooks(app dependencies)
-  Ctrl->>Ctrl: create checkpoint store + streaming runners
+  Main->>Ctrl: NewV1FromDeps(app.Runtime + app agents/hooks)
   Main->>Server: bind /api/v1 and listen on 6872
 ```
 
@@ -141,11 +133,11 @@ sequenceDiagram
 
 ### 6.1 `bootstrap.Config`
 
-位置：`backend/internal/bootstrap/app.go:44-58`
+位置：`backend/internal/bootstrap/app.go:60-77`
 
 | 字段 | 作用 | 学习重点 |
 | --- | --- | --- |
-| `RedisAddr` / `RedisPassword` / `RedisDB` | Redis 连接配置 | 后续影响 session、checkpoint、memory |
+| `RedisAddr` / `RedisPassword` / `RedisDB` / `RedisDialTimeout` | Redis 连接配置 | 后续影响 session、checkpoint、memory |
 | `LogLevel` | zap logger 级别 | 影响本地调试可见性 |
 | `PrometheusURL` | Prometheus 地址 | Ops 诊断工具的数据来源之一 |
 | `KubeConfig` | Kubernetes kubeconfig | 命令执行和集群诊断工具依赖 |
@@ -156,24 +148,31 @@ sequenceDiagram
 
 ### 6.2 `bootstrap.Application`
 
-位置：`backend/internal/bootstrap/app.go:24-33`
+位置：`backend/internal/bootstrap/app.go:29-47`
 
 | 字段 | 作用 | 下游使用 |
 | --- | --- | --- |
+| `Infra` | 基础设施 layer | Logger、HookEngine、Redis、MySQL、ES、模型、embedding |
+| `State` | 状态 layer | ContextManager |
+| `Agents` | Agent layer | Dialogue、Knowledge、Ops、IntegratedOpsExecutor |
+| `Runtime` | 运行时 layer | checkpoint、SessionMemory、slash registry、chat/ops runners |
+| `Background` | 后台任务 layer | PodLogShipper 等可选长任务 |
 | `ContextManager` | 会话上下文管理 | 后台任务、上下文存储 |
-| `DialogueAgent` | 普通聊天 Agent | 注入 `chat.NewV1WithHooks` |
+| `DialogueAgent` | 普通聊天 Agent | 兼容旧调用；生产路径通过 `Agents`/`Runtime` 注入 controller |
 | `KnowledgeAgent` | 知识上传/知识处理 Agent | 文件上传或知识功能使用 |
 | `OpsIntegration` | Ops 集成执行器 | 诊断工具/顺序工具查询相关 |
-| `OpsAgent` | AIOps workflow Agent | 注入 controller 后创建 `opsStreamRunner` |
+| `OpsAgent` | AIOps workflow Agent | 兼容旧调用；生产 runner 已在 `RuntimeLayer` 创建 |
 | `Logger` | zap logger | controller / agents 记录日志 |
-| `RedisClient` | Redis 客户端 | controller 创建 Redis checkpoint store |
+| `RedisClient` | Redis 客户端 | 兼容旧调用；生产 checkpoint store 已在 `RuntimeLayer` 创建 |
 | `HookEngine` | Hook 执行引擎 | controller 为 Agent runner 注入 callbacks |
 
-**理解**：`Application` 是本项目实际上的轻量 IoC 容器。它不只是“配置对象”，而是持有已初始化后的核心依赖。
+**理解**：`Application` 是本项目实际上的轻量 IoC 容器。新的主结构先按 layer 聚合依赖，再保留旧字段作为兼容入口，避免 controller 和 `main.go` 重新知道 Redis/MySQL/ES/runner 的细节。
 
 ### 6.3 `ControllerV1`
 
 位置：`backend/internal/controller/chat/chat_v1.go:43-56`
+
+生产入口的注入结构是 `ControllerDeps`，位置：`backend/internal/controller/chat/chat_v1.go:61-74`。
 
 | 字段 | 作用 | 为什么重要 |
 | --- | --- | --- |
@@ -189,7 +188,7 @@ sequenceDiagram
 | `knowledgeAgent` | 知识 agent | 上传知识时使用 |
 | `hookEngine` | Hook engine | run/resume 时注入 callbacks |
 
-**理解**：`ControllerV1` 是“HTTP/SSE 边界层 + Agent Runner 持有者”。它不实现底层诊断逻辑，但决定如何把请求接入 Agent、如何把 AgentEvent 转换成前端 SSE 协议。
+**理解**：`ControllerV1` 是 HTTP/SSE 边界层。生产路径通过 `NewV1FromDeps` 接收预构造 runner、checkpoint/session/slash 等运行时对象；兼容路径 `NewV1WithHooks` 仍可从旧参数创建这些运行时对象。
 
 ### 6.4 AIOps API 请求结构
 
@@ -211,7 +210,9 @@ sequenceDiagram
 位置：
 
 - Redis 实现：`backend/internal/context/checkpoint_store.go:11-43`
-- 内存 fallback：`backend/internal/controller/chat/chat_v1.go:1590-1622`
+- 生产运行时选择：`backend/internal/bootstrap/runtime.go:18-65`
+- 生产内存 fallback：`backend/internal/bootstrap/runtime.go:84-111`
+- 兼容构造器内存 fallback：`backend/internal/controller/chat/chat_v1.go:1752-1784`
 
 | 类型 | 作用 | 关键行为 |
 | --- | --- | --- |
@@ -252,60 +253,52 @@ sequenceDiagram
 
 ### 7.1 `main()`
 
-位置：`backend/main.go:24-136`
+位置：`backend/main.go:20-104`
 
 职责：
 
 1. 加载 `.env`，优先当前目录，失败后尝试 `../.env`。
 2. 读取 GoFrame config：Redis、Prometheus、KubeConfig、log sync、hooks config。
-3. 初始化 Redis memory、MySQL、可选 Elasticsearch。
-4. 调用 `bootstrap.NewApplication` 创建核心依赖。
+3. 把 Redis、Prometheus、KubeConfig、log sync、hooks config 组装成 `bootstrap.Config`。
+4. 调用 `bootstrap.NewApplication`，由 bootstrap layer registry 创建基础设施、状态、Agent、运行时和后台任务。
 5. 创建 GoFrame server，挂载 middleware。
-6. 在 `/api/v1` 下绑定 `chat.NewV1WithHooks(...)`。
+6. 在 `/api/v1` 下用 `chat.NewV1FromDeps(...)` 绑定 controller，依赖主要来自 `app.Runtime`。
 7. 监听端口 `6872`。
 
 判断：`main()` 只负责“进程启动和路由注册”，不承载业务逻辑。
 
 ### 7.2 `bootstrap.NewApplication(cfg)`
 
-位置：`backend/internal/bootstrap/app.go:100-214`
+位置：`backend/internal/bootstrap/app.go:104-117`
+
+layer 注册位置：`backend/internal/bootstrap/application_layers.go:24-31`
 
 职责：
 
-1. 创建 logger。
-2. 加载并初始化 HookEngine。
-3. 创建 Redis client，并 Ping 检查连接。
-4. 初始化 `mem` 工具、Redis storage、ContextManager。
-5. 初始化 chat model 和 dialogue embedding。
-6. 创建 `DialogueAgent`。
-7. 创建 `IntegratedOpsExecutor`，失败时降级。
-8. 创建 `KnowledgeAgent`。
-9. 创建 `IncidentWorkflowAgent`。
-10. 可选创建 `PodLogShipper`。
-11. 启动后台任务。
-12. 返回 `Application`。
+1. 创建 `Assembly{Config, App}`。
+2. 调用 `defaultLayerRegistry().Build(...)`，按固定顺序构建 `infrastructure -> state -> agents -> runtime -> background`。
+3. 若存在 state/background layer，启动后台迁移和 Pod 日志同步任务。
+4. 返回已填充 layer 字段和兼容字段的 `Application`。
 
-判断：这里是依赖装配中心。后续你要查“某个 Agent 是在哪里来的”，优先看这个函数。
+判断：`NewApplication` 现在是分层装配入口，不再把 Redis、MySQL、ES、Agent、runner 的细节堆在一个长函数里。查具体依赖来源时先看 layer 函数：`buildInfrastructureLayer`、`buildStateLayer`、`buildAgentLayer`、`buildRuntimeLayer`、`buildBackgroundLayer`。
 
-### 7.3 `chat.NewV1WithHooks(...)`
+### 7.3 `chat.NewV1FromDeps(...)` / `NewV1WithHooks(...)`
 
-位置：`backend/internal/controller/chat/chat_v1.go:78-128`
+生产入口位置：`backend/internal/controller/chat/chat_v1.go:163-190`
+
+兼容入口位置：`backend/internal/controller/chat/chat_v1.go:105-152`
 
 职责：
 
-1. 创建 `ControllerV1`。
-2. 设置默认 root agent 名称。
-3. 创建 `SessionMemory` 和 slash registry。
-4. 如果有 Redis，则用 `NewRedisCheckPointStore(redisClient, "oncall", 24*time.Hour)`。
-5. 否则用 `newInMemoryCheckPointStore()`。
-6. 如果 `dialogueAgent` 存在，创建 `chatStreamRunner`。
-7. 如果 `opsAgent` 存在，创建 `opsStreamRunner`。
+1. `NewV1FromDeps` 只接收已构造好的 controller 运行时依赖，并补默认 root agent name、workDir、SessionMemory、SlashRegistry。
+2. `NewV1WithHooks` 保留旧签名：从 agent + redisClient 创建 checkpoint store、chat/ops runner、SessionMemory、SlashRegistry，再转调 `NewV1FromDeps`。
+3. `main.go` 现在走 `NewV1FromDeps`，runner/checkpoint/slash/session 的生产创建点是 `RuntimeLayer`。
 
-判断：这是 HTTP 层到 ADK runner 层的桥。没有这里，`AIOpsStream` 就没有可运行的 `opsStreamRunner`。
+判断：这是 transport seam。Controller 不应该再知道 Redis/MySQL/ES 如何初始化，只消费运行时对象并负责 HTTP/SSE 协议转换。
 
 ### 7.4 `ControllerV1.AIOpsStream`
 
-位置：`backend/internal/controller/chat/chat_v1.go:446-515`
+位置：`backend/internal/controller/chat/chat_v1.go:546-617`
 
 职责：
 
@@ -327,7 +320,7 @@ sequenceDiagram
 
 ### 7.5 `ControllerV1.AIOpsResumeStream`
 
-位置：`backend/internal/controller/chat/chat_v1.go:518-586`
+位置：`backend/internal/controller/chat/chat_v1.go:618-737`
 
 职责：
 
@@ -341,7 +334,7 @@ sequenceDiagram
 
 ### 7.6 `agentRunOptions` / `resumeRunOptions`
 
-位置：`backend/internal/controller/chat/chat_v1.go:860-886`
+位置：`backend/internal/controller/chat/chat_v1.go:960-988`
 
 职责：
 
@@ -358,7 +351,7 @@ sequenceDiagram
 
 ### 7.7 `resumeAgent`
 
-位置：`backend/internal/controller/chat/chat_v1.go:927-967`
+位置：`backend/internal/controller/chat/chat_v1.go:1027-1068`
 
 职责：
 
@@ -373,7 +366,7 @@ sequenceDiagram
 
 ### 7.8 `setupSSE` / `writeSSEData` / `writeSSEPayload`
 
-位置：`backend/internal/controller/chat/chat_v1.go:1197-1253`
+位置：`backend/internal/controller/chat/chat_v1.go:1258-1411`
 
 职责：
 
@@ -393,7 +386,7 @@ sequenceDiagram
 
 ### 7.9 `withSSEWorkflow`
 
-位置：`backend/internal/controller/chat/chat_v1.go:1167-1178`
+位置：`backend/internal/controller/chat/chat_v1.go:1302-1313`
 
 职责：
 
@@ -404,7 +397,7 @@ sequenceDiagram
 
 ### 7.10 `buildResumeTargetPayload`
 
-位置：`backend/internal/controller/chat/chat_v1.go:1461-1475`
+位置：`backend/internal/controller/chat/chat_v1.go:1617-1633`
 
 职责：
 
@@ -466,7 +459,7 @@ sequenceDiagram
 
 ## 9. 这一步需要记住的核心结论
 
-- `main()` 是进程入口，`NewApplication` 是依赖装配中心，`NewV1WithHooks` 是 HTTP Controller 和 ADK runner 的桥。
+- `main()` 是进程入口，`NewApplication` 是分层依赖装配中心，`RuntimeLayer + NewV1FromDeps` 是 HTTP Controller 和 ADK runner 的桥。
 - AIOps 首次请求没有从前端传用户问题，而是后端使用固定 `opsDiagnosticPrompt`。
 - `checkpoint_id` 是中断恢复的主键；首次请求生成，interrupt 下发，resume 回传。
 - 后端把 ADK `AgentEvent` 转成统一 SSE JSON；前端只理解 SSE JSON 协议，不理解后端 workflow 内部细节。

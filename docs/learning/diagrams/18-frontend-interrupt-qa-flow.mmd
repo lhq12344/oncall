@@ -1,0 +1,32 @@
+﻿---
+title: Frontend Interrupt Resume QA Flow
+---
+sequenceDiagram
+  participant B as Backend SSE
+  participant API as services/api.ts
+  participant S as Zustand Store
+  participant C as InterruptCard
+  participant R as Resume Endpoint
+
+  B->>API: data: {type: interrupt, checkpoint_id, interrupt_contexts, bash_request/detail_request}
+  API->>API: mapInterruptData(raw)
+  API->>S: onInterrupt(InterruptData)
+  alt Chat
+    S->>S: updateLastMessage(... interrupt)
+  else Ops
+    S->>S: updateOpsStep(... interrupt)
+  end
+  S->>C: render card
+  C->>C: require checkpoint_id
+  C->>C: require interrupt_ids from contexts
+  alt approve / reject / resolved
+    C->>R: {approved, resolved, interrupt_ids}
+  else detail selection
+    C->>R: {selection_value, interrupt_ids}
+  end
+  alt resumeViaOps
+    R->>B: POST /ai_ops_resume_stream {checkpoint_id,...payload}
+  else chat
+    R->>B: POST /chat_resume_stream {id, checkpoint_id,...payload}
+  end
+  B-->>API: resumed SSE stream

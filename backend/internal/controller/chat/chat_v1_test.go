@@ -6,7 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"go_agent/internal/slash"
+	"go_agent/internal/commands/slash"
+	appcontext "go_agent/internal/context"
 
 	"github.com/cloudwego/eino/schema"
 )
@@ -139,5 +140,36 @@ func TestBuildTrustedCommandActionPayload(t *testing.T) {
 	}
 	if payload["scope"] != "current" {
 		t.Fatalf("scope=%v, want current", payload["scope"])
+	}
+}
+
+func TestNewV1FromDepsUsesPrebuiltRuntime(t *testing.T) {
+	t.Parallel()
+
+	registry := slash.NewRegistry()
+	memory := appcontext.NewSessionMemory(nil, nil)
+
+	ctrl := NewV1FromDeps(ControllerDeps{
+		RootAgentName:    "dialogue-runtime",
+		OpsRootAgentName: "ops-runtime",
+		SessionMemory:    memory,
+		SlashRegistry:    registry,
+		WorkDir:          "D:/tmp/oncall-runtime",
+	})
+
+	if ctrl.rootAgentName != "dialogue-runtime" {
+		t.Fatalf("rootAgentName=%q, want dialogue-runtime", ctrl.rootAgentName)
+	}
+	if ctrl.opsRootAgentName != "ops-runtime" {
+		t.Fatalf("opsRootAgentName=%q, want ops-runtime", ctrl.opsRootAgentName)
+	}
+	if ctrl.sessionMemory != memory {
+		t.Fatal("controller did not use injected session memory")
+	}
+	if ctrl.slashRegistry != registry {
+		t.Fatal("controller did not use injected slash registry")
+	}
+	if ctrl.workDir != "D:/tmp/oncall-runtime" {
+		t.Fatalf("workDir=%q, want injected workDir", ctrl.workDir)
 	}
 }

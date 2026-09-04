@@ -1,0 +1,75 @@
+{
+  "version": "phase13.production.evidence/v1",
+  "date": "2026-09-04",
+  "status": "external_required",
+  "gates": [
+    {
+      "id": "live_optional_dependency_fault_injection",
+      "status": "external_required",
+      "evidence_needed": "Fill drills for redis, elasticsearch, milvus, kubernetes, and cozeloop. Each drill must show degraded behavior was observed and unrelated capabilities stayed available.",
+      "drills": [
+        {
+          "component": "redis",
+          "observed_degraded": false,
+          "unrelated_capabilities_available": false,
+          "evidence_ref": "connectivity precheck endpoint: 10.98.198.63:31029; outage drill still required"
+        },
+        {
+          "component": "elasticsearch",
+          "observed_degraded": false,
+          "unrelated_capabilities_available": false,
+          "evidence_ref": "connectivity precheck endpoint: 10.98.198.63:30920; outage drill still required"
+        },
+        {
+          "component": "milvus",
+          "observed_degraded": false,
+          "unrelated_capabilities_available": false,
+          "evidence_ref": "connectivity precheck endpoint: 10.98.198.63:31953; outage drill still required"
+        },
+        {
+          "component": "kubernetes",
+          "observed_degraded": false,
+          "unrelated_capabilities_available": false,
+          "evidence_ref": "connectivity precheck endpoint: 10.98.198.63:6443; outage drill still required"
+        },
+        {
+          "component": "cozeloop",
+          "observed_degraded": false,
+          "unrelated_capabilities_available": false,
+          "evidence_ref": "connectivity precheck endpoint: https://api.coze.cn; outage drill still required"
+        }
+      ]
+    },
+    {
+      "id": "live_cozeloop_trace",
+      "status": "external_required",
+      "evidence_needed": "Fill a real CozeLoop/OTLP trace containing model, rag, tool, workflow, error, token, and cost span evidence.",
+      "trace_id": "",
+      "endpoint": "https://api.coze.cn",
+      "span_categories": []
+    },
+    {
+      "id": "live_mutation_approval",
+      "status": "external_required",
+      "evidence_needed": "Exercise mutation approval through the running backend/UI and prove stale plan revision, target, args, and snapshot hash are rejected.",
+      "backend_ui_path": false,
+      "matching_approval_allowed": false,
+      "stale_plan_revision_rejected": false,
+      "changed_target_rejected": false,
+      "changed_args_rejected": false,
+      "changed_snapshot_hash_rejected": false,
+      "evidence_ref": ""
+    },
+    {
+      "id": "live_data_flywheel_publish",
+      "status": "external_required",
+      "evidence_needed": "Publish a canary knowledge item and prove live hybrid RAG retrieves it after publish with rollback version preserved.",
+      "canary_knowledge_id": "",
+      "staging_eval_passed": false,
+      "canary_published": false,
+      "retrieved_after_publish": false,
+      "rollback_version": "",
+      "evidence_ref": ""
+    }
+  ]
+}

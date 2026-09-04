@@ -1,0 +1,24 @@
+﻿---
+title: Context Compact Memory Flow
+---
+flowchart TD
+  Request[Chat request] --> SM[SessionMemory.BuildMessages]
+  SM --> RedisGet[mem.GetMessagesForRequest]
+  RedisGet --> Keys[(Redis\nsys / summary / turns / meta)]
+  Keys --> Budget[Trim turns to token budget]
+  Budget --> Messages[sys + summary + turns + current user]
+  Messages --> ADK[ADK run]
+  ADK --> Before[compact.Middleware\nBeforeModelRewriteState]
+  Before --> ToolBudget[toolresult.Apply\nspill large outputs]
+  ToolBudget --> Manage[manageMessages\nsoft/hard threshold]
+  Manage -->|under soft| Model[Model call]
+  Manage -->|over threshold| Summary[summary model\ncompress prefix]
+  Summary --> Model
+  Manage -->|hard + summary failed| Drop[forceDropOldest note]
+  Drop --> Model
+  Model --> After[AfterModelRewriteState\nrecord prompt usage]
+  ADK --> Answer[assistant answer]
+  Answer --> Save[SessionMemory.SaveTurn]
+  Save --> Set[mem.SetMessages]
+  Set --> CompactHist[mem.CompactHistory\nold turns -> summary]
+  CompactHist --> Keys

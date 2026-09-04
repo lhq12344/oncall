@@ -2,7 +2,6 @@ package ops
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
@@ -13,15 +12,10 @@ import (
 	"sync"
 	"time"
 
-	es "go_agent/utility/elasticsearch"
+	es "go_agent/internal/adapters/elasticsearch"
+	k8sclient "go_agent/internal/adapters/kubernetes"
 
-	"github.com/elastic/go-elasticsearch/v8"
 	"go.uber.org/zap"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 const (
@@ -46,7 +40,8 @@ type PodLogShipperConfig struct {
 
 // PodLogShipper 负责周期性抓取 K8s Pod 日志并写入 Elasticsearch。
 type PodLogShipper struct {
-	client      *kubernetes.Clientset
+	client      *k8sclient.PodLogReader
+	esClient    *es.Client
 	logger      *zap.Logger
 	namespaces  []string
 	interval    time.Duration
@@ -63,17 +58,9 @@ type podLogDocument struct {
 	Body  map[string]interface{}
 }
 
-type podLogContainer struct {
-	Name string
-	Type string
-}
+type podLogContainer = k8sclient.PodLogContainer
 
-type podLogMetadata struct {
-	App       string
-	Workload  string
-	OwnerKind string
-	OwnerName string
-}
+type podLogMetadata = k8sclient.PodLogMetadata
 
 // NewPodLogShipper 创建 Pod 日志同步器。
 // 输入：PodLogShipperConfig。
@@ -83,7 +70,7 @@ func NewPodLogShipper(cfg *PodLogShipperConfig) (*PodLogShipper, error) {
 		return nil, fmt.Errorf("pod log shipper config is required")
 	}
 
-	client, err := newKubernetesClientset(cfg.KubeConfig)
+	client, err := k8sclient.NewPodLogReader(cfg.KubeConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +93,7 @@ func NewPodLogShipper(cfg *PodLogShipperConfig) (*PodLogShipper, error) {
 
 	return &PodLogShipper{
 		client:        client,
+		esClient:      es.NewLazyClient(),
 		logger:        cfg.Logger,
 		namespaces:    namespaces,
 		interval:      interval,
@@ -146,8 +134,15 @@ func (s *PodLogShipper) CollectOnce(ctx context.Context) error {
 		return fmt.Errorf("pod log shipper is nil")
 	}
 
-	esClient := es.GetElasticsearch()
+	esClient := s.esClient
 	if esClient == nil {
+		esClient = es.NewLazyClient()
+		s.esClient = esClient
+	}
+	if err := esClient.Ensure(ctx); err != nil {
+		return err
+	}
+	if !esClient.Available() {
 		return fmt.Errorf("elasticsearch client not initialized")
 	}
 
@@ -160,19 +155,19 @@ func (s *PodLogShipper) CollectOnce(ctx context.Context) error {
 	totalPods := 0
 
 	for _, namespace := range namespaces {
-		pods, err := s.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+		pods, err := s.client.ListPods(ctx, namespace)
 		if err != nil {
-			return fmt.Errorf("list pods in namespace %s failed: %w", namespace, err)
+			return err
 		}
 
-		for i := range pods.Items {
+		for i := range pods {
 			totalPods++
-			count, collectErr := s.collectPodLogs(ctx, esClient, &pods.Items[i])
+			count, collectErr := s.collectPodLogs(ctx, esClient, &pods[i])
 			if collectErr != nil {
 				if s.logger != nil {
 					s.logger.Warn("collect pod logs failed",
 						zap.String("namespace", namespace),
-						zap.String("pod", pods.Items[i].Name),
+						zap.String("pod", pods[i].Name),
 						zap.Error(collectErr))
 				}
 				continue
@@ -208,39 +203,21 @@ func (s *PodLogShipper) collectAndLog(ctx context.Context) {
 // 输入：ctx。
 // 输出：命名空间列表和错误。
 func (s *PodLogShipper) resolveNamespaces(ctx context.Context) ([]string, error) {
-	if len(s.namespaces) == 1 && s.namespaces[0] == "*" {
-		list, err := s.client.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("list namespaces failed: %w", err)
-		}
-		namespaces := make([]string, 0, len(list.Items))
-		for _, item := range list.Items {
-			namespaces = append(namespaces, item.Name)
-		}
-		return namespaces, nil
-	}
-
-	return append([]string(nil), s.namespaces...), nil
+	return s.client.ResolveNamespaces(ctx, s.namespaces)
 }
 
 // collectPodLogs 采集单个 Pod 下所有容器日志并写入 Elasticsearch。
 // 输入：ctx、ES 客户端、Pod 对象。
 // 输出：写入文档数量和错误。
-func (s *PodLogShipper) collectPodLogs(ctx context.Context, esClient *elasticsearch.Client, pod *corev1.Pod) (int, error) {
+func (s *PodLogShipper) collectPodLogs(ctx context.Context, esClient *es.Client, pod *k8sclient.PodLogTarget) (int, error) {
 	if pod == nil {
 		return 0, nil
 	}
 
-	metadata, err := s.resolvePodLogMetadata(ctx, pod)
-	if err != nil && s.logger != nil {
-		s.logger.Debug("resolve pod log metadata failed",
-			zap.String("namespace", pod.Namespace),
-			zap.String("pod", pod.Name),
-			zap.Error(err))
-	}
+	metadata := pod.Metadata
 
 	total := 0
-	for _, container := range podContainersForLogging(pod) {
+	for _, container := range pod.Containers {
 		count, err := s.collectContainerLogs(ctx, esClient, pod, container, metadata)
 		if err != nil {
 			if shouldIgnorePodLogError(err) {
@@ -257,21 +234,15 @@ func (s *PodLogShipper) collectPodLogs(ctx context.Context, esClient *elasticsea
 // collectContainerLogs 采集单个容器日志并写入 Elasticsearch。
 // 输入：ctx、ES 客户端、Pod、容器描述。
 // 输出：写入文档数量和错误。
-func (s *PodLogShipper) collectContainerLogs(ctx context.Context, esClient *elasticsearch.Client, pod *corev1.Pod, container podLogContainer, metadata podLogMetadata) (int, error) {
+func (s *PodLogShipper) collectContainerLogs(ctx context.Context, esClient *es.Client, pod *k8sclient.PodLogTarget, container podLogContainer, metadata podLogMetadata) (int, error) {
 	key := buildPodLogStateKey(pod, container)
-	logOptions := &corev1.PodLogOptions{
-		Container:  container.Name,
-		Timestamps: true,
-	}
-
+	var since *time.Time
+	tailLines := s.tailLines
 	if lastSeen, ok := s.getLastCollected(key); ok {
-		logOptions.SinceTime = &metav1.Time{Time: lastSeen}
-	} else {
-		tailLines := s.tailLines
-		logOptions.TailLines = &tailLines
+		since = &lastSeen
 	}
 
-	stream, err := s.client.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, logOptions).Stream(ctx)
+	stream, err := s.client.StreamPodLogs(ctx, *pod, container, since, tailLines)
 	if err != nil {
 		return 0, err
 	}
@@ -299,7 +270,7 @@ func (s *PodLogShipper) collectContainerLogs(ctx context.Context, esClient *elas
 // readPodLogDocuments 解析日志流并构造待写入 Elasticsearch 的文档集合。
 // 输入：日志流、Pod、容器描述。
 // 输出：文档列表、最大时间戳、错误。
-func (s *PodLogShipper) readPodLogDocuments(reader io.Reader, pod *corev1.Pod, container podLogContainer, metadata podLogMetadata) ([]podLogDocument, time.Time, error) {
+func (s *PodLogShipper) readPodLogDocuments(reader io.Reader, pod *k8sclient.PodLogTarget, container podLogContainer, metadata podLogMetadata) ([]podLogDocument, time.Time, error) {
 	scanner := bufio.NewScanner(reader)
 	buffer := make([]byte, 0, 64*1024)
 	scanner.Buffer(buffer, podLogScannerBufferSize)
@@ -332,84 +303,16 @@ func (s *PodLogShipper) readPodLogDocuments(reader io.Reader, pod *corev1.Pod, c
 // bulkIndexDocuments 批量写入 Elasticsearch。
 // 输入：ctx、ES 客户端、文档列表。
 // 输出：错误。
-func (s *PodLogShipper) bulkIndexDocuments(ctx context.Context, esClient *elasticsearch.Client, documents []podLogDocument) error {
-	for start := 0; start < len(documents); start += podLogBulkBatchSize {
-		end := start + podLogBulkBatchSize
-		if end > len(documents) {
-			end = len(documents)
-		}
-		if err := s.bulkIndexBatch(ctx, esClient, documents[start:end]); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// bulkIndexBatch 写入一批 Elasticsearch 文档。
-// 输入：ctx、ES 客户端、文档批次。
-// 输出：错误。
-func (s *PodLogShipper) bulkIndexBatch(ctx context.Context, esClient *elasticsearch.Client, documents []podLogDocument) error {
-	var body bytes.Buffer
-	encoder := json.NewEncoder(&body)
-
+func (s *PodLogShipper) bulkIndexDocuments(ctx context.Context, esClient *es.Client, documents []podLogDocument) error {
+	bulkDocuments := make([]es.BulkDocument, 0, len(documents))
 	for _, document := range documents {
-		meta := map[string]map[string]string{
-			"index": {
-				"_index": document.Index,
-				"_id":    document.ID,
-			},
-		}
-		if err := encoder.Encode(meta); err != nil {
-			return fmt.Errorf("encode bulk meta failed: %w", err)
-		}
-		if err := encoder.Encode(document.Body); err != nil {
-			return fmt.Errorf("encode bulk document failed: %w", err)
-		}
+		bulkDocuments = append(bulkDocuments, es.BulkDocument{
+			Index: document.Index,
+			ID:    document.ID,
+			Body:  document.Body,
+		})
 	}
-
-	res, err := esClient.Bulk(
-		bytes.NewReader(body.Bytes()),
-		esClient.Bulk.WithContext(ctx),
-		esClient.Bulk.WithRefresh("false"),
-	)
-	if err != nil {
-		return fmt.Errorf("bulk index request failed: %w", err)
-	}
-	defer res.Body.Close()
-
-	if res.IsError() {
-		return fmt.Errorf("bulk index returned error: %s", res.String())
-	}
-
-	var response struct {
-		Errors bool `json:"errors"`
-		Items  []map[string]struct {
-			Status int `json:"status"`
-			Error  struct {
-				Reason string `json:"reason"`
-				Type   string `json:"type"`
-			} `json:"error"`
-		} `json:"items"`
-	}
-	if err := json.NewDecoder(res.Body).Decode(&response); err != nil {
-		return fmt.Errorf("decode bulk response failed: %w", err)
-	}
-
-	if !response.Errors {
-		return nil
-	}
-
-	for _, item := range response.Items {
-		for _, result := range item {
-			if result.Status < 300 {
-				continue
-			}
-			return fmt.Errorf("bulk item failed: %s (%s)", strings.TrimSpace(result.Error.Reason), strings.TrimSpace(result.Error.Type))
-		}
-	}
-
-	return fmt.Errorf("bulk index failed with unknown item error")
+	return esClient.BulkIndexDocuments(ctx, bulkDocuments, podLogBulkBatchSize)
 }
 
 // getLastCollected 读取容器最后一次采集到的时间戳。
@@ -473,61 +376,8 @@ func normalizeNamespaces(namespaces []string) []string {
 
 // newKubernetesClientset 创建 Kubernetes ClientSet。
 // 输入：kubeconfig 路径。
-// 输出：ClientSet 和错误。
-func newKubernetesClientset(kubeconfig string) (*kubernetes.Clientset, error) {
-	var config *rest.Config
-	var err error
 
-	if strings.TrimSpace(kubeconfig) != "" {
-		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-		if err != nil {
-			config, err = rest.InClusterConfig()
-			if err != nil {
-				return nil, fmt.Errorf("build k8s config failed: %w", err)
-			}
-		}
-	} else {
-		config, err = rest.InClusterConfig()
-		if err != nil {
-			return nil, fmt.Errorf("build in-cluster k8s config failed: %w", err)
-		}
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("create k8s client failed: %w", err)
-	}
-	return clientset, nil
-}
-
-// podContainersForLogging 返回需要采集日志的容器集合。
-// 输入：Pod 对象。
-// 输出：容器描述列表。
-func podContainersForLogging(pod *corev1.Pod) []podLogContainer {
-	if pod == nil {
-		return nil
-	}
-
-	containers := make([]podLogContainer, 0, len(pod.Spec.InitContainers)+len(pod.Spec.Containers))
-	for _, container := range pod.Spec.InitContainers {
-		containers = append(containers, podLogContainer{
-			Name: container.Name,
-			Type: "init",
-		})
-	}
-	for _, container := range pod.Spec.Containers {
-		containers = append(containers, podLogContainer{
-			Name: container.Name,
-			Type: "app",
-		})
-	}
-	return containers
-}
-
-// buildPodLogStateKey 构造容器日志采集状态键。
-// 输入：Pod、容器描述。
-// 输出：状态键。
-func buildPodLogStateKey(pod *corev1.Pod, container podLogContainer) string {
+func buildPodLogStateKey(pod *k8sclient.PodLogTarget, container podLogContainer) string {
 	if pod == nil {
 		return ""
 	}
@@ -638,7 +488,7 @@ func normalizeLogLevel(level string) string {
 // buildPodLogDocument 构造 Elasticsearch 文档。
 // 输入：索引前缀、Pod、容器描述、时间、消息、级别、原始日志。
 // 输出：待写入的 ES 文档对象。
-func buildPodLogDocument(indexPrefix string, pod *corev1.Pod, container podLogContainer, metadata podLogMetadata, timestamp time.Time, message, level, raw string) podLogDocument {
+func buildPodLogDocument(indexPrefix string, pod *k8sclient.PodLogTarget, container podLogContainer, metadata podLogMetadata, timestamp time.Time, message, level, raw string) podLogDocument {
 	index := buildPodLogIndexName(indexPrefix, timestamp)
 	body := map[string]interface{}{
 		"@timestamp": timestamp.UTC().Format(time.RFC3339Nano),
@@ -653,16 +503,16 @@ func buildPodLogDocument(indexPrefix string, pod *corev1.Pod, container podLogCo
 		"namespace":  pod.Namespace,
 		"pod":        pod.Name,
 		"container":  container.Name,
-		"node_name":  pod.Spec.NodeName,
-		"pod_uid":    string(pod.UID),
+		"node_name":  pod.NodeName,
+		"pod_uid":    pod.UID,
 		"kubernetes": map[string]interface{}{
 			"namespace":      pod.Namespace,
 			"namespace_name": pod.Namespace,
 			"pod_name":       pod.Name,
 			"container_name": container.Name,
 			"container_type": container.Type,
-			"node_name":      pod.Spec.NodeName,
-			"pod_uid":        string(pod.UID),
+			"node_name":      pod.NodeName,
+			"pod_uid":        pod.UID,
 			"app":            strings.TrimSpace(metadata.App),
 			"workload":       strings.TrimSpace(metadata.Workload),
 			"owner_kind":     strings.TrimSpace(metadata.OwnerKind),
@@ -691,13 +541,13 @@ func buildPodLogIndexName(indexPrefix string, timestamp time.Time) string {
 // buildPodLogDocumentID 构造 Elasticsearch 文档 ID。
 // 输入：Pod、容器描述、时间戳、原始日志文本。
 // 输出：稳定的文档 ID。
-func buildPodLogDocumentID(pod *corev1.Pod, container podLogContainer, timestamp time.Time, raw string) string {
+func buildPodLogDocumentID(pod *k8sclient.PodLogTarget, container podLogContainer, timestamp time.Time, raw string) string {
 	h := sha1.New()
 	_, _ = io.WriteString(h, pod.Namespace)
 	_, _ = io.WriteString(h, "|")
 	_, _ = io.WriteString(h, pod.Name)
 	_, _ = io.WriteString(h, "|")
-	_, _ = io.WriteString(h, string(pod.UID))
+	_, _ = io.WriteString(h, pod.UID)
 	_, _ = io.WriteString(h, "|")
 	_, _ = io.WriteString(h, container.Type)
 	_, _ = io.WriteString(h, "|")
@@ -711,86 +561,7 @@ func buildPodLogDocumentID(pod *corev1.Pod, container podLogContainer, timestamp
 
 // resolvePodLogMetadata 解析 Pod 的应用和工作负载元数据。
 // 输入：ctx、Pod 对象。
-// 输出：日志元数据和错误。
-func (s *PodLogShipper) resolvePodLogMetadata(ctx context.Context, pod *corev1.Pod) (podLogMetadata, error) {
-	metadata := podLogMetadata{
-		App: extractPodAppName(pod),
-	}
 
-	ownerKind, ownerName, err := s.resolvePodOwner(ctx, pod)
-	if err != nil {
-		metadata.Workload = firstNonEmptyLogText(metadata.App, pod.Name)
-		metadata.OwnerKind = ""
-		metadata.OwnerName = ""
-		return metadata, err
-	}
-
-	metadata.OwnerKind = ownerKind
-	metadata.OwnerName = ownerName
-	metadata.Workload = firstNonEmptyLogText(ownerName, metadata.App, pod.Name)
-	return metadata, nil
-}
-
-// extractPodAppName 从常见标签中提取应用名。
-// 输入：Pod 对象。
-// 输出：应用名。
-func extractPodAppName(pod *corev1.Pod) string {
-	if pod == nil {
-		return ""
-	}
-
-	candidateKeys := []string{
-		"app",
-		"app.kubernetes.io/name",
-		"app.kubernetes.io/instance",
-		"app.kubernetes.io/component",
-		"k8s-app",
-		"component",
-	}
-	for _, key := range candidateKeys {
-		if value, ok := pod.Labels[key]; ok && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-
-	return ""
-}
-
-// resolvePodOwner 解析 Pod 所属的逻辑工作负载。
-// 输入：ctx、Pod 对象。
-// 输出：owner kind、owner name、错误。
-func (s *PodLogShipper) resolvePodOwner(ctx context.Context, pod *corev1.Pod) (string, string, error) {
-	if pod == nil {
-		return "", "", nil
-	}
-
-	owner := metav1.GetControllerOf(pod)
-	if owner == nil {
-		return "", "", nil
-	}
-
-	switch owner.Kind {
-	case "ReplicaSet":
-		if s == nil || s.client == nil {
-			return owner.Kind, owner.Name, nil
-		}
-		replicaSet, err := s.client.AppsV1().ReplicaSets(pod.Namespace).Get(ctx, owner.Name, metav1.GetOptions{})
-		if err != nil {
-			return owner.Kind, owner.Name, err
-		}
-		parent := metav1.GetControllerOf(replicaSet)
-		if parent != nil && strings.TrimSpace(parent.Name) != "" {
-			return parent.Kind, parent.Name, nil
-		}
-		return owner.Kind, owner.Name, nil
-	default:
-		return owner.Kind, owner.Name, nil
-	}
-}
-
-// shouldIgnorePodLogError 判断某些当前阶段不可读日志错误是否应跳过。
-// 输入：错误对象。
-// 输出：true 表示跳过该错误。
 func shouldIgnorePodLogError(err error) bool {
 	if err == nil {
 		return false

@@ -1,0 +1,24 @@
+﻿---
+title: Hybrid RAG Eval Flow
+---
+flowchart TD
+  Q[Query + optional session messages] --> RWI[BuildRewriteInput\nsummary + recent turns]
+  RWI --> RW[QueryRewriter]
+  RW -->|ok| V[NormalizeQueryVariants\noriginal + alternatives]
+  RW -->|failed| DEG1[degraded: query_rewrite_failed]
+  DEG1 --> V
+  V --> EMB[Embedding retriever\nEmbeddingTopK]
+  EMB -->|failed| LEG[Legacy embedding fallback]
+  V --> BM[BM25 index\nBM25TopK]
+  EMB --> CAND[Ranked lists + candidate counts]
+  LEG --> CAND
+  BM --> CAND
+  CAND --> RRF[FuseRankedLists\nRRF k=60 + dedupe]
+  RRF --> OPS{Profile ops_case?}
+  OPS -->|yes| BOOST[Boost structured final reports]
+  OPS -->|no| RR{Reranker enabled?}
+  BOOST --> RR
+  RR -->|available| RERANK[Rerank finalTopK]
+  RR -->|missing/failed| DEG2[degraded + limitResults]
+  RERANK --> OUT[RetrievedContext\nstatus/count/results/path]
+  DEG2 --> OUT

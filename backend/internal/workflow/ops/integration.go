@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"go_agent/internal/workflow/ops/tools"
+	"go_agent/internal/tools/ops"
 
 	einotool "github.com/cloudwego/eino/components/tool"
 	"go.uber.org/zap"
